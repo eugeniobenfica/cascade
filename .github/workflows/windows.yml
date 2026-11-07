@@ -1,0 +1,76 @@
+name: Windows
+
+# Tier 1. Builds the library, the tools and the gallery with MinGW-w64, runs cascade-tests and the
+# Python binding, the minimal build (no Vulkan, OpenGL or screen readers), then opens the gallery's
+# window with each presenter and keeps what it drew. The library, tools and tests are also built and
+# run with MSVC (what vcpkg uses by default).
+on:
+  push:
+    paths: &paths
+      - 'src/**'
+      - '!src/platform/**'
+      - 'src/platform/common/**'
+      - 'src/platform/gpu/**'
+      - 'src/platform/windows/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'examples/gallery/**'
+      - 'bindings/python/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/windows.yml'
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+jobs:
+  msvc:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: |
+          cmake -S . -B build -A x64 # (the runner's Visual Studio, whichever it is)
+          cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  windows:
+    name: Windows (MSYS2 UCRT64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python
+      - name: Build
+        run: cmake -S . -B build -G Ninja && cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Minimal build (software only, no screen readers)
+        run: |
+          cmake -S . -B build-min -G Ninja -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build-min
+          ctest --test-dir build-min --output-on-failure
+      - name: Python binding
+        run: |
+          cmake -S . -B build-shared -G Ninja -DCASCADE_C_SHARED=ON -DCASCADE_BUILD_EXAMPLES=OFF -DCASCADE_BUILD_TESTS=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build-shared
+          CASCADE_LIB="$(pwd)/build-shared/cascade_c.dll" python bindings/python/testCascade.py
+      - name: Open the window
+        run: |
+          mkdir -p shots
+          CASCADE_TEST_WINDOW=1 build/cascade-capi-tests.exe
+          CASCADE_TEST_WINDOW=1 build/cascade-window-tests.exe
+          for b in software opengl; do timeout 60 build/cascade-gallery.exe --$b --screenshot shots/windows-$b.png; done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-window
+          path: shots/

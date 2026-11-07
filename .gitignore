@@ -1,0 +1,12 @@
+build/
+build-*/
+out/
+.vs/
+.vscode/
+*.user
+# what building and testing the bindings leaves
+bin/
+obj/
+__pycache__/
+target/
+bindings/rust/Cargo.lock

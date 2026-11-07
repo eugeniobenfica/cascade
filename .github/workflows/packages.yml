@@ -1,0 +1,36 @@
+name: Packages
+
+# The vcpkg port (packaging/vcpkg), built from this checkout
+# and used by a program, on Linux and Windows.
+on:
+  push:
+    paths: &paths
+      - 'src/**'
+      - 'include/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'packaging/**'
+      - '.github/workflows/packages.yml'
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+jobs:
+  vcpkg:
+    name: vcpkg (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+      - name: Port and a program that uses it
+        shell: bash
+        run: |
+          export VCPKG_ROOT="$VCPKG_INSTALLATION_ROOT"
+          sh packaging/vcpkg/testPort.sh
+

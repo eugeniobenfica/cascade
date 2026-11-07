@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The gallery as an Android app. cascade's activity (org.cascade.CascadeActivity, Java, in
+     src/platform/android) loads libcascade-gallery.so, the library android.app.lib_name names, and
+     starts the program's main in it. configChanges: rotating, plugging a keyboard in, the theme or
+     the text size changing resize or restyle the page instead of starting the activity again.
+     org.cascade.CascadeFiles serves the pictures the app copies to the clipboard (its authority:
+     the package's name, then .cascade.files); not exported, other apps read only what is granted. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.cascade.gallery"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
+    <application
+        android:label="cascade"
+        android:hasCode="true"
+        android:allowBackup="false"
+        android:extractNativeLibs="false"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <activity
+            android:name="org.cascade.CascadeActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|touchscreen|density|uiMode|fontScale|fontWeightAdjustment|locale|layoutDirection|colorMode|grammaticalGender|mcc|mnc"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="android.app.lib_name" android:value="cascade-gallery" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <provider
+            android:name="org.cascade.CascadeFiles"
+            android:authorities="org.cascade.gallery.cascade.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

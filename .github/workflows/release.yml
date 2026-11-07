@@ -1,0 +1,206 @@
+name: Release
+
+# A tag v<version> publishes a release: the SDK of each platform (the library, its headers and its
+# CMake package; the handle API's shared library and cascade-render on desktops; cascade's activity
+# on Android; an XCFramework on iOS), the gallery ready to run, the vcpkg port of this version (its
+# sources' SHA512 in it), checksums, and the CHANGELOG's notes.
+# A push to a release/* branch (a release being prepared) or a run by hand builds everything and
+# keeps it as artifacts, without publishing.
+on:
+  push:
+    tags: ['v*']
+    branches: ['release/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: |
+          version=$(sed -n 's/^project(cascade VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then sh .github/scripts/checkVersion.sh "$GITHUB_REF_NAME"; else sh .github/scripts/checkVersion.sh; fi
+
+  windows:
+    name: Windows SDK
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+      - name: Build and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCASCADE_C_SHARED=ON
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          mkdir -p dist
+          cmake --install build --prefix "stage/cascade-$V-windows-x64"
+          (cd stage && cmake -E tar cf "../dist/cascade-$V-windows-x64.zip" --format=zip "cascade-$V-windows-x64")
+          mkdir -p "gallery/cascade-gallery-$V-windows-x64" && cp -R build/cascade-gallery.exe build/ui "gallery/cascade-gallery-$V-windows-x64/"
+          (cd gallery && cmake -E tar cf "../dist/cascade-gallery-$V-windows-x64.zip" --format=zip "cascade-gallery-$V-windows-x64")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows
+          path: dist/
+
+  linux:
+    name: Linux SDK
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and test
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libx11-dev
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCASCADE_C_SHARED=ON
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          mkdir -p dist
+          cmake --install build --prefix "stage/cascade-$V-linux-x64"
+          tar -C stage -czf "dist/cascade-$V-linux-x64.tar.gz" "cascade-$V-linux-x64"
+          mkdir -p "gallery/cascade-gallery-$V-linux-x64" && cp -R build/cascade-gallery build/ui "gallery/cascade-gallery-$V-linux-x64/"
+          tar -C gallery -czf "dist/cascade-gallery-$V-linux-x64.tar.gz" "cascade-gallery-$V-linux-x64"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-linux
+          path: dist/
+
+  macos:
+    name: macOS SDK (universal)
+    needs: version
+    runs-on: macos-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCASCADE_C_SHARED=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build -j 4
+          ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          mkdir -p dist
+          cmake --install build --prefix "stage/cascade-$V-macos-universal"
+          tar -C stage -czf "dist/cascade-$V-macos-universal.tar.gz" "cascade-$V-macos-universal"
+          mkdir -p "gallery/cascade-gallery-$V-macos-universal" && cp -R build/cascade-gallery build/ui "gallery/cascade-gallery-$V-macos-universal/"
+          (cd gallery && zip -qry "../dist/cascade-gallery-$V-macos-universal.zip" "cascade-gallery-$V-macos-universal")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-macos
+          path: dist/
+
+  android:
+    name: Android SDK and the gallery's APK
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build (each ABI) and package
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          root="stage/cascade-$V-android"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cmake -S . -B "build/$abi" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=$abi -DANDROID_PLATFORM=android-26 -DCMAKE_BUILD_TYPE=Release -DCASCADE_BUILD_EXAMPLES=OFF
+            cmake --build "build/$abi"
+            cmake --install "build/$abi" --prefix "$root/$abi"
+          done
+          mkdir -p dist
+          (cd stage && zip -qr "../dist/cascade-$V-android.zip" "cascade-$V-android")
+          ABI="arm64-v8a x86_64" examples/android/buildApk.sh
+          cp build-android/cascade-gallery.apk "dist/cascade-gallery-$V.apk"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-android
+          path: dist/
+
+  ios:
+    name: iOS XCFramework
+    needs: version
+    runs-on: macos-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build (devices and the simulator) and package
+        run: |
+          for sdk in iphoneos iphonesimulator; do
+            archs=arm64; [ $sdk = iphonesimulator ] && archs="arm64;x86_64"
+            cmake -S . -B "build/$sdk" -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$sdk "-DCMAKE_OSX_ARCHITECTURES=$archs" \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCMAKE_BUILD_TYPE=Release -DCASCADE_BUILD_EXAMPLES=OFF
+            cmake --build "build/$sdk" -j 4
+            cmake --install "build/$sdk" --prefix "stage/$sdk"
+          done
+          out="cascade-$V-ios"
+          mkdir -p "$out" dist
+          xcodebuild -create-xcframework \
+            -library stage/iphoneos/lib/libcascade.a -headers stage/iphoneos/include \
+            -library stage/iphonesimulator/lib/libcascade.a -headers stage/iphonesimulator/include \
+            -output "$out/cascade.xcframework"
+          cp LICENSE README.md CHANGELOG.md "$out/"
+          zip -qry "dist/$out.zip" "$out"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-ios
+          path: dist/
+
+  publish:
+    name: Publish
+    needs: [version, windows, linux, macos, android, ios]
+    runs-on: ubuntu-24.04
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: The vcpkg port of this version
+        # the port downloads the tag's sources, as vcpkg_from_github does: their SHA512 goes in it
+        run: |
+          mkdir -p ports/cascade
+          cp packaging/vcpkg/ports/cascade/* ports/cascade/
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            curl -fsSL "https://github.com/$GITHUB_REPOSITORY/archive/$GITHUB_REF_NAME.tar.gz" -o src.tar.gz
+            sha=$(sha512sum src.tar.gz | cut -d' ' -f1)
+            sed -i "s/SHA512 0/SHA512 $sha/" ports/cascade/portfile.cmake
+          fi
+          (cd ports && zip -qr "../dist/cascade-$V-vcpkg-port.zip" cascade)
+      - name: Checksums and notes
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          sh .github/scripts/releaseNotes.sh "$V" > notes.md
+          cat notes.md
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "cascade $V" --notes-file notes.md --verify-tag --latest

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Features</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; font-size: 14px; }
+  .section { margin: 18px 0; }
+  h3 { margin: 0 0 6px; font-size: 15px; color: #444; }
+  .borders div { display: inline-block; width: 70px; height: 40px; margin: 4px; vertical-align: middle; }
+  .b1 { border: 3px dashed #e17055; } .b2 { border: 4px dotted #0984e3; border-radius: 50%; }
+  .b3 { border: 6px double #00b894; } .b4 { border: 6px groove #aaa; } .b5 { border: 6px ridge #aaa; }
+  .b6 { border-top: 4px solid red; border-right: 4px solid green; border-bottom: 4px solid blue; border-left: 4px solid orange; border-radius: 12px 0 12px 0; }
+  .inline span.hl { background: #ffeaa7; padding: 2px 6px; border: 1px solid #fdcb6e; border-radius: 4px; }
+  .pre { white-space: pre; font-family: monospace; background: #2d3436; color: #dfe6e9; padding: 8px; border-radius: 4px; }
+  .shadowtext { font-size: 26px; font-weight: bold; color: #6c5ce7; text-shadow: 2px 2px 0 #fd79a8, 0 0 8px rgba(0,0,0,.4); }
+  .ls { letter-spacing: 4px; text-transform: uppercase; }
+  .justify { text-align: justify; width: 360px; }
+  .ellipsis { width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid #ccc; padding: 4px; }
+  .before::before { content: "\2605 "; color: gold; } .after::after { content: " (" attr(data-x) ")"; color: #888; }
+  .scroll { height: 70px; overflow: auto; border: 1px solid #aaa; padding: 6px; width: 300px; }
+  .layout { display: grid; grid-template-areas: "head head" "side main" "foot foot"; grid-template-columns: 120px 1fr; gap: 6px; width: 420px; }
+  .layout > * { padding: 8px; color: white; border-radius: 4px; }
+  .hd { grid-area: head; background: #6c5ce7; } .sd { grid-area: side; background: #00b894; } .mn { grid-area: main; background: #0984e3; height: 50px; } .ft { grid-area: foot; background: #636e72; }
+  .col { display: flex; flex-direction: column; height: 140px; width: 200px; border: 1px solid #aaa; }
+  .col .grow { flex: 1; background: #dfe6e9; } .col .fixed { height: 30px; background: #b2bec3; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 6px; width: 300px; justify-content: center; }
+  .wrap span { background: #74b9ff; padding: 4px 10px; border-radius: 12px; }
+  .rel { position: relative; height: 80px; background: #f5f6fa; width: 300px; }
+  .abs { position: absolute; right: 10px; bottom: 10px; width: 60px; height: 30px; background: #e84393; }
+  .center { position: absolute; inset: 0; margin: auto; width: 80px; height: 24px; background: #fdcb6e; }
+  .op { opacity: .5; background: black; color: white; padding: 4px; display: inline-block; }
+  .grad1 { width: 200px; height: 40px; background: linear-gradient(to right, red, yellow 30%, green 60%, blue); }
+  .grad2 { width: 200px; height: 40px; background: repeating-linear-gradient(45deg, #333 0 10px, #eee 10px 20px); }
+  .grad3 { width: 100px; height: 100px; border-radius: 50%; background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red); }
+  .collapse-parent { background: #eee; } .collapse-child { margin-top: 20px; background: #a29bfe; }
+  .baseline { font-size: 20px; } .baseline .ib { display: inline-block; padding: 10px; background: #81ecec; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="section borders"><h3>Border styles</h3><div class="b1"></div><div class="b2"></div><div class="b3"></div><div class="b4"></div><div class="b5"></div><div class="b6"></div></div>
+<div class="section inline"><h3>Inline boxes</h3>Text with a <span class="hl">highlighted span that wraps across the line because it is rather long</span> and continues after it with <b>bold</b>, <i>italic</i>, <a href="#">a link</a> and <small>small text</small>.</div>
+<div class="section"><h3>Whitespace</h3><div class="pre">int main() {
+    return 0;   // pre keeps spaces
+}</div></div>
+<div class="section shadowtext">Text shadow</div>
+<div class="section ls">Letter spacing</div>
+<div class="section justify">Justified text spreads the words so that every line except the last one fills the full width of the box, exactly like a newspaper column does.</div>
+<div class="section ellipsis">This line is far too long to fit inside the box and gets an ellipsis</div>
+<div class="section"><span class="before">Starred</span> and <span class="after" data-x="attr">generated</span> content.</div>
+<div class="section scroll">Scrollable area<br>line 2<br>line 3<br>line 4<br>line 5<br>line 6</div>
+<div class="section layout"><div class="hd">Header (grid areas)</div><div class="sd">Side</div><div class="mn">Main</div><div class="ft">Footer</div></div>
+<div class="section" style="display:flex; gap: 20px; align-items: flex-start">
+  <div class="col"><div class="fixed">fixed</div><div class="grow">flex: 1 in column</div><div class="fixed">fixed</div></div>
+  <div class="wrap"><span>one</span><span>two</span><span>three</span><span>four</span><span>five</span><span>six</span><span>seven</span></div>
+</div>
+<div class="section rel"><div class="abs"></div><div class="center"></div></div>
+<div class="section"><span class="op">50% opacity</span></div>
+<div class="section" style="display:flex; gap:10px; align-items:center"><div class="grad1"></div><div class="grad2"></div><div class="grad3"></div></div>
+<div class="section collapse-parent"><div class="collapse-child">Margin collapses through the parent</div></div>
+<div class="section baseline">Baseline <span class="ib">inline-block</span> alignment <img style="width:20px;height:20px;background:#d63031"> image</div>
+</body>
+</html>

@@ -1,0 +1,8 @@
+cascade provides CMake targets and cascade_app():
+
+  find_package(cascade CONFIG REQUIRED)
+  add_executable(main WIN32 main.c)
+  cascade_app(main UI ui)          # or: target_link_libraries(main PRIVATE cascade::cascade)
+
+On Linux, the X11 window needs the Xlib headers from the system (libx11-dev, libX11-devel);
+without them the window is Wayland's only.

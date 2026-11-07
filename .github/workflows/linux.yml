@@ -1,0 +1,213 @@
+name: Linux
+
+# Tier 1. X11 and Wayland, each building the library, the tools and the gallery, running
+# cascade-tests, then opening the gallery's window with each presenter the machine has (Mesa's
+# llvmpipe and lavapipe) and keeping what it drew; Wayland also asks AT-SPI what a screen reader
+# sees. The Rust binding is compiled against the library. The tests also run under
+# AddressSanitizer and UndefinedBehaviorSanitizer, and libFuzzer feeds the parsers and decoders.
+on:
+  push:
+    paths: &paths
+      - 'src/**'
+      - '!src/platform/**'
+      - 'src/platform/common/**'
+      - 'src/platform/gpu/**'
+      - 'src/platform/linux/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'examples/gallery/**'
+      - 'bindings/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/linux.yml'
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+jobs:
+  x11:
+    name: Linux (X11)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        # libx11-dev to build; Xvfb, Mesa (llvmpipe, lavapipe) and the loaders to open the window
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev xvfb x11-apps imagemagick libgl1 libgl1-mesa-dri libvulkan1 \
+            mesa-vulkan-drivers libxcursor1
+      - name: Build
+        run: cmake -S . -B build -G Ninja && cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Minimal build (software only, no screen readers)
+        run: |
+          cmake -S . -B build-min -G Ninja -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build-min
+          ctest --test-dir build-min --output-on-failure
+      - name: Install, and a program that finds it
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/cascade"
+          mkdir -p "$RUNNER_TEMP/app/ui" && cd "$RUNNER_TEMP/app"
+          printf '<h1>hi</h1>' > ui/index.html
+          printf 'cmake_minimum_required(VERSION 3.16)\nproject(app C)\nfind_package(cascade 1 REQUIRED)\nadd_executable(app main.c)\ncascade_app(app UI ui)\n' > CMakeLists.txt
+          printf '#include "cascade/cascade.h"\nint main(void) { CscdView* v = cscdViewNew(); cscdViewFree(v); return 0; }\n' > main.c
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/cascade" && cmake --build build && ./build/app && test -f build/ui/index.html
+      - name: Install, and a program built with pkg-config
+        run: |
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/cascade/lib/pkgconfig"
+          pkg-config --modversion cascade
+          printf '#include "cascade/cascade.h"\nint main(void) { CscdView* v = cscdViewNew(); cscdViewFree(v); return 0; }\n' > "$RUNNER_TEMP/pc.c"
+          cc "$RUNNER_TEMP/pc.c" $(pkg-config --cflags --libs cascade) -o "$RUNNER_TEMP/pc" && "$RUNNER_TEMP/pc"
+      - name: Python binding
+        run: |
+          cmake -S . -B build-shared -G Ninja -DCASCADE_C_SHARED=ON -DCASCADE_BUILD_EXAMPLES=OFF -DCASCADE_BUILD_TESTS=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build-shared
+          CASCADE_LIB="$(pwd)/build-shared/libcascade_c.so" python3 bindings/python/testCascade.py
+      - name: Open the window
+        # shots/linux-<backend>.png is what the View painted; -screen.png is the X screen itself,
+        # what the presenter put there (grabbed while the window is open)
+        run: |
+          mkdir -p shots
+          Xvfb :99 -screen 0 1400x900x24 >/dev/null 2>&1 & xvfb=$!; sleep 1
+          export DISPLAY=:99
+          CASCADE_TEST_WINDOW=1 build/cascade-capi-tests
+          CASCADE_TEST_WINDOW=1 build/cascade-window-tests
+          for b in software opengl vulkan; do
+            # the X screen while the window is open: grabbed until the window shows (a software
+            # GL can take a while to put up its first frame)
+            (for i in $(seq 1 24); do
+               sleep 0.25
+               xwd -root -silent | convert xwd:- shots/grab.png
+               if [ "$(convert shots/grab.png -format %k info:)" -gt 50 ]; then mv shots/grab.png shots/linux-$b-screen.png; break; fi
+             done) & grab=$!
+            timeout 60 build/cascade-gallery --$b --screenshot shots/linux-$b.png | tee shots/linux-$b.txt
+            wait $grab
+            test -s shots/linux-$b.png
+            # the screen was not blank: the gallery's dark interface has many colors
+            test -s shots/linux-$b-screen.png
+          done
+          grep -q "Software (XPutImage)" shots/linux-software.txt
+          grep -q "OpenGL" shots/linux-opengl.txt
+          kill $xvfb
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: linux-window
+          path: shots/
+
+  wayland:
+    name: Linux (Wayland, AT-SPI)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        # Weston (headless) to open the window on; the Wayland libraries cascade opens at run time;
+        # Mesa's lavapipe for Vulkan; the accessibility bus and pyatspi to ask it what it sees
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build weston libwayland-client0 libwayland-cursor0 libxkbcommon0 libvulkan1 mesa-vulkan-drivers \
+            dbus at-spi2-core python3-pyatspi
+      - name: "Build (without X11: the window is Wayland's)"
+        run: cmake -S . -B build -G Ninja -DCMAKE_DISABLE_FIND_PACKAGE_X11=ON && cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Open the window
+        run: |
+          mkdir -p shots
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket=wayland-1 --idle-time=0 >shots/weston.txt 2>&1 & weston=$!
+          sleep 2
+          export WAYLAND_DISPLAY=wayland-1
+          for b in software vulkan; do
+            timeout 60 build/cascade-gallery --$b --screenshot shots/wayland-$b.png | tee shots/wayland-$b.txt
+            test -s shots/wayland-$b.png
+          done
+          grep -q "Wayland shared memory" shots/wayland-software.txt
+          kill $weston
+      - name: Screen reader (AT-SPI)
+        # the gallery's tree as Orca would see it: the application, its frame, the document and more
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket=wayland-1 --idle-time=0 >/dev/null 2>&1 & weston=$!
+          sleep 2
+          export WAYLAND_DISPLAY=wayland-1
+          dbus-run-session -- bash -c '
+            /usr/libexec/at-spi-bus-launcher --launch-immediately & sleep 2
+            build/cascade-gallery --software & app=$!
+            sleep 5
+            python3 - <<EOF
+          import pyatspi
+          desktop = pyatspi.Registry.getDesktop(0)
+          apps = [desktop.getChildAtIndex(i) for i in range(desktop.childCount)]
+          app = next(a for a in apps if a is not None and "gallery" in (a.name or ""))
+          frame = app.getChildAtIndex(0)
+          doc = frame.getChildAtIndex(0)
+          seen = []
+          def walk(o, depth=0):
+              seen.append(o.getRoleName())
+              for i in range(min(o.childCount, 100)):
+                  walk(o.getChildAtIndex(i), depth + 1)
+          walk(doc)
+          print(app.name, frame.getRoleName(), doc.getRoleName(), len(seen), sorted(set(seen)))
+          assert frame.getRoleName() == "frame" and len(seen) > 10 and "push button" in seen
+          EOF
+            status=$?
+            kill $app
+            exit $status'
+          kill $weston
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: wayland-window
+          path: shots/
+
+  sanitizers:
+    name: Sanitizers and fuzzing
+    runs-on: ubuntu-24.04
+    env:
+      # (the caches that live as long as the program, fonts first, are not leaks)
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang libx11-dev fonts-dejavu-core
+      - name: Build (Clang, AddressSanitizer, UndefinedBehaviorSanitizer)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCASCADE_SANITIZE=address,undefined,float-cast-overflow -DCASCADE_FUZZ=ON -DCASCADE_BUILD_EXAMPLES=OFF
+          cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Fuzz
+        # a minute of each target on every change; fuzz.yml gives each one half an hour every night
+        run: |
+          mkdir -p crashes
+          for t in html css image font zlib; do
+            sh .github/scripts/fuzzSeeds.sh $t corpus/$t
+            build/cascade-fuzz-$t -max_total_time=60 -timeout=30 -max_len=262144 -rss_limit_mb=4096 -artifact_prefix=crashes/$t- corpus/$t/
+          done
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: crashes/
+
+  bindings:
+    name: Bindings (Python, Rust)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Library
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libx11-dev
+          cmake -S . -B build-shared -G Ninja -DCASCADE_C_SHARED=ON -DCASCADE_BUILD_EXAMPLES=OFF -DCASCADE_BUILD_TESTS=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build-shared
+      - name: Python
+        run: CASCADE_LIB="$GITHUB_WORKSPACE/build-shared/libcascade_c.so" python3 bindings/python/testCascade.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust
+        run: cd bindings/rust && CASCADE_LIB_DIR="$GITHUB_WORKSPACE/build-shared" LD_LIBRARY_PATH="$GITHUB_WORKSPACE/build-shared" cargo test

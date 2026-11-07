@@ -1,0 +1,23 @@
+# An installed cascade, for find_package(cascade): the cascade::cascade target and cascade_app.
+#
+#   find_package(cascade 1 REQUIRED)
+#   add_executable(my_app WIN32 main.c)
+#   cascade_app(my_app UI ui)
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+if(@cascade_uses_x11@)
+  find_dependency(X11)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/cascadeTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cascadeApp.cmake")
+
+set(CASCADE_HAS_WINDOW @cascade_window@)
+set(CASCADE_PLATFORM "@cascade_platform@")
+if(ANDROID)
+  # cascade's activity: the Java sources an APK carries
+  set_and_check(CASCADE_ANDROID_JAVA_DIR "@PACKAGE_cascade_java_install_dir@")
+endif()
+check_required_components(cascade)

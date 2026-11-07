@@ -1,0 +1,41 @@
+name: Checks
+
+# On every change: the version agrees everywhere it is written (CMakeLists.txt's project() is the
+# source), the CHANGELOG has the notes for it, and a copy made for one platform (tools/slim.cmake)
+# builds on its own.
+on:
+  push:
+  pull_request:
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: The version, everywhere
+        run: sh .github/scripts/checkVersion.sh
+      - name: The release notes
+        run: |
+          version=$(sed -n 's/^project(cascade VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          sh .github/scripts/releaseNotes.sh "$version" | tee notes.md
+          test -s notes.md
+
+  slim:
+    name: Slim copies
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Linux alone, with its tests
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          cmake -DPLATFORMS=linux -DWITH=tests -DOUT=../slim-linux -P tools/slim.cmake
+          test ! -e ../slim-linux/src/platform/ios && test ! -e ../slim-linux/src/platform/android
+          cmake -S ../slim-linux -B ../b-linux -G Ninja
+          cmake --build ../b-linux
+          ctest --test-dir ../b-linux --output-on-failure
+      - name: The engine alone
+        run: |
+          cmake -DPLATFORMS=none -DOUT=../slim-engine -P tools/slim.cmake
+          cmake -S ../slim-engine -B ../b-engine -G Ninja
+          cmake --build ../b-engine

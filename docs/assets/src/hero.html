@@ -1,0 +1,25 @@
+<!-- The README's picture, drawn by cascade itself: the gallery on a desktop and on a phone.
+     cascade-render docs/assets/src/hero.html docs/assets/hero.png 1640 900 -->
+<style>
+  html, body { margin: 0; }
+  body {
+    width: 1640px; height: 900px; position: relative; overflow: hidden;
+    background: radial-gradient(1200px 700px at 20% 10%, #2b2350 0%, transparent 70%),
+                radial-gradient(900px 600px at 95% 100%, #2a1a5e 0%, transparent 70%), #111216;
+  }
+  .desktop {
+    position: absolute; left: 64px; top: 70px; width: 1180px; height: 760px;
+    border-radius: 14px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .12);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, .55), 0 0 0 1px rgba(0, 0, 0, .4);
+  }
+  .desktop img { display: block; width: 1180px; height: 760px; }
+  .phone {
+    position: absolute; right: 70px; top: 38px; width: 392px; height: 824px;
+    padding: 12px; border-radius: 62px; background: #0a0a0d;
+    box-shadow: 0 34px 90px rgba(0, 0, 0, .6), inset 0 0 0 2px #2c2d33;
+  }
+  .phone .screen { width: 368px; height: 800px; border-radius: 50px; overflow: hidden; }
+  .phone img { display: block; width: 368px; height: 800px; }
+</style>
+<div class="desktop"><img src="../screens/desktopControls.png" alt=""></div>
+<div class="phone"><div class="screen"><img src="../screens/iosControls.png" alt=""></div></div>

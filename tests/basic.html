@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Basic</title>
+<style>
+  :root { --accent: #6c5ce7; --radius: 10px; }
+  body { font-family: "Segoe UI", sans-serif; margin: 0; background: #f4f5f9; color: #222; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px;
+           background: linear-gradient(90deg, var(--accent), #00b894); color: white; }
+  header h1 { font-size: 20px; margin: 0; }
+  nav a { color: white; margin-left: 16px; text-decoration: none; opacity: .9; }
+  main { display: grid; grid-template-columns: 220px 1fr; gap: 16px; padding: 16px; }
+  .card { background: white; border-radius: var(--radius); padding: 16px; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+  .side li { padding: 6px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+  .tile { height: 70px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; }
+  .t1 { background: #e17055; } .t2 { background: #0984e3; } .t3 { background: #00b894; } .t4 { background: #fdcb6e; color: #333; }
+  .t5 { background: radial-gradient(circle, #fd79a8, #6c5ce7); }
+  .btn { display: inline-block; padding: 8px 14px; border-radius: 6px; background: var(--accent); color: white; border: none; font-size: 14px; }
+  .btn.outline { background: transparent; color: var(--accent); border: 2px solid var(--accent); }
+  p { line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+  th { background: #f0f0f5; }
+  .float { float: right; width: 90px; height: 60px; background: #74b9ff; margin: 0 0 8px 12px; border-radius: 6px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #dfe6e9; font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  input[type=text] { padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; width: 180px; height: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>cascade</h1>
+  <nav><a href="#">Home</a><a href="#">Docs</a><a href="#">About</a></nav>
+</header>
+<main>
+  <aside class="card side">
+    <strong>Menu</strong>
+    <ul>
+      <li>Dashboard</li>
+      <li>Projects <span class="badge">12</span></li>
+      <li>Settings</li>
+    </ul>
+    <ol><li>First</li><li>Second</li></ol>
+  </aside>
+  <section class="card">
+    <div class="float"></div>
+    <h2>Welcome to the <em>renderer</em></h2>
+    <p>This page is rendered by <b>cascade</b>, an HTML and CSS engine written in plain C.
+       It supports <a href="#">links</a>, <code>inline code</code>, flexbox, grid, floats and tables,
+       with text that wraps around floating boxes like this one on the right.</p>
+    <div class="grid">
+      <div class="tile t1">Flex</div><div class="tile t2">Grid</div><div class="tile t3">Fonts</div>
+      <div class="tile t4">Images</div><div class="tile t5">Gradients</div>
+    </div>
+    <div class="row">
+      <button class="btn">Primary</button>
+      <button class="btn outline">Outline</button>
+      <input type="text" placeholder="Type here">
+      <label><input type="checkbox" checked> Check</label>
+      <label><input type="radio" name="r" checked> A</label>
+    </div>
+    <table>
+      <tr><th>Feature</th><th>Status</th></tr>
+      <tr><td>Selectors</td><td>Level 4</td></tr>
+      <tr><td>Layout</td><td>Block, inline, flex, grid, table</td></tr>
+    </table>
+  </section>
+</main>
+</body>
+</html>

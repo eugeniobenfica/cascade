@@ -1,0 +1,62 @@
+name: Fuzz
+
+# Every night each fuzz target runs on its own for half an hour, with AddressSanitizer and
+# UndefinedBehaviorSanitizer, on a corpus of its own that carries on from the night before. (Every
+# change gets a minute of each in linux.yml's sanitizers job.) What crashes one is kept as an artifact:
+# built without Clang, cascade-fuzz-<target> runs it again.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Minutes for each target'
+        default: '30'
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [html, css, image, font, zlib]
+    env:
+      # (the caches that live as long as the program, fonts first, are not leaks)
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang libx11-dev fonts-dejavu-core
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCASCADE_SANITIZE=address,undefined,float-cast-overflow -DCASCADE_FUZZ=ON -DCASCADE_BUILD_EXAMPLES=OFF -DCASCADE_BUILD_TESTS=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build --target cascade-fuzz-${{ matrix.target }}
+      - name: The corpus of the nights before
+        uses: actions/cache/restore@v6
+        with:
+          path: corpus
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+      - name: Seeds
+        run: sh .github/scripts/fuzzSeeds.sh ${{ matrix.target }} corpus
+      - name: Fuzz
+        env:
+          MINUTES: ${{ inputs.minutes || '30' }}
+        run: |
+          mkdir -p crashes
+          build/cascade-fuzz-${{ matrix.target }} -max_total_time=$((MINUTES * 60)) -timeout=30 -max_len=262144 -rss_limit_mb=4096 \
+            -print_final_stats=1 -artifact_prefix=crashes/ corpus/
+      - name: Keep the corpus
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: corpus
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: crashes/

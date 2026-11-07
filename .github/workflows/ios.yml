@@ -1,0 +1,43 @@
+name: iOS
+
+# Tier 2 (experimental). Builds cascade-tests and the gallery for the simulator, runs the tests in
+# it, then launches the gallery and keeps a screenshot.
+on:
+  push:
+    paths: &paths
+      - 'src/**'
+      - '!src/platform/**'
+      - 'src/platform/common/**'
+      - 'src/platform/ios/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'examples/gallery/**'
+      - 'examples/ios/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/scripts/iosSimulator.sh'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+jobs:
+  ios:
+    name: iOS (simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build (the tests and the gallery, for the simulator)
+        run: |
+          cmake -S . -B build-ios -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCASCADE_BUILD_TESTS=ON
+          cmake --build build-ios -j 4
+          # (the simulator runs signed code only: an ad-hoc signature)
+          for app in cascade-tests cascade-capi-tests cascade-gallery; do codesign --force --sign - build-ios/$app.app; done
+      - name: Run on the simulator
+        run: sh .github/scripts/iosSimulator.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ios-window
+          path: shots/

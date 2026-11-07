@@ -1,0 +1,58 @@
+name: Android
+
+# Tier 2 (experimental). Builds cascade-tests for the emulator and the gallery's APK (the library, and
+# cascade's activity in Java), runs the tests on an emulator, then installs the gallery and keeps a
+# screenshot and the log.
+on:
+  push:
+    paths: &paths
+      - 'src/**'
+      - '!src/platform/**'
+      - 'src/platform/common/**'
+      - 'src/platform/gpu/**'
+      - 'src/platform/android/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'examples/gallery/**'
+      - 'examples/android/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/scripts/androidEmulator.sh'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: Android (emulator)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build (the tests and the gallery's APK, x86_64 for the emulator)
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cmake -S . -B build-android/tests -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-26 -DCASCADE_BUILD_TESTS=ON -DCASCADE_BUILD_EXAMPLES=OFF -DCASCADE_WINDOW=OFF
+          cmake --build build-android/tests
+          ABI=x86_64 examples/android/buildApk.sh
+      - name: Run on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_7
+          disable-animations: true
+          script: sh .github/scripts/androidEmulator.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: android-window
+          path: shots/

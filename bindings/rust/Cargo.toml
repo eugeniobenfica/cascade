@@ -1,0 +1,11 @@
+[package]
+name = "cascade"
+version = "1.0.0"
+edition = "2021"
+description = "HTML and CSS interfaces drawn natively: Rust bindings to cascade's handle API (cascade_c)"
+license = "MIT"
+links = "cascade_c"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"

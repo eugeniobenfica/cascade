@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/@cascade_pc_up@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: cascade
+Description: @PROJECT_DESCRIPTION@
+Version: @PROJECT_VERSION@
+URL: https://github.com/eugeniobenfica/cascade
+Cflags: -I${includedir} @cascade_pc_cflags@
+Libs: -L${libdir} -l@cascade_pc_name@ @cascade_pc_libs@

@@ -1,0 +1,64 @@
+{
+  "name": "cascade",
+  "version": "1.0.0",
+  "description": "HTML and CSS interfaces driven from C: a native UI engine in plain C11, with no third-party libraries.",
+  "homepage": "https://github.com/eugeniobenfica/cascade",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "default-features": [
+    "window",
+    "vulkan",
+    "opengl",
+    "accessibility"
+  ],
+  "features": {
+    "window": {
+      "description": "The native window of the target's platform (Win32, Wayland and X11, Cocoa, UIKit, Android)"
+    },
+    "vulkan": {
+      "description": "Present frames through Vulkan (loaded at run time: no SDK needed)",
+      "dependencies": [
+        {
+          "name": "cascade",
+          "default-features": false,
+          "features": [
+            "window"
+          ]
+        }
+      ]
+    },
+    "opengl": {
+      "description": "Present frames through OpenGL (loaded at run time)",
+      "dependencies": [
+        {
+          "name": "cascade",
+          "default-features": false,
+          "features": [
+            "window"
+          ]
+        }
+      ]
+    },
+    "accessibility": {
+      "description": "Offer pages to the platform's screen readers",
+      "dependencies": [
+        {
+          "name": "cascade",
+          "default-features": false,
+          "features": [
+            "window"
+          ]
+        }
+      ]
+    }
+  }
+}

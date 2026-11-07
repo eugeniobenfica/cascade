@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>cascade gallery</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark">
+  <header class="toolbar">
+    <div class="brand"><svg class="logo" viewBox="64 50 384 412" aria-hidden="true"><defs><linearGradient id="logo1" x1="1.161" y1="-0.05" x2="0.086" y2="0.941"><stop offset="0" stop-color="#4A28C0"/><stop offset="0.45" stop-color="#7B57F0"/><stop offset="1" stop-color="#B8A4FF"/></linearGradient><linearGradient id="logo2" x1="0.161" y1="0.452" x2="0.91" y2="0.774"><stop offset="0" stop-color="#3B20A0"/><stop offset="0.35" stop-color="#6A45E6"/><stop offset="0.7" stop-color="#A084F8"/><stop offset="1" stop-color="#D6CBFF"/></linearGradient><linearGradient id="logo3" x1="0.017" y1="0.885" x2="0.946" y2="0.365"><stop offset="0" stop-color="#FBF9FF"/><stop offset="0.55" stop-color="#EDE7FF"/><stop offset="1" stop-color="#DAD0FF"/></linearGradient></defs><path d="M420.477 146.672 C385.481 98.504 329.54 70 270 70 C219.629 70 171.412 90.43 136.374 126.617 C101.336 162.804 82.472 211.655 84.097 262 C85.655 310.266 105.923 356.034 140.617 389.626 C175.311 423.218 221.709 442 270 442 C329.54 442 385.481 413.496 420.477 365.328 C427.024 356.316 429.724 345.073 427.981 334.071 C426.238 323.069 420.197 313.209 411.185 306.662 C402.173 300.115 390.93 297.415 379.928 299.158 C368.926 300.901 359.067 306.942 352.52 315.954 C333.328 342.369 302.651 358 270 358 C242.948 358 217.004 347.254 197.875 328.125 C178.746 308.996 168 283.052 168 256 C168 228.948 178.746 203.004 197.875 183.875 C217.004 164.746 242.948 154 270 154 C302.651 154 333.328 169.631 352.52 196.046 C359.067 205.058 368.926 211.099 379.928 212.842 C390.93 214.585 402.173 211.885 411.185 205.338 C420.197 198.791 426.238 188.931 427.981 177.929 C429.724 166.927 427.024 155.684 420.477 146.672 Z" fill="#8A66F4"/><path d="M270 154 C242.948 154 217.004 164.746 197.875 183.875 C178.746 203.004 168 228.948 168 256 C168 320.852 188.339 384.071 226.154 436.758 C186.624 427.169 151.326 404.887 125.669 373.323 C100.012 341.759 85.409 302.655 84.097 262 C102.801 229.197 129.851 201.927 162.501 182.959 C195.151 163.991 232.24 154 270 154 Z" fill="url(#logo1)"/><path d="M168 256 C168 283.052 178.746 308.996 197.875 328.125 C217.004 347.254 242.948 358 270 358 C302.651 358 333.328 342.369 352.52 315.954 C359.067 306.942 368.926 300.901 379.928 299.158 C390.93 297.415 402.173 300.115 411.185 306.662 C420.197 313.209 426.238 323.069 427.981 334.071 C429.724 345.073 427.024 356.316 420.477 365.328 C398.81 395.15 368.77 417.861 334.172 430.579 C299.574 443.297 261.977 445.448 226.154 436.758 C188.339 384.071 168 320.852 168 256 Z" fill="url(#logo2)"/><path d="M420.477 146.672 C385.481 98.504 329.54 70 270 70 C219.629 70 171.412 90.43 136.374 126.617 C101.336 162.804 82.472 211.655 84.097 262 C102.801 229.197 129.851 201.927 162.501 182.959 C195.151 163.991 232.24 154 270 154 C302.651 154 333.328 169.631 352.52 196.046 C359.067 205.058 368.926 211.099 379.928 212.842 C390.93 214.585 402.173 211.885 411.185 205.338 C420.197 198.791 426.238 188.931 427.981 177.929 C429.724 166.927 427.024 155.684 420.477 146.672 Z" fill="url(#logo3)"/></svg>cascade</div>
+    <nav class="tabs">
+      <button class="tab active" data-page="controls">Controls</button>
+      <button class="tab" data-page="layout">Layout</button>
+      <button class="tab" data-page="canvas">Canvas</button>
+    </nav>
+    <div class="spacer"></div>
+    <span class="backend" id="backend">…</span>
+    <label class="switch"><input type="checkbox" id="theme" checked><span class="track"></span> Dark</label>
+  </header>
+
+  <main>
+    <aside class="panel">
+      <h3>Project</h3>
+      <ul class="tree">
+        <li class="open">Scenes
+          <ul><li class="item selected">Intro</li><li class="item">Title card</li><li class="item">Credits</li></ul>
+        </li>
+        <li class="open">Assets
+          <ul><li class="item">logo.svg</li><li class="item">music.wav</li></ul>
+        </li>
+      </ul>
+      <div class="todo">
+        <h3>Tasks <span class="count" id="count">0</span></h3>
+        <div class="add">
+          <input type="text" id="task" placeholder="New task, press Enter">
+          <button id="addTask" class="icon-btn">+</button>
+        </div>
+        <ul id="tasks"></ul>
+      </div>
+    </aside>
+
+    <section class="page" id="page-controls">
+      <div class="cards">
+        <div class="card">
+          <h4>Buttons</h4>
+          <div class="row">
+            <button class="btn primary" id="clicker">Clicked 0 times</button>
+            <button class="btn">Secondary</button>
+            <button class="btn ghost">Ghost</button>
+            <button class="btn" disabled>Disabled</button>
+          </div>
+          <div class="row chips">
+            <span class="chip">Tag</span><span class="chip active">Selected</span><span class="chip">Another</span>
+          </div>
+        </div>
+        <div class="card">
+          <h4>Values</h4>
+          <div class="field"><label>Opacity</label><input type="range" id="opacity" min="0" max="100" value="80"><span class="value" id="opacityValue">80%</span></div>
+          <div class="field"><label>Blend</label>
+            <select id="blend"><option>Normal</option><option>Multiply</option><option>Screen</option><option>Overlay</option></select></div>
+          <div class="field"><label>Name</label><input type="text" value="Layer 1"></div>
+          <div class="field"><label>Visible</label><input type="checkbox" checked><label class="inline"><input type="radio" name="q" checked> Low</label><label class="inline"><input type="radio" name="q"> High</label></div>
+          <div class="field"><label>Render</label><progress id="progress" value="0.35" max="1"></progress></div>
+        </div>
+        <div class="card wide">
+          <h4>Typography</h4>
+          <p class="lead">The quick brown fox <em>jumps</em> over the <strong>lazy dog</strong>. <span class="grad">Gradient text</span>, <u>underline</u>, <s>strike</s>, <code>monospace()</code>, sub<sub>2</sub> and sup<sup>3</sup>.</p>
+          <p class="clamp">Long text gets an ellipsis when it does not fit in one line: Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="page hidden" id="page-layout">
+      <div class="card">
+        <h4>Grid with auto-fill</h4>
+        <div class="swatches" id="swatches"></div>
+      </div>
+      <div class="card">
+        <h4>Flex wrap and alignment</h4>
+        <div class="flexdemo">
+          <div class="box a">flex: 1</div><div class="box b">flex: 2</div><div class="box c">fixed 120px</div>
+        </div>
+      </div>
+      <div class="card">
+        <h4>Positioning, transforms and shadows</h4>
+        <div class="stage">
+          <div class="pos p1">absolute</div>
+          <div class="pos p2">rotate(-8deg)</div>
+          <div class="pos p3">z-index 2</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page hidden" id="page-canvas">
+      <div class="card">
+        <h4>Custom painting (C canvas API)</h4>
+        <canvas id="timeline" width="800" height="220"></canvas>
+      </div>
+      <div class="card">
+        <h4>Inline SVG</h4>
+        <svg width="320" height="120" viewBox="0 0 320 120">
+          <rect x="10" y="10" width="100" height="100" rx="16" fill="#6c5ce7"/>
+          <circle cx="170" cy="60" r="50" fill="none" stroke="#a78bfa" stroke-width="8"/>
+          <path d="M230 100 L270 20 L310 100 Z" fill="#fdcb6e" stroke="#e17055" stroke-width="4" stroke-linejoin="round"/>
+        </svg>
+      </div>
+    </section>
+  </main>
+
+  <footer class="status"><span id="status">Ready</span><span class="spacer"></span><span>HTML + CSS, rendered in C</span></footer>
+</body>
+</html>
