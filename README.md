@@ -17,6 +17,9 @@
 <a href="https://github.com/eugeniobenfica/cascade/actions/workflows/macos.yml"><img src="https://img.shields.io/github/actions/workflow/status/eugeniobenfica/cascade/macos.yml?style=flat-square&labelColor=141417&label=macOS" alt="macOS"></a>
 <a href="https://github.com/eugeniobenfica/cascade/actions/workflows/android.yml"><img src="https://img.shields.io/github/actions/workflow/status/eugeniobenfica/cascade/android.yml?style=flat-square&labelColor=141417&label=Android" alt="Android"></a>
 <a href="https://github.com/eugeniobenfica/cascade/actions/workflows/ios.yml"><img src="https://img.shields.io/github/actions/workflow/status/eugeniobenfica/cascade/ios.yml?style=flat-square&labelColor=141417&label=iOS" alt="iOS"></a>
+<a href="https://github.com/eugeniobenfica/cascade/actions/workflows/checks.yml"><img src="https://img.shields.io/github/actions/workflow/status/eugeniobenfica/cascade/checks.yml?style=flat-square&labelColor=141417&label=Checks" alt="Checks"></a>
+<a href="https://github.com/eugeniobenfica/cascade/actions/workflows/packages.yml"><img src="https://img.shields.io/github/actions/workflow/status/eugeniobenfica/cascade/packages.yml?style=flat-square&labelColor=141417&label=Packages" alt="Packages"></a>
+<a href="https://github.com/eugeniobenfica/cascade/actions/workflows/fuzz.yml"><img src="https://img.shields.io/github/actions/workflow/status/eugeniobenfica/cascade/fuzz.yml?style=flat-square&labelColor=141417&label=Fuzz" alt="Fuzz"></a>
 
 <p>
 <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
@@ -58,7 +61,7 @@ and painters. Any language that calls C can do the same.
 | **CSS** | Selectors level 4, custom properties, `calc()`, `@media`, `@container`, `@keyframes`, transitions, nesting, `oklch()`, `color-mix()`, 3D transforms, `backdrop-filter`, masks |
 | **Layout** | Block and inline flow, flexbox, grid with named areas and subgrid, tables, floats, sticky positioning, writing modes, bidirectional text |
 | **Text** | OpenType shaping (Arabic, Indic), color and variable fonts, WOFF, the system's fonts, fallback |
-| **Images** | PNG, JPEG (progressive), GIF and WebP, animated, lossy and lossless |
+| **Images** | PNG, JPEG (progressive), BMP, GIF and WebP, animated, lossy and lossless; inline SVG |
 | **Painting** | Anti-aliased rasterizer on the CPU, large frames on several threads, repainting only what changed |
 | **Your own drawing** | `cscdElementSetPainter` gives any element a 2D canvas: paths, gradients, images, text, shadows |
 | **Native windows** | DPI scaling, input methods, clipboard, drag and drop, touch, the system's theme and text size |
@@ -225,7 +228,7 @@ Each SDK holds the library, its headers and a CMake package. Checksums are in ea
 ```bash
 cmake -S . -B build -G Ninja
 cmake --build build
-ctest --test-dir build                 # the tests, the handle API's and the stress run
+ctest --test-dir build                 # the tests, the handle API's, the window's and the stress run
 ./build/cascade-gallery                # the gallery, with --vulkan, --opengl or --software
 cmake --install build --prefix sdk     # the library, its headers and its CMake package
 ```
