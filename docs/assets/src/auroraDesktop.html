@@ -1,0 +1,158 @@
+<!-- The hero's desktop: Aurora Studio, an example app (no program behind it), as its window's content.
+     cascade-render docs/assets/src/auroraDesktop.html docs/assets/screens/auroraDesktop.png 1440 880 (then compressed) -->
+<style>
+  :root { --bg: #0c0c10; --panel: #15151b; --card: #1b1b23; --line: rgba(255, 255, 255, .07); --text: #f4f3f8;
+          --muted: #8e8c9c; --dim: #5d5b6a; --accent: #8b5cf6; --accent2: #b8a4ff; }
+  html, body { margin: 0; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; color: var(--text); }
+  * { box-sizing: border-box; }
+  .muted { color: var(--muted); }
+  .label { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  body { width: 1440px; height: 880px; background: #0c0c10; }
+  .win {
+    width: 1440px; height: 880px; overflow: hidden; background: var(--bg);
+    display: grid; grid-template-columns: 248px 1fr; grid-template-rows: 56px 1fr;
+  }
+  .bar {
+    grid-column: 1 / 3; display: flex; align-items: center; gap: 14px; padding: 0 22px;
+    border-bottom: 1px solid var(--line); background: #101015;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+  .brand svg { width: 22px; height: 22px; }
+  .tabs { display: flex; gap: 4px; margin-left: 28px; padding: 4px; border-radius: 10px; background: #18181f; }
+  .tabs span { padding: 6px 14px; border-radius: 7px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  .tabs span.on { background: #26262f; color: var(--text); }
+  .search {
+    margin-left: auto; width: 300px; height: 32px; border-radius: 9px; background: #18181f;
+    border: 1px solid var(--line); color: var(--dim); font-size: 13px; display: flex; align-items: center; padding: 0 12px;
+  }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, #b8a4ff, #6a45e6); }
+
+  .side { padding: 22px 16px; border-right: 1px solid var(--line); background: #0f0f14; }
+  .side .label { padding: 0 10px; margin: 6px 0 10px; }
+  .item { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 9px; font-size: 14px; color: #c9c7d4; margin-bottom: 2px; }
+  .item i { width: 16px; height: 16px; border-radius: 5px; border: 2px solid #5d5b6a; }
+  .item.on { background: rgba(139, 92, 246, .16); color: #fff; }
+  .item.on i { border-color: var(--accent2); background: rgba(184, 164, 255, .25); }
+  .item b { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--muted); background: #1e1e26; padding: 2px 7px; border-radius: 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; border: 0 !important; }
+
+  .main { padding: 30px 34px; display: grid; gap: 20px; grid-template-columns: 1.35fr 1fr 1fr; grid-template-rows: auto 300px 1fr; }
+  .head { grid-column: 1 / 4; display: flex; align-items: flex-end; }
+  .head h1 { margin: 0; font-size: 34px; letter-spacing: -0.03em; font-weight: 700; }
+  .head p { margin: 6px 0 0; font-size: 15px; }
+  .btn { margin-left: 0; padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 600;
+         background: linear-gradient(180deg, #9a72ff, #7b57f0); box-shadow: 0 8px 24px rgba(123, 87, 240, .45); }
+  .btn.ghost { margin-left: auto; margin-right: 10px; background: #1e1e26; box-shadow: none; color: #d8d6e2; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; position: relative; overflow: hidden; }
+  .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .feature {
+    background: radial-gradient(520px 340px at 85% 0%, rgba(184, 164, 255, .55), transparent 70%),
+                radial-gradient(500px 360px at 0% 100%, rgba(74, 40, 192, .85), transparent 70%),
+                linear-gradient(135deg, #2a1c66, #15121f);
+    border-color: rgba(184, 164, 255, .18);
+  }
+  .feature .big { font-size: 64px; font-weight: 700; letter-spacing: -0.04em; margin-top: 54px; }
+  .feature .big small { font-size: 22px; color: #cfc4ff; font-weight: 600; letter-spacing: 0; margin-left: 6px; }
+  .pill { display: inline-block; padding: 5px 11px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(255, 255, 255, .12); color: #ede7ff; }
+  .feature .bars { position: absolute; right: 24px; bottom: 24px; display: flex; gap: 7px; align-items: flex-end; height: 120px; }
+  .feature .bars span { width: 14px; border-radius: 6px; background: linear-gradient(180deg, #fbf9ff, rgba(237, 231, 255, .25)); }
+
+  .ring { display: flex; align-items: center; justify-content: center; margin-top: 18px; }
+  .ring svg { width: 170px; height: 170px; }
+  .stat { display: flex; justify-content: space-between; margin-top: 14px; font-size: 13px; }
+  .stat b { color: var(--text); font-weight: 600; }
+
+  .swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 18px; }
+  .swatches span { aspect-ratio: 1; border-radius: 12px; }
+  .type { margin-top: 18px; display: flex; align-items: baseline; gap: 18px; }
+  .type .aa { font-size: 76px; font-weight: 700; letter-spacing: -0.04em; background: linear-gradient(135deg, #fbf9ff, #8a66f4); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .weights span { display: block; font-size: 14px; color: #c9c7d4; line-height: 1.6; }
+
+  .chart { grid-column: 1 / 3; }
+  .chart svg { width: 100%; height: 230px; margin-top: 14px; }
+  .list .row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .list .row:last-child { border-bottom: 0; }
+  .list .thumb { width: 38px; height: 38px; border-radius: 10px; }
+  .list .row div { flex: 1; }
+  .list .row div span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .list .row em { font-style: normal; font-size: 12px; color: var(--muted); }
+</style>
+<div class="win">
+  <div class="bar">
+    <div class="brand">
+      <svg viewBox="80 66 352 380"><path d="M420.477 146.672 C385.481 98.504 329.54 70 270 70 C219.629 70 171.412 90.43 136.374 126.617 C101.336 162.804 82.472 211.655 84.097 262 C85.655 310.266 105.923 356.034 140.617 389.626 C175.311 423.218 221.709 442 270 442 C329.54 442 385.481 413.496 420.477 365.328 C427.024 356.316 429.724 345.073 427.981 334.071 C426.238 323.069 420.197 313.209 411.185 306.662 C402.173 300.115 390.93 297.415 379.928 299.158 C368.926 300.901 359.067 306.942 352.52 315.954 C333.328 342.369 302.651 358 270 358 C242.948 358 217.004 347.254 197.875 328.125 C178.746 308.996 168 283.052 168 256 C168 228.948 178.746 203.004 197.875 183.875 C217.004 164.746 242.948 154 270 154 C302.651 154 333.328 169.631 352.52 196.046 C359.067 205.058 368.926 211.099 379.928 212.842 C390.93 214.585 402.173 211.885 411.185 205.338 C420.197 198.791 426.238 188.931 427.981 177.929 C429.724 166.927 427.024 155.684 420.477 146.672 Z" fill="#8A66F4"/></svg>
+      Aurora Studio
+    </div>
+    <div class="tabs"><span class="on">Overview</span><span>Scenes</span><span>Assets</span><span>Export</span></div>
+    <div class="search">Search scenes, assets, colors…</div>
+    <div class="avatar"></div>
+  </div>
+
+  <div class="side">
+    <div class="label">Workspace</div>
+    <div class="item on"><i></i>Overview</div>
+    <div class="item"><i></i>Scenes <b>12</b></div>
+    <div class="item"><i></i>Library</div>
+    <div class="item"><i></i>Palettes <b>4</b></div>
+    <div class="item"><i></i>Typography</div>
+    <div class="label" style="margin-top:26px">Projects</div>
+    <div class="item"><i class="dot" style="background:#8b5cf6"></i>Launch film</div>
+    <div class="item"><i class="dot" style="background:#4fd1c5"></i>Product page</div>
+    <div class="item"><i class="dot" style="background:#f6ad55"></i>Keynote deck</div>
+    <div class="item"><i class="dot" style="background:#f687b3"></i>Brand refresh</div>
+  </div>
+
+  <div class="main">
+    <div class="head">
+      <div><h1>Good evening, Ana</h1><p class="muted">Three scenes rendered while you were away.</p></div>
+      <div class="btn ghost">Share</div><div class="btn">New scene</div>
+    </div>
+
+    <div class="card feature">
+      <span class="pill">Rendering now</span>
+      <div class="big">2.4 ms<small>per frame</small></div>
+      <p style="margin:6px 0 0;color:#cfc4ff;font-size:14px">Launch film · scene 4 of 12</p>
+      <div class="bars"><span style="height:40%"></span><span style="height:62%"></span><span style="height:48%"></span><span style="height:80%"></span><span style="height:66%"></span><span style="height:100%"></span><span style="height:74%"></span></div>
+    </div>
+
+    <div class="card">
+      <h3>Export</h3><p class="muted" style="margin:0;font-size:13px">launch-film.mp4</p>
+      <div class="ring"><svg viewBox="0 0 120 120">
+        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d6cbff"/><stop offset="1" stop-color="#6a45e6"/></linearGradient></defs>
+        <circle cx="60" cy="60" r="48" fill="none" stroke="#26262f" stroke-width="12"/>
+        <circle cx="60" cy="60" r="48" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round" stroke-dasharray="226 302" transform="rotate(-90 60 60)"/>
+        <text x="60" y="68" text-anchor="middle" font-size="24" font-weight="700" fill="#f4f3f8" font-family="Segoe UI">75%</text>
+      </svg></div>
+      <div class="stat muted">Remaining <b>0:42</b></div>
+    </div>
+
+    <div class="card">
+      <h3>Palette</h3><p class="muted" style="margin:0;font-size:13px">Twilight · 8 colors</p>
+      <div class="swatches">
+        <span style="background:#2a1c66"></span><span style="background:#4a28c0"></span><span style="background:#7b57f0"></span><span style="background:#b8a4ff"></span>
+        <span style="background:#ede7ff"></span><span style="background:#4fd1c5"></span><span style="background:#f6ad55"></span><span style="background:#f687b3"></span>
+      </div>
+    </div>
+
+    <div class="card chart">
+      <h3>Frames this week</h3><p class="muted" style="margin:0;font-size:13px">Every one painted by the same rasterizer</p>
+      <svg viewBox="0 0 700 230" preserveAspectRatio="none">
+        <defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgba(139,92,246,0.5)"/><stop offset="1" stop-color="rgba(139,92,246,0)"/></linearGradient></defs>
+        <path d="M0 40 H700 M0 100 H700 M0 160 H700" stroke="#24242c" stroke-width="1"/>
+        <path d="M0 180 C60 170 90 120 150 130 C210 140 240 90 300 80 C360 70 390 140 450 120 C510 100 540 40 600 50 C650 58 680 30 700 26 L700 230 L0 230 Z" fill="url(#a)"/>
+        <path d="M0 180 C60 170 90 120 150 130 C210 140 240 90 300 80 C360 70 390 140 450 120 C510 100 540 40 600 50 C650 58 680 30 700 26" fill="none" stroke="#b8a4ff" stroke-width="3"/>
+        <circle cx="600" cy="50" r="7" fill="#fbf9ff" stroke="#8b5cf6" stroke-width="4"/>
+      </svg>
+    </div>
+
+    <div class="card list">
+      <h3>Recent</h3>
+      <div class="row"><span class="thumb" style="background:linear-gradient(135deg,#b8a4ff,#4a28c0)"></span><div>Title card<span>Edited 2 min ago</span></div><em>4K</em></div>
+      <div class="row"><span class="thumb" style="background:linear-gradient(135deg,#4fd1c5,#2b6cb0)"></span><div>Product orbit<span>Edited 1 h ago</span></div><em>HD</em></div>
+      <div class="row"><span class="thumb" style="background:linear-gradient(135deg,#f6ad55,#c05621)"></span><div>Sunrise loop<span>Yesterday</span></div><em>4K</em></div>
+      <div class="row"><span class="thumb" style="background:linear-gradient(135deg,#f687b3,#97266d)"></span><div>Credits<span>Monday</span></div><em>HD</em></div>
+    </div>
+  </div>
+</div>

@@ -39,8 +39,8 @@ events and painters.
 
 <div align="center">
 <br>
-<img src="docs/assets/hero.png" width="920" alt="The cascade gallery on a desktop and on a phone">
-<p><sub>The gallery on a desktop and a phone, drawn by cascade itself (<a href="docs/assets/src/hero.html">source</a>).</sub></p>
+<img src="docs/assets/hero.png" width="920" alt="Aurora, an example app, on a desktop and on a phone">
+<p><sub>An example app on a desktop and a phone, drawn by cascade itself (<a href="docs/assets/src/hero.html">source</a>).</sub></p>
 </div>
 
 ## The idea
@@ -100,19 +100,23 @@ cascade_app(my_app UI ui)                 # links cascade and puts ui/ next to t
 ```html
 <!-- ui/index.html -->
 <link rel="stylesheet" href="app.css">
-<main>
-  <h1>Hello, cascade</h1>
-  <button id="save" class="accent">Save</button>
-  <p id="status">Nothing saved yet.</p>
-  <div id="chart"></div>
+<main class="timer">
+  <div class="ring"><h1>25:00</h1></div>
+  <button id="start">Start</button>
 </main>
 ```
 
 ```css
 /* ui/app.css */
-main   { max-width: 480px; margin: 40px auto; font-family: sans-serif; }
-.accent { background: #8b5cf6; color: white; border: 0; border-radius: 6px; padding: 8px 16px; }
-#chart { height: 120px; }                 /* a painter draws in the box the page gives it */
+body   { margin: 0; background: #111116; color: #f4f3f8; font-family: sans-serif; }
+.timer { display: grid; place-items: center; gap: 28px; padding: 48px; }
+.ring  { width: 220px; aspect-ratio: 1; border-radius: 50%; border: 8px solid #26262f;
+         display: grid; place-items: center; }
+.ring h1 { margin: 0; font-size: 52px; }
+#start { background: #8b5cf6; color: white; border: 0; border-radius: 999px;
+         padding: 12px 40px; font-size: 16px; }
+.running .ring  { border-color: #8b5cf6; }          /* main.c switches this class */
+.running #start { background: #26262f; }
 ```
 
 **3. Drive it from C.**
@@ -121,29 +125,20 @@ main   { max-width: 480px; margin: 40px auto; font-family: sans-serif; }
 #include "cascade/cascade.h"
 #include "cascade/window.h"
 
-static void onSave(void* user, CscdEvent* ev) {
+static void onStart(void* user, CscdEvent* ev) {
     CscdView* ui = user;
-    cscdElementSetText(cscdViewGet(ui, CSCD_SV("#status")), CSCD_SV("Saved."));
-}
-
-static void paintChart(void* user, CscdCanvas* c, float w, float h) {
-    CscdPath wave = {0};
-    cscdPathMoveTo(&wave, 0, h / 2);
-    cscdPathCubicTo(&wave, w / 3, 0, w * 2 / 3, h, w, h / 2);
-    cscdCanvasStrokePath(c, &wave, cscdRgb(139, 92, 246), 2);
-    cscdPathFree(&wave);
+    bool running = cscdElementToggleClass(cscdViewGet(ui, CSCD_SV(".timer")), CSCD_SV("running"));
+    cscdElementSetText(cscdViewGet(ui, CSCD_SV("#start")), running ? CSCD_SV("Pause") : CSCD_SV("Start"));
 }
 
 int main(int argc, char** argv) {
     CscdWindowOptions opts = cscdWindowOptions();           /* Vulkan, then OpenGL, then software */
-    opts.title = "My app";
+    opts.title = "Focus";
     opts.page = "ui/index.html";                              /* found wherever the program starts from */
     CscdWindow* win = cscdWindowNew(&opts);
     CscdView* ui = cscdWindowView(win);
 
-    cscdElementOnClick(cscdViewGet(ui, CSCD_SV("#save")), onSave, ui);
-    CscdPainter chart = {paintChart, NULL, NULL};
-    cscdElementSetPainter(cscdViewGet(ui, CSCD_SV("#chart")), chart);
+    cscdElementOnClick(cscdViewGet(ui, CSCD_SV("#start")), onStart, ui);
 
     int code = cscdWindowRun(win);
     cscdWindowFree(win);
@@ -152,9 +147,14 @@ int main(int argc, char** argv) {
 ```
 
 <div align="center">
-<img src="docs/assets/screens/quickStart.png" width="480" alt="The quick start's page: a heading, a purple Save button, a status line and a wave drawn by the painter">
-<p><sub>What the window shows (<a href="docs/assets/src/quickStart.c">how this picture is made</a>). The same <code>main</code> runs on every platform, phones included.</sub></p>
+<img src="docs/assets/screens/quickStart.png" width="360" alt="The quick start's window: a grey ring around 25:00 and a purple Start button">
+<img src="docs/assets/screens/quickStartRunning.png" width="360" alt="The same window after a click: the ring purple, the button dark and reading Pause">
+<p><sub>What the window shows, before and after a click on Start (<a href="docs/assets/src/quickStart.c">how these pictures are made</a>). The same <code>main</code> runs on every platform, phones included; to draw in an element yourself, give it a <a href="docs/drawing.md">painter</a>.</sub></p>
 </div>
+
+**4. Change the look while it runs.** In debug builds a window reads its style sheets again when they
+change on disk ([live reload](docs/gettingStarted.md#live-reload)): give the timer another color in
+`app.css`, save, and the window shows it, still running.
 
 <details>
 <summary><b>Without a window</b>: tests, thumbnails, images on a server</summary>
@@ -191,6 +191,11 @@ view["#b"].on("click", lambda ev: view["#p"].set_text("Clicked"))
 view["#b"].click()
 print(view["#p"].text)            # Clicked
 ```
+
+<div align="center">
+<img src="docs/assets/languages.png" width="820" alt="The same few lines in C, C++, Python and Rust">
+<p><sub>C and C++ call the engine as it is; Python and Rust go through the handle API (<a href="docs/assets/src/languages.html">how this picture is made</a>).</sub></p>
+</div>
 </details>
 
 ## Platforms

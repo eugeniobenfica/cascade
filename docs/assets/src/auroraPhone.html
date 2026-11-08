@@ -1,0 +1,70 @@
+<!-- The hero's phone: Aurora, the same example app, as its screen's content.
+     cascade-render docs/assets/src/auroraPhone.html docs/assets/screens/auroraPhone.png 388 858 (then compressed) -->
+<style>
+  :root { --bg: #0c0c10; --panel: #15151b; --card: #1b1b23; --line: rgba(255, 255, 255, .07); --text: #f4f3f8;
+          --muted: #8e8c9c; --dim: #5d5b6a; --accent: #8b5cf6; --accent2: #b8a4ff; }
+  html, body { margin: 0; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; color: var(--text); }
+  * { box-sizing: border-box; }
+  .muted { color: var(--muted); }
+  .label { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  body { width: 388px; height: 858px; background: #0c0c10; }
+  .screen {
+    width: 388px; height: 858px; overflow: hidden; position: relative;
+    background: linear-gradient(170deg, #2b1d63 0%, #17122e 38%, #0c0c10 70%);
+    padding: 18px 22px;
+  }
+  .status { display: flex; justify-content: space-between; align-items: center; height: 34px; padding: 0 12px; font-size: 15px; font-weight: 600; }
+  .island { width: 116px; height: 34px; border-radius: 20px; background: #000; }
+  .sig { display: flex; gap: 5px; align-items: center; }
+  .sig i { width: 4px; border-radius: 2px; background: #fff; display: block; }
+  .bat { width: 25px; height: 12px; border-radius: 4px; border: 1.5px solid rgba(255,255,255,.6); padding: 1.5px; }
+  .bat span { display: block; height: 100%; width: 70%; background: #fff; border-radius: 2px; }
+
+  .top { display: flex; align-items: center; justify-content: space-between; margin: 26px 2px 0; }
+  .top h2 { margin: 0; font-size: 30px; letter-spacing: -0.03em; }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; background: linear-gradient(135deg, #b8a4ff, #6a45e6); }
+  .sub { margin: 4px 2px 0; font-size: 14px; }
+
+  .art {
+    margin-top: 22px; height: 300px; border-radius: 28px; position: relative; overflow: hidden;
+    background: linear-gradient(150deg, #d6cbff 0%, #8a66f4 38%, #4a28c0 72%, #2a1c66 100%);
+    
+  }
+  .art .chip { position: absolute; left: 18px; top: 18px; padding: 6px 12px; border-radius: 20px; background: rgba(0,0,0,.28); font-size: 12px; font-weight: 600; }
+  .art .ring { position: absolute; right: -60px; top: -60px; width: 240px; height: 240px; border-radius: 50%; border: 28px solid rgba(255,255,255,.16); }
+  .art .title { position: absolute; left: 22px; bottom: 20px; }
+  .art .title b { display: block; font-size: 30px; letter-spacing: -0.03em; }
+  .art .title span { font-size: 14px; color: #ede7ff; }
+
+  .prog { margin-top: 22px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); }
+  .prog span { display: block; width: 62%; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #b8a4ff, #fbf9ff); }
+  .times { display: flex; justify-content: space-between; font-size: 12px; margin-top: 8px; color: var(--muted); }
+
+  .ctrl { display: flex; justify-content: center; align-items: center; gap: 34px; margin-top: 12px; }
+  .ctrl .s { width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,.08); }
+  .ctrl .p { width: 72px; height: 72px; border-radius: 50%; background: #fbf9ff; display: flex; align-items: center; justify-content: center;  }
+  .ctrl .p i { display: block; width: 7px; height: 24px; background: #2a1c66; border-radius: 2px; margin: 0 3px; }
+
+  .row { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 12px; border-radius: 18px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.06); }
+  .row .t { width: 44px; height: 44px; border-radius: 12px; }
+  .row div { flex: 1; font-size: 15px; font-weight: 600; }
+  .row div span { display: block; font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+  .row em { font-style: normal; font-size: 12px; color: var(--accent2); font-weight: 600; }
+  .home { position: absolute; left: 50%; bottom: 10px; width: 130px; height: 5px; margin-left: -65px; border-radius: 3px; background: rgba(255,255,255,.7); }
+</style>
+<div class="screen">
+  <div class="status"><span>9:41</span><span class="island"></span>
+    <span class="sig"><i style="height:5px"></i><i style="height:8px"></i><i style="height:11px"></i><i style="height:14px"></i><span class="bat"><span></span></span></span></div>
+  <div class="top"><h2>Aurora</h2><div class="avatar"></div></div>
+  <p class="sub muted">Your scenes, everywhere.</p>
+  <div class="art"><span class="ring"></span><span class="chip">Preview · 60 fps</span>
+    <div class="title"><b>Launch film</b><span>Scene 4 · Title card</span></div></div>
+  <div class="prog"><span></span></div>
+  <div class="times"><span>0:18</span><span>0:29</span></div>
+  <div class="ctrl"><span class="s"></span><span class="p"><i></i><i></i></span><span class="s"></span></div>
+  <div class="row"><span class="t" style="background:linear-gradient(135deg,#4fd1c5,#2b6cb0)"></span><div>Product orbit<span>Rendered · 4K</span></div><em>Open</em></div>
+  <div class="row" style="margin-top:12px"><span class="t" style="background:linear-gradient(135deg,#f6ad55,#c05621)"></span><div>Sunrise loop<span>Rendered · 4K</span></div><em>Open</em></div>
+  <div class="row" style="margin-top:12px"><span class="t" style="background:linear-gradient(135deg,#f687b3,#97266d)"></span><div>Credits<span>Draft</span></div><em>Open</em></div>
+  <div class="home"></div>
+</div>

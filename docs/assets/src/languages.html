@@ -1,0 +1,44 @@
+<!-- The README's languages picture, drawn by cascade itself: the same few lines in C, C++, Python and Rust.
+     cascade-render docs/assets/src/languages.html docs/assets/languages.png 1640 600 (then compressed) -->
+<style>
+  html, body { margin: 0; }
+  body {
+    width: 1640px; height: 600px; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; color: #f4f3f8;
+    background: radial-gradient(1000px 600px at 85% 0%, #2b2350 0%, transparent 70%),
+                radial-gradient(900px 600px at 5% 100%, #2a1c5e 0%, transparent 70%), #111216;
+    display: grid; grid-template-columns: 740px 740px; grid-auto-rows: 240px; gap: 36px; justify-content: center; align-content: center;
+  }
+  .c { border-radius: 20px; background: #15151b; border: 1px solid rgba(255, 255, 255, .10); box-shadow: 0 30px 70px rgba(0, 0, 0, .55); overflow: hidden; }
+  .h { display: flex; align-items: center; gap: 12px; padding: 16px 22px; border-bottom: 1px solid rgba(255, 255, 255, .07); }
+  .badge { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; color: #fff; }
+  .h b { font-size: 20px; }
+  .h span.note { margin-left: auto; font-size: 14px; color: #8e8c9c; }
+  pre { margin: 0; padding: 18px 24px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 15.5px; line-height: 1.65; color: #d4d2de; white-space: pre; }
+  .k { color: #ff8fb1; } .f { color: #8ab4ff; } .s { color: #7ee2d4; } .t { color: #b8a4ff; } .m { color: #5f5d6b; }
+</style>
+
+<div class="c"><div class="h"><span class="badge" style="background:#5b6b8c">C</span><b>C</b><span class="note">the engine’s own API</span></div>
+<pre><span class="t">CscdWindow</span>* win = <span class="f">cscdWindowNew</span>(&amp;opts);
+<span class="t">CscdView</span>* ui = <span class="f">cscdWindowView</span>(win);
+<span class="f">cscdElementOnClick</span>(<span class="f">cscdViewGet</span>(ui, <span class="f">CSCD_SV</span>(<span class="s">"#start"</span>)),
+                   onStart, ui);
+<span class="k">return</span> <span class="f">cscdWindowRun</span>(win);</pre></div>
+
+<div class="c"><div class="h"><span class="badge" style="background:#3f78c4">C++</span><b>C++</b><span class="note">as it is</span></div>
+<pre><span class="k">auto</span>* win = <span class="f">cscdWindowNew</span>(&amp;opts);
+<span class="k">auto</span>* ui  = <span class="f">cscdWindowView</span>(win);
+<span class="f">cscdElementOnClick</span>(<span class="f">cscdViewGet</span>(ui, <span class="f">CSCD_SV</span>(<span class="s">"#start"</span>)),
+    [](<span class="k">void</span>* u, <span class="t">CscdEvent</span>*) { <span class="m">/* … */</span> }, ui);
+<span class="k">return</span> <span class="f">cscdWindowRun</span>(win);</pre></div>
+
+<div class="c"><div class="h"><span class="badge" style="background:#d1a73a">Py</span><b>Python</b><span class="note">through the handle API, standard library only</span></div>
+<pre><span class="k">import</span> cascade
+view = cascade.<span class="f">View</span>()
+view.<span class="f">load_html</span>(<span class="s">"&lt;p id=p&gt;Hello&lt;/p&gt;&lt;button id=b&gt;Go&lt;/button&gt;"</span>)
+view[<span class="s">"#b"</span>].<span class="f">on</span>(<span class="s">"click"</span>, <span class="k">lambda</span> ev: view[<span class="s">"#p"</span>].<span class="f">set_text</span>(<span class="s">"Clicked"</span>))</pre></div>
+
+<div class="c"><div class="h"><span class="badge" style="background:#c4612f">Rs</span><b>Rust</b><span class="note">through the handle API</span></div>
+<pre><span class="k">let</span> view = <span class="t">View</span>::<span class="f">new</span>();
+view.<span class="f">load_html</span>(<span class="s">"&lt;p id=p&gt;Hello&lt;/p&gt;&lt;button id=b&gt;Go&lt;/button&gt;"</span>)?;
+<span class="k">let</span> p = view.<span class="f">query</span>(<span class="s">"#p"</span>)?;
+view.<span class="f">query</span>(<span class="s">"#b"</span>)?.<span class="f">on</span>(<span class="s">"click"</span>, <span class="k">move</span> |_| { p.<span class="f">set_text</span>(<span class="s">"Clicked"</span>).<span class="f">unwrap</span>(); })?;</pre></div>
