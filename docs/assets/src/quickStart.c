@@ -1,4 +1,4 @@
-/* Draws docs/assets/screens/quickStart.png and quickStartRunning.png: the README's quick start (its
+/* Draws docs/assets/screens/quickStartTimer.png and quickStartRunning.png: the README's quick start (its
  * page, its sheet and its click handler, the same text) as its window shows it, before and after a
  * click on Start, at twice the pixels. Built against cascade and run from the repository's root:
  *
@@ -66,7 +66,7 @@ int main(void) {
     CscdView* view = cscdViewNew();
     cscdViewLoadHTML(view, cscdSvMake(kIndex, sizeof kIndex - 1), CSCD_SV("ui"));
     cscdElementOnClick(cscdViewGet(view, CSCD_SV("#start")), onStart, view);
-    bool ok = save(view, width, height, scale, "docs/assets/screens/quickStart.png");
+    bool ok = save(view, width, height, scale, "docs/assets/screens/quickStartTimer.png");
     cscdElementClick(cscdViewGet(view, CSCD_SV("#start")));   /* what a click does: the handler runs */
     ok = save(view, width, height, scale, "docs/assets/screens/quickStartRunning.png") && ok;
     cscdViewFree(view);

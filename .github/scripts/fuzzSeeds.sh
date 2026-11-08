@@ -30,7 +30,7 @@ css)
   printf '@keyframes f{from{opacity:0}50%%{width:calc(1px + 2%%)}}@container (width>1px){a{animation:f 1s}}' > "$dir/rules.css"
   ;;
 image)
-  cp docs/assets/hero.png docs/assets/screens/*.png "$dir/"
+  cp docs/assets/heroAurora.png docs/assets/screens/*.png "$dir/"
   fixtures 'kJpeg'
   ;;
 font)

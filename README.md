@@ -39,7 +39,7 @@ events and painters.
 
 <div align="center">
 <br>
-<img src="docs/assets/hero.png" width="920" alt="Aurora, an example app, on a desktop and on a phone">
+<img src="docs/assets/heroAurora.png" width="920" alt="Aurora, an example app, on a desktop and on a phone">
 <p><sub>An example app on a desktop and a phone, drawn by cascade itself (<a href="docs/assets/src/hero.html">source</a>).</sub></p>
 </div>
 
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
 ```
 
 <div align="center">
-<img src="docs/assets/screens/quickStart.png" width="360" alt="The quick start's window: a grey ring around 25:00 and a purple Start button">
+<img src="docs/assets/screens/quickStartTimer.png" width="360" alt="The quick start's window: a grey ring around 25:00 and a purple Start button">
 <img src="docs/assets/screens/quickStartRunning.png" width="360" alt="The same window after a click: the ring purple, the button dark and reading Pause">
 <p><sub>What the window shows, before and after a click on Start (<a href="docs/assets/src/quickStart.c">how these pictures are made</a>). The same <code>main</code> runs on every platform, phones included; to draw in an element yourself, give it a <a href="docs/drawing.md">painter</a>.</sub></p>
 </div>
