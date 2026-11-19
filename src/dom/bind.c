@@ -297,7 +297,10 @@ static void applyEach(Binding* b, CscdElement* container, CscdModel* m, CscdSv l
             if (!copy) break;
         }
         CscdNode* next = cscdNodeNextSibling(after);
-        if (copy->node.parent != &container->node || next != &copy->node) cscdNodeInsertBefore(&container->node, &copy->node, next);
+        if ((copy->node.parent != &container->node || next != &copy->node) && !cscdNodeInsertBefore(&container->node, &copy->node, next)) {
+            if (!copy->node.parent) cscdNodeDestroy(&copy->node); /* (a new one, refused: the list is as deep as a tree goes) */
+            continue;
+        }
         after = &copy->node;
         cscdVecPush(&items2, cscdRetain(item));
         cscdVecPush(&copies2, copy);

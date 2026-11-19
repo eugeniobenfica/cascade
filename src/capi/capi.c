@@ -806,7 +806,11 @@ cscd_element cscd_element_append_copy(cscd_view* v, cscd_element parent, cscd_el
     if (!p || !s) { setError("the element is gone (or the handle is not one)"); return 0; }
     CscdElement* copy = cscdElementIs(s, "template") ? cscdTemplateInstantiate(s) : cscdElementClone(s, true);
     if (!copy) { setError("the template is empty"); return 0; }
-    cscdNodeAppendChild(&p->node, &copy->node);
+    if (!cscdNodeAppendChild(&p->node, &copy->node)) {
+        cscdNodeDestroy(&copy->node);
+        setError("the tree would be deeper than CSCD_MAX_TREE_DEPTH");
+        return 0;
+    }
     return handle(v, copy);
 }
 

@@ -182,7 +182,37 @@ CscdElement* cscdNodeParentElement(const CscdNode* n) { return n->parent && n->p
 
 static CscdDocument* docOf(CscdNode* n) { return n->type == CSCD_NODE_DOCUMENT ? (CscdDocument*)n : n->owner; }
 
+/* how many levels a node's subtree has (itself: 1); a tree is never deeper than CSCD_MAX_TREE_DEPTH, so neither is
+ * this recursion */
+static size_t subtreeHeight(const CscdNode* n) {
+    size_t most = 0;
+    for (size_t i = 0; i < n->children.len; ++i) {
+        const size_t h = subtreeHeight(cscdNodeChild((CscdNode*)n, i));
+        if (h > most) most = h;
+    }
+    return most + 1;
+}
+
+/* Whether child may go into parent: not into itself or into what it holds (a loop), and not deeper than the
+ * recursions of styling, layout and painting go safely. */
+static bool canInsert(const CscdNode* parent, const CscdNode* child) {
+    size_t depth = 0; /* (the child's, once in: one more than parent's) */
+    for (const CscdNode* a = parent; a; a = a->parent) {
+        if (a == child) return false;
+        ++depth;
+    }
+    if (depth > CSCD_MAX_TREE_DEPTH) return false;
+    return !child->children.len || depth + subtreeHeight(child) - 1 <= CSCD_MAX_TREE_DEPTH;
+}
+
+size_t cscdNodeDepth(const CscdNode* n) {
+    size_t depth = 0;
+    for (const CscdNode* a = n->parent; a; a = a->parent) ++depth;
+    return depth;
+}
+
 CscdNode* cscdNodeAppendChild(CscdNode* parent, CscdNode* child) {
+    if (!canInsert(parent, child)) return NULL;
     if (child->parent) cscdNodeRemoveChild(child->parent, child);
     child->parent = parent;
     setOwner(child, docOf(parent));
@@ -194,6 +224,7 @@ CscdNode* cscdNodeAppendChild(CscdNode* parent, CscdNode* child) {
 
 CscdNode* cscdNodeInsertBefore(CscdNode* parent, CscdNode* child, CscdNode* ref) {
     if (!ref) return cscdNodeAppendChild(parent, child);
+    if (!canInsert(parent, child)) return NULL;
     if (child->parent) cscdNodeRemoveChild(child->parent, child);
     child->parent = parent;
     setOwner(child, docOf(parent));
@@ -326,6 +357,24 @@ static bool paintOnlyAttribute(const CscdElement* e, const CscdStr* name) {
     return false;
 }
 
+/* An attribute that matters only through the styles its selectors and attr() give (and to screen readers): the page's
+ * structure and what layout and painting read from attributes themselves (src, value, colspan, an SVG's geometry...)
+ * stay as they were. */
+static bool styleOnlyAttribute(const CscdStr* name) {
+    const CscdSv n = cscdStrSv(name);
+    return cscdSvEqC(n, "class") || cscdSvEqC(n, "style") || cscdSvEqC(n, "id") || cscdSvEqC(n, "title") || cscdSvEqC(n, "role") ||
+           cscdSvStartsC(n, "data-") || cscdSvStartsC(n, "aria-");
+}
+
+/* such an attribute changed: e is noted for the view (many of them: the page is restyled and laid out as usual) */
+static void markAttributeChanged(CscdElement* e) {
+    CscdDocument* d = e->node.owner;
+    if (!d) return;
+    ++d->version;
+    if (d->attrChanged.len >= 64) d->structural = true;
+    else if (!d->attrChanged.len || cscdVecLast(&d->attrChanged) != e) cscdVecPush(&d->attrChanged, e);
+}
+
 void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value) {
     CscdStr n = cscdLower(name);
     if (cscdStrEqC(&n, "class")) e->classesValid_ = false;
@@ -339,25 +388,30 @@ void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value) {
             if (paintOnly) { /* (a value that changes every frame does not restyle the page each time) */
                 ++e->node.owner->version;
                 cscdVecPush(&e->node.owner->paintChanged, e);
-            } else cscdNodeMarkDirty(&e->node);
+            } else if (styleOnlyAttribute(&a->name)) markAttributeChanged(e);
+            else cscdNodeMarkDirty(&e->node);
             return;
         }
     }
     bool checked = cscdStrEqC(&n, "checked");
+    const bool styleOnly = styleOnlyAttribute(&n);
     CscdStrPair p = {n, cscdStrDup(value)};
     cscdVecPush(&e->attributes, p);
     if (checked && cscdElementIs(e, "input")) e->state |= CSCD_STATE_CHECKED;
-    cscdNodeMarkDirty(&e->node);
+    if (styleOnly) markAttributeChanged(e);
+    else cscdNodeMarkDirty(&e->node);
 }
 
 void cscdElementRemoveAttribute(CscdElement* e, CscdSv name) {
     for (size_t i = 0; i < e->attributes.len; ++i) {
         if (cscdSvEq(cscdStrSv(&e->attributes.items[i].name), name)) {
             if (cscdSvEqC(name, "class")) e->classesValid_ = false;
+            const bool styleOnly = styleOnlyAttribute(&e->attributes.items[i].name);
             cscdStrFree(&e->attributes.items[i].name);
             cscdStrFree(&e->attributes.items[i].value);
             cscdVecRemove(&e->attributes, i);
-            cscdNodeMarkDirty(&e->node);
+            if (styleOnly) markAttributeChanged(e);
+            else cscdNodeMarkDirty(&e->node);
             return;
         }
     }
@@ -473,7 +527,8 @@ void cscdElementSetText(CscdElement* e, CscdSv text) {
         }
     }
     cscdNodeClearChildren(n);
-    cscdNodeAppendChild(n, &cscdTextNew(text)->node);
+    CscdNode* t = &cscdTextNew(text)->node;
+    if (!cscdNodeAppendChild(n, t)) cscdNodeDestroy(t); /* (the element is as deep as a tree goes) */
 }
 
 /* ---- templates and copies -------------------------------------------------------------------------- */
@@ -627,11 +682,16 @@ CscdStr cscdElementOuterHTML(const CscdElement* e) {
     return out;
 }
 
-CscdElement* cscdElementAppendElement(CscdElement* e, CscdSv tag) {
-    return (CscdElement*)cscdNodeAppendChild(&e->node, &cscdElementNew(tag)->node);
+/* a new node into e; NULL (and the node gone) when e is as deep as a tree goes */
+static CscdNode* appendNew(CscdElement* e, CscdNode* fresh) {
+    if (cscdNodeAppendChild(&e->node, fresh)) return fresh;
+    cscdNodeDestroy(fresh);
+    return NULL;
 }
 
-CscdText* cscdElementAppendText(CscdElement* e, CscdSv text) { return (CscdText*)cscdNodeAppendChild(&e->node, &cscdTextNew(text)->node); }
+CscdElement* cscdElementAppendElement(CscdElement* e, CscdSv tag) { return (CscdElement*)appendNew(e, &cscdElementNew(tag)->node); }
+
+CscdText* cscdElementAppendText(CscdElement* e, CscdSv text) { return (CscdText*)appendNew(e, &cscdTextNew(text)->node); }
 
 static const CscdElement* findSelected(const CscdElement* p, const CscdElement** first) {
     for (size_t i = 0; i < p->node.children.len; ++i) {
@@ -947,6 +1007,7 @@ static void freeDocument(CscdDocument* d) {
     cscdStrFree(&d->baseDir);
     cscdVecFree(&d->textChanged);
     cscdVecFree(&d->paintChanged);
+    cscdVecFree(&d->attrChanged);
 }
 
 void cscdDocumentFree(CscdDocument* d) {

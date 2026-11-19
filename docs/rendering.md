@@ -32,7 +32,8 @@ A window keeps its last frame and paints again only what changed, when that is k
 | `:hover` / `:active` changes that only repaint (colors, backgrounds, shadows, outlines) | the styles of those elements and their descendants; no layout | those elements |
 | `:hover` / `:active` changes that change sizes | the styles of those elements and their descendants, and the layout | those elements, and the few boxes that moved |
 | A box scrolled | nothing | that box |
-| Anything else — classes, attributes, inline styles, new elements | all styles and layout | the whole window |
+| `class`, `style`, `id`, `data-*`, `aria-*`, `role`, `title` | all styles and layout | the elements that look different now, and the few boxes that moved |
+| Anything else — other attributes, new or removed elements | all styles and layout | the whole window |
 
 When more than a handful of boxes move, or the areas cover most of the window, the whole window
 is painted: that is quicker than many small areas.
@@ -60,8 +61,15 @@ Most of a page is the same from one frame to the next, so cascade keeps what it 
   remembers the face it was matched to.
 - **Inline layout reuses its working memory**: once warm, laying out a paragraph allocates
   almost nothing.
-- **Only what can show is drawn**: text outside the clip is not shaped, and an opaque page
-  background is the only fill under the page.
+- **Only what can show is drawn**: a box whose ink (its subtree, shadows, outlines and text) is
+  outside the area being painted is passed over with all it holds, text outside the clip is not
+  shaped, and an opaque page background is the only fill under the page. A page of twenty thousand
+  rows paints what shows.
+- **Shadows are blurred by their corners**: a large box's shadow is the same all along its sides,
+  so only a shape short enough to hold its corners is blurred, and its sides are drawn along; boxes
+  of every size with the same corners share one.
+- **Images are kept within a limit**: past 256 MB (`cscdViewSetImageCacheLimit`) the images nothing
+  shows any more go, the longest unused first.
 - **Layers are reused.** The images that translucent boxes (opacity, filters, blend modes) are
   painted into are kept and cleared only where they were drawn on.
 - **Shadows and glyphs are kept**, for the whole process and within limits of yours (below).
@@ -129,9 +137,9 @@ that names a font only one system has looks different on the others; name the fo
 ## The GPU
 
 The frame is painted on the CPU, then presented through Vulkan or OpenGL (or the system's software
-path). The GPU keeps the frame from one present to the next, so after a frame that only part of the
-page changed (a hover, a caret, a painter invalidated alone) only the rectangles that changed are
-uploaded: `cscdViewPaintDamage` names them, and a host with its own GPU surface can do the same.
+path). The GPU keeps the frame from one present to the next (Vulkan in an image of the device's
+own, copied into each swapchain image there), so after a frame that only part of the page changed
+(a hover, a caret, a painter invalidated alone) only the rectangles that changed are uploaded: `cscdViewPaintDamage` names them, and a host with its own GPU surface can do the same.
 What is shown is pixel for pixel what a full repaint gives. `CSCD_FEATURE_GPU` (or
 `CASCADE_FEATURES=-gpu`) switches a window to the software path.
 

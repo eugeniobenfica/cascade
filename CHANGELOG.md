@@ -7,6 +7,35 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Repainting what changed.** A class, an inline style or a `data-`, `aria-`, `id`, `role` or `title` attribute
+  changed: the window paints again the elements that look different and the boxes that moved, not all of it (styles
+  and layout are still worked out for the whole page). A list's highlighted row costs that row.
+- **Painting what shows.** A box whose ink lies outside the area being painted is passed over with all it holds: a page
+  of 20,000 rows painted in 4.9 ms instead of 48.7, its hit areas found in 3.1 instead of 42.5.
+- **Shadows blurred by their corners** (nine patches): a large shadow costs what a small one does, and boxes of every
+  size with the same corners share one. The hero page painted from cold in 20 ms instead of 40 to 54 (85 instead of
+  176 to 218 at 2x), its shadows kept in half the memory. A shadow's long sides may differ by a level at most.
+- `:nth-child` and its kin worked out once per list: 10,000 items styled in 3 ms instead of 195.
+- **Images within a limit**: past 256 MB (`cscdViewSetImageCacheLimit`, `cscdViewImageCacheBytes`) the images nothing
+  shows go, the longest unused first. `CSCD_FEATURE_ASYNC_IMAGES` (off) decodes large image files on two decoder threads
+  and lays the page out again as they come (`cscdViewImagesDecoding`).
+- Vulkan uploads only the rectangles that changed, into an image the device keeps (it copied the whole frame on each
+  present). `CASCADE_VULKAN_CHECK=1` reads each frame back and compares it.
+- `cscdSetAllocator` and `cscdSetOutOfMemoryHandler`: the program's own allocator, and a handler that frees memory and
+  has a failed request tried again, before the process ends.
+- `CSCD_MAX_TREE_DEPTH` (1024): `cscdNodeAppendChild` and `cscdNodeInsertBefore` refuse a tree deeper than that (the
+  recursions of styling, layout and painting stayed within a thread's stack only for parsed pages) and a loop (an
+  element into itself or what it holds); they return NULL.
+- Fixed, found by the new oracle of the light paths (`cascade-incremental-tests`, which compares every incremental frame
+  with the whole pipeline from scratch): a hovered shadow that grew left its faint tail on screen; a box's scrollbar
+  stayed drawn below it when its content shrank (scroll offsets are now kept in range after each layout), and did not
+  follow when a text change resized its content; and a shape cut by a repainted area came out a level off from the same
+  shape painted whole (coverage is now summed over the shape's whole width, wherever the clip cuts it).
+- `:nth-child(an+b)` with numbers near the limits of an int no longer overflows.
+- Checks: `cascade-memory-tests` (every block counted through the allocator: a page made and freed again and again
+  comes back to the same bytes; a request failing anywhere in a frame is retried with the same pixels),
+  `cascade-incremental-tests`, ThreadSanitizer on Linux, `-Wextra`, and warnings as errors on MinGW (`CASCADE_WERROR`).
+
 - Windows: keys with Alt are the page's. Alt and a key beeped (the window has no menu for it), and Alt or F10 let go
   alone put the window in its system menu's mode, where the next key went. Alt+F4 still closes the window and
   Alt+Space still opens its menu.

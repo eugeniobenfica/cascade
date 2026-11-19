@@ -25,9 +25,13 @@ void cscdApplyDash(const CscdPoint* poly, size_t n, bool closed, const float* da
 /* Three box blurs approximate a gaussian (W3C filter effects recommend this). */
 void cscdGaussianBlur(CscdFloatVec* buf, int w, int h, float sigma);
 
+/* Outer shadows blurred as nine patches (on), or whole (off: what the tests compare them with). */
+extern bool cscdShadowNinePatch;
+
 /* Signed-area accumulation rasterizer (exact area coverage per pixel). A row's coverage depends
  * only on the edges and on the area's left side, never on which rows the area starts or ends at: a
- * page painted by bands of rows comes out the same as painted at once. */
+ * page painted by bands of rows comes out the same as painted at once. (Its callers give it the
+ * shape's whole width, wherever the clip cuts it, so that a cut shape covers what the whole one does.) */
 typedef struct CscdAccumulator {
     int x0, y0, w, h;
     CscdFloatVec a;

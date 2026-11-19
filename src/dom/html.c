@@ -315,6 +315,7 @@ typedef struct TreeBuilder {
     CscdPtrVec stack; /* CscdElement* */
     bool inBody;
     bool fragment;
+    size_t maxDepth; /* (how many elements the stack holds at most) */
 } TreeBuilder;
 
 static CscdElement* current(TreeBuilder* tb) { return tb->stack.len ? (CscdElement*)cscdVecLast(&tb->stack) : NULL; }
@@ -506,7 +507,7 @@ static CscdElement* pushTag(TreeBuilder* tb, CscdSv name, CscdStrPairVec* attrs)
         e->state |= CSCD_STATE_CHECKED;
     if (cscdElementIs(e, "option") && cscdElementHasAttributeC(e, "selected")) e->state |= CSCD_STATE_CHECKED;
     cscdNodeAppendChild(&current(tb)->node, &e->node);
-    if (tb->stack.len < kMaxParserDepth) cscdVecPush(&tb->stack, e);
+    if (tb->stack.len < tb->maxDepth) cscdVecPush(&tb->stack, e);
     return e;
 }
 
@@ -633,6 +634,7 @@ CscdDocument* cscdParseHTML(CscdSv html) {
     TreeBuilder tb;
     memset(&tb, 0, sizeof tb);
     tb.doc = doc;
+    tb.maxDepth = kMaxParserDepth;
     build(&tb, html);
     cscdDomAdoptTemplates(&doc->node);
     return doc;
@@ -642,6 +644,10 @@ void cscdParseHTMLFragment(CscdSv html, CscdElement* parent) {
     TreeBuilder tb;
     memset(&tb, 0, sizeof tb);
     tb.doc = parent->node.owner;
+    /* (what the fragment opens stays within CSCD_MAX_TREE_DEPTH: its elements go under parent, at its depth) */
+    const size_t depth = cscdNodeDepth(&parent->node);
+    if (depth >= CSCD_MAX_TREE_DEPTH) return;
+    tb.maxDepth = CSCD_MAX_TREE_DEPTH - depth < kMaxParserDepth ? CSCD_MAX_TREE_DEPTH - depth : kMaxParserDepth;
     cscdVecPush(&tb.stack, parent);
     tb.fragment = true;
     tb.inBody = true;

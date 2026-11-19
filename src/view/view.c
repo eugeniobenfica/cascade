@@ -104,7 +104,7 @@ static void defaultWarning(void* user, CscdSv message) {
 
 static const char* kFeatureNames[CSCD_FEATURE_COUNT] = {
     "paint-threads", "partial-repaint", "animations", "smooth-scroll", "tooltips", "live-reload", "accessibility",
-    "inspector", "stats", "gpu", "warn-files", "warn-css", "warn-selectors",
+    "inspector", "stats", "gpu", "warn-files", "warn-css", "warn-selectors", "async-images",
 };
 
 const char* cscdFeatureName(CscdFeature f) { return f < CSCD_FEATURE_COUNT ? kFeatureNames[f] : ""; }
@@ -112,7 +112,7 @@ const char* cscdFeatureName(CscdFeature f) { return f < CSCD_FEATURE_COUNT ? kFe
 /* The defaults, changed by CASCADE_FEATURES ("+stats,-gpu"); named: the features it mentions. */
 static uint32_t defaultFeatures(uint32_t* named) {
     uint32_t on = ~0u & ((1u << CSCD_FEATURE_COUNT) - 1);
-    on &= ~(1u << CSCD_FEATURE_LIVE_RELOAD) & ~(1u << CSCD_FEATURE_INSPECTOR) & ~(1u << CSCD_FEATURE_STATS);
+    on &= ~(1u << CSCD_FEATURE_LIVE_RELOAD) & ~(1u << CSCD_FEATURE_INSPECTOR) & ~(1u << CSCD_FEATURE_STATS) & ~(1u << CSCD_FEATURE_ASYNC_IMAGES);
     if (named) *named = 0;
     const char* env = getenv("CASCADE_FEATURES");
     for (CscdSv rest = cscdSv(env); rest.len;) {
@@ -230,12 +230,7 @@ static void clearTimers(CscdView* v) {
     v->timers.len = 0;
 }
 
-static void clearImages(CscdView* v) {
-    for (CscdStrMapSlot* s = NULL; (s = cscdStrMapNext(&v->images, s));) cscdRelease(s->val.p);
-    cscdStrMapClear(&v->images);
-    for (size_t i = 0; i < v->playing.len; ++i) cscdRelease(v->playing.items[i].anim);
-    v->playing.len = 0;
-}
+static void clearImages(CscdView* v) { viewClearImages(v); }
 
 void viewClearSources(CscdView* v) {
     for (size_t i = 0; i < v->sources.len; ++i) cscdStrFree(&v->sources.items[i].path);
@@ -262,6 +257,8 @@ void cscdViewFree(CscdView* v) {
     viewClearUndo(v);
     cscdU64MapFree(&v->undo);
     cscdLayoutBoxFree(v->root);
+    cscdU64MapFree(&v->inkAt);
+    cscdVecFree(&v->inks);
     cscdStyleEngineFree(v->styles);
     for (size_t i = 0; i < v->authorSheets.len; ++i) cscdRelease(v->authorSheets.items[i]);
     cscdVecFree(&v->authorSheets);
@@ -273,6 +270,7 @@ void cscdViewFree(CscdView* v) {
     cscdStrMapFree(&v->unknownProperties);
     clearImages(v);
     cscdStrMapFree(&v->images);
+    cscdRelease(v->inbox); /* (decodes still on their way hold it until they are done) */
     cscdVecFree(&v->playing);
     viewBindingsClear(v);
     cscdVecFree(&v->bindings);
@@ -419,6 +417,7 @@ static bool focusedIsTextField(const CscdView* v) {
 }
 
 bool cscdViewUpdate(CscdView* v) {
+    viewTakeDecodedImages(v);
     double t = viewNow(v);
     /* timers */
     for (size_t guard = 0; guard < 64; ++guard) {
@@ -443,14 +442,14 @@ bool cscdViewUpdate(CscdView* v) {
     viewAdvanceScrolls(v, t);
     if (v->playing.len && viewAdvanceImages(v, t)) v->dirty = v->fullPaint = true;
     if (v->bindings.len) viewApplyBindings(v);
-    if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v)) v->styleDirty = true;
+    if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v)) v->styleDirty = true;
     if (!v->styleDirty) viewRestyleStates(v);
     if (v->styleDirty) viewRestyle(v, NULL);
     else if (v->transitions.len || v->animations.len) viewTickAnimations(v, t);
     if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; viewCenterModals(v); }
     if (v->lists.len && viewUpdateLists(v)) {
         /* the rows of a list that scrolled (or whose box changed size), in this same frame */
-        if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v)) v->styleDirty = true;
+        if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v)) v->styleDirty = true;
         if (v->styleDirty) viewRestyle(v, NULL);
         if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; }
     }
@@ -631,6 +630,7 @@ int cscdViewNextTimerMs(const CscdView* v) {
         if (best < 0 || d < best) best = d;
     }
     if (v->transitions.len || v->animations.len || v->smooth.len) best = best < 0 ? 0.016 : (best < 0.016 ? best : 0.016);
+    if (v->imagesDecoding) best = best < 0 ? 0.008 : (best < 0.008 ? best : 0.008); /* (to take them as they come) */
     if (viewOn(v, CSCD_FEATURE_ANIMATIONS))
         for (size_t i = 0; i < v->playing.len; ++i) {
             double d = v->playing.items[i].due - t;

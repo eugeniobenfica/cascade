@@ -936,14 +936,18 @@ void cscdCanvasClipRRect(CscdCanvas* c, const CscdRRect* r) {
     endRecord(c, op);
 }
 
-static void coverageToMask(const CscdPolyVec* contours, CscdFillRule rule, CscdMask* out, CscdIRect area) {
+/* (over the shape's own width, shapeLeft to shapeRight, as rasterize does: the same coverage whatever the clip) */
+static void coverageToMask(const CscdPolyVec* contours, CscdFillRule rule, CscdMask* out, CscdIRect area, int shapeLeft, int shapeRight) {
+    const int ax0 = shapeLeft <= area.x && shapeLeft >= area.x - 4096 ? shapeLeft : area.x;
+    const int ax1 = shapeRight >= area.x + area.w && shapeRight <= area.x + area.w + 4096 ? shapeRight : area.x + area.w;
+    const int aw = ax1 - ax0;
     CscdAccumulator acc = {0};
-    cscdAccReset(&acc, area.x, area.y, area.w, area.h);
+    cscdAccReset(&acc, ax0, area.y, aw, area.h);
     cscdAccAddPolys(&acc, contours);
-    uint8_t* row = (uint8_t*)cscdMalloc((size_t)(area.w ? area.w : 1));
+    uint8_t* row = (uint8_t*)cscdMalloc((size_t)(aw ? aw : 1));
     for (int y = 0; y < area.h; ++y) {
         cscdAccRow(&acc, y, rule, row);
-        memcpy(&out->a.items[(size_t)(area.y + y - out->y) * out->width + (area.x - out->x)], row, (size_t)area.w);
+        memcpy(&out->a.items[(size_t)(area.y + y - out->y) * out->width + (area.x - out->x)], row + (area.x - ax0), (size_t)area.w);
     }
     cscdFree(row);
     cscdAccFree(&acc);
@@ -970,7 +974,7 @@ static void clipPathImpl(CscdCanvas* c, const CscdPath* p, CscdFillRule rule) {
     }
     CscdIRect area = cscdIRect((int)nc.x, (int)nc.y, (int)nc.w, (int)nc.h);
     CscdMask* mask = newMask(area.x, area.y, area.w, area.h);
-    coverageToMask(&contours, rule, mask, area);
+    coverageToMask(&contours, rule, mask, area, cscdIntOf(floorf(x0)), cscdIntOf(ceilf(x1)) + 1);
     const CscdMask* prev = st(c)->mask;
     if (prev)
         for (int y = area.y; y < area.y + area.h; ++y)
@@ -1213,12 +1217,12 @@ void cscdCanvasPopLayer(CscdCanvas* c) {
             }
             if (k < 255) p = mulPixel(p, k);
             if (L.blend == CSCD_BLEND_SRC_OVER) { t[x] = over(t[x], p); continue; }
+            /* not a color mix: what the layer covers is taken out of what is under it (an eraser) */
+            if (L.blend == CSCD_BLEND_DST_OUT) { t[x] = mulPixel(t[x], 255 - (p >> 24)); continue; }
             /* separable blend modes on premultiplied colors */
             float sa = (p >> 24) / 255.f, da = (t[x] >> 24) / 255.f;
             float out[3];
             for (int ci = 0; ci < 3; ++ci) {
-            /* not a color mix: what the layer covers is taken out of what is under it (an eraser) */
-            if (L.blend == CSCD_BLEND_DST_OUT) { t[x] = mulPixel(t[x], 255 - (p >> 24)); continue; }
                 float sc = ((p >> (8 * ci)) & 255) / 255.f, dc = ((t[x] >> (8 * ci)) & 255) / 255.f;
                 float su = sa > 0 ? sc / sa : 0, du = da > 0 ? dc / da : 0;
                 float bl;
@@ -1365,16 +1369,23 @@ static void rasterize(CscdCanvas* c, const CscdPolyVec* contours, CscdFillRule r
     int x0 = cscdMaxi(cscdIntOf(floorf(l)), (int)clip.x), y0 = cscdMaxi(cscdIntOf(floorf(t)), (int)clip.y);
     int x1 = cscdMini(cscdIntOf(ceilf(r)) + 1, (int)cscdRectRight(clip)), y1 = cscdMini(cscdIntOf(ceilf(b)) + 1, (int)cscdRectBottom(clip));
     if (x1 <= x0 || y1 <= y0) return;
+    /* A row's coverage is worked out over the shape's own width, wherever the clip cuts it: cut at the clip, its edges
+     * were split there and its sum started there, the floats rounded otherwise, and a shape cut by a repainted area came
+     * out a level off from the same shape painted whole. (A shape reaching far beyond the clip is cut, to bound the
+     * work.) */
+    int ax0 = cscdIntOf(floorf(l)), ax1 = cscdIntOf(ceilf(r)) + 1;
+    if (ax0 < x0 - 4096) ax0 = x0;
+    if (ax1 > x1 + 4096) ax1 = x1;
     CscdAccumulator acc = {0};
-    cscdAccReset(&acc, x0, y0, x1 - x0, y1 - y0);
+    cscdAccReset(&acc, ax0, y0, ax1 - ax0, y1 - y0);
     cscdAccAddPolys(&acc, contours);
     ShaderCtx sc;
     shaderInit(&sc, s, st(c)->m, st(c)->alpha);
     RowBlender rb = {cscdCanvasTarget(c), st(c)->mask, &sc};
-    uint8_t* row = (uint8_t*)cscdMalloc((size_t)(x1 - x0));
+    uint8_t* row = (uint8_t*)cscdMalloc((size_t)(ax1 - ax0));
     for (int y = 0; y < acc.h; ++y) {
         cscdAccRow(&acc, y, rule, row);
-        blendRow(&rb, x0, y0 + y, x1 - x0, row);
+        blendRow(&rb, x0, y0 + y, x1 - x0, row + (x0 - ax0));
     }
     cscdFree(row);
     cscdAccFree(&acc);
@@ -1919,6 +1930,8 @@ void cscdCanvasDrawSharedImage(CscdCanvas* c, CscdImage* img, CscdRect src, Cscd
  * pixel: full, the cache drops what went longest unused, and a large shadow, which costs far more to
  * blur again, counts as used later than it was (shadowRank). */
 
+bool cscdShadowNinePatch = true;
+
 typedef struct ShadowEntry {
     CscdOnce once; /* (the bands that want one being blurred wait for it) */
     CscdFloatVec values;
@@ -2021,7 +2034,28 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
      * same values in any clip, and in every band of a page painted on several threads). */
     const int bx0 = cscdIntOf(floorf(area.x)) - pad, by0 = cscdIntOf(floorf(area.y)) - pad;
     const int w = cscdIntOf(ceilf(cscdRectRight(area))) + pad - bx0, h = cscdIntOf(ceilf(cscdRectBottom(area))) + pad - by0;
-    if ((double)w * h > 40000000) return;
+    /* Nine patches: an outer shadow's long sides are the same all along, once past the corners and the blur's reach, so
+     * only a shape short enough to hold its corners is blurred (dx whole columns and dy whole rows fewer, cut at cutX
+     * and cutY), and its middle column and row are drawn along the rest. A large dialog's shadow costs what a small
+     * one does, and boxes of every size with the same corners share one. */
+    int dX = 0, dY = 0, cutX = 0, cutY = 0;
+    if (!inset && sigma > 0 && cscdShadowNinePatch) {
+        const float kx = cscdMaxf(cscdMaxf(shape.rx[0], shape.rx[1]), cscdMaxf(shape.rx[2], shape.rx[3])) + pad + 2;
+        const float ky = cscdMaxf(cscdMaxf(shape.ry[0], shape.ry[1]), cscdMaxf(shape.ry[2], shape.ry[3])) + pad + 2;
+        if (shape.rect.w > 2 * kx + 34) {
+            dX = cscdIntOf(floorf(shape.rect.w - 2 * kx - 2));
+            cutX = cscdIntOf(ceilf(shape.rect.x - bx0 + kx));
+        }
+        if (shape.rect.h > 2 * ky + 34) {
+            dY = cscdIntOf(floorf(shape.rect.h - 2 * ky - 2));
+            cutY = cscdIntOf(ceilf(shape.rect.y - by0 + ky));
+        }
+    }
+    CscdRRect small = shape;
+    small.rect.w -= (float)dX;
+    small.rect.h -= (float)dY;
+    const int sw = w - dX, sh = h - dY;
+    if ((double)sw * sh > 40000000) return;
     /* Shared: the bands of a page painted on several threads each need the one that crosses them
      * (blurred again by each, a large one cost more on four threads than on one), and a list of cards
      * repaints the same few shadows over and over. Those being drawn stay until they are done, even
@@ -2029,9 +2063,9 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
     ShadowEntry* entry;
     {
         float key[16];
-        int ik[2] = {w, h};
-        key[0] = shape.rect.x - bx0; key[1] = shape.rect.y - by0; key[2] = shape.rect.w; key[3] = shape.rect.h;
-        for (int i = 0; i < 4; ++i) { key[4 + i] = shape.rx[i]; key[8 + i] = shape.ry[i]; }
+        int ik[2] = {sw, sh};
+        key[0] = small.rect.x - bx0; key[1] = small.rect.y - by0; key[2] = small.rect.w; key[3] = small.rect.h;
+        for (int i = 0; i < 4; ++i) { key[4 + i] = small.rx[i]; key[8 + i] = small.ry[i]; }
         key[12] = sigma;
         key[13] = inset ? 1.f : 0.f;
         char bytes[sizeof ik + 14 * sizeof(float)];
@@ -2039,7 +2073,7 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
         memcpy(bytes + sizeof ik, key, 14 * sizeof(float));
         CscdSv k = cscdSvMake(bytes, sizeof bytes);
         cscdMutexLock(&shadowMutex);
-        const size_t pixels = (size_t)w * h, memory = pixels * (sizeof(float) + 1);
+        const size_t pixels = (size_t)sw * sh, memory = pixels * (sizeof(float) + 1);
         const bool kept = (sigma > 0 || pixels >= kPlainShadowKept) && shadowLimitCount && memory <= shadowLimitBytes;
         CscdMapVal* v = kept ? cscdStrMapGet(&shadowMap, k) : NULL;
         if (v) ++shadowHits;
@@ -2054,7 +2088,7 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
         entry = v ? (ShadowEntry*)cscdRetain(v->p) : (ShadowEntry*)cscdRcNew(sizeof(ShadowEntry), shadowEntryDtor);
         entry->rank = ++shadowClock + (pixels >> 12); /* (a large one lasts as if used later) */
         cscdMutexUnlock(&shadowMutex);
-        ShadowJob job = {&entry->values, &entry->alpha, &shape, bx0, by0, w, h, sigma, inset};
+        ShadowJob job = {&entry->values, &entry->alpha, &small, bx0, by0, sw, sh, sigma, inset};
         cscdCallOnceArg(&entry->once, blurShadow, &job);
     }
     const CscdFloatVec* buf = &entry->values;
@@ -2072,35 +2106,43 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
     const int bl = cscdIntOf(floorf(dbox.rect.x)), br = cscdIntOf(ceilf(cscdRectRight(dbox.rect)));
     const int bt = cscdIntOf(floorf(dbox.rect.y)), bb = cscdIntOf(ceilf(cscdRectBottom(dbox.rect)));
     const int wx0 = cscdMaxi(x0, cscdIntOf(ceilf(il))), wx1 = cscdMini(x1, cscdIntOf(floorf(ir)));
+    /* each column of the target, and each row, in the blurred patches */
+    int* cols = (int*)cscdMalloc(sizeof(int) * (size_t)(x1 - x0));
+    for (int x = x0; x < x1; ++x) {
+        const int at = x - bx0;
+        cols[x - x0] = !dX || at < cutX ? at : at < cutX + dX ? cutX : at - dX;
+    }
     for (int y = y0; y < y1; ++y) {
         uint32_t* row = cscdImageRow(t, y);
-        const float* src = buf->items + (size_t)(y - by0) * w - bx0;
-        const uint8_t* srcA = alpha->items + (size_t)(y - by0) * w - bx0;
+        const int ay = y - by0, sy = !dY || ay < cutY ? ay : ay < cutY + dY ? cutY : ay - dY;
+        const float* src = buf->items + (size_t)sy * sw;
+        const uint8_t* srcA = alpha->items + (size_t)sy * sw;
         const bool boxRow = y >= bt && y < bb;
         const bool wholeRow = y >= it && y + 1 <= ib && wx0 < wx1;
         for (int x = inset ? cscdMaxi(x0, bl) : x0, end = inset ? cscdMini(x1, br) : x1; x < end; ++x) {
             if (wholeRow && x == wx0) {
                 if (!inset) { x = wx1 - 1; continue; } /* (an outer shadow is not drawn under the box) */
                 for (; x < wx1; ++x) {
-                    uint32_t k = srcA[x];
+                    uint32_t k = srcA[cols[x - x0]];
                     if (mask) k = mul8(k, cscdMaskAt(mask, x, y));
                     if (k) row[x] = over(row[x], tint[k]);
                 }
                 --x;
                 continue;
             }
-            uint32_t k = srcA[x];
+            uint32_t k = srcA[cols[x - x0]];
             if (!k) continue; /* (the box's coverage only makes it less) */
             if (boxRow && x >= bl && x < br) {
                 const float boxCov = rrectCoverage(&dbox, (float)x, (float)y);
                 /* outer shadows are not drawn under the box, inset ones only inside */
-                k = clampByte(src[x] * (inset ? boxCov : 1 - boxCov) * 255);
+                k = clampByte(src[cols[x - x0]] * (inset ? boxCov : 1 - boxCov) * 255);
             } else if (inset) continue;
             if (mask) k = mul8(k, cscdMaskAt(mask, x, y));
             if (!k) continue;
             row[x] = over(row[x], tint[k]);
         }
     }
+    cscdFree(cols);
     cscdRelease(entry);
     markDirty(c, x0, y0, x1, y1);
 }

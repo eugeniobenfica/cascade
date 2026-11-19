@@ -2,14 +2,14 @@
  * memory, and loading them again when their files change (live reload). */
 #include "style/styleInternal.h"
 #include "view/viewInternal.h"
+#include "core/thread.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
-/* An image from its bytes; an animated one starts playing (the image is its first frame, and its
- * pixels change as it plays). */
-static CscdImage* viewDecodeImage(CscdView* v, const uint8_t* data, size_t size) {
-    CscdAnimatedImage* anim = cscdDecodeAnimatedImage(data, size);
+/* An image from its frames; an animated one starts playing (the image is its first frame, and its pixels change as
+ * it plays). Takes anim. */
+static CscdImage* viewImageOf(CscdView* v, CscdAnimatedImage* anim) {
     if (!anim) return NULL;
     CscdImage* img = cscdImageClone(anim->frames[0]);
     if (anim->frameCount > 1) {
@@ -18,6 +18,184 @@ static CscdImage* viewDecodeImage(CscdView* v, const uint8_t* data, size_t size)
         viewNotifyInvalidate(v);
     } else cscdRelease(anim);
     return img;
+}
+
+static CscdImage* viewDecodeImage(CscdView* v, const uint8_t* data, size_t size) { return viewImageOf(v, cscdDecodeAnimatedImage(data, size)); }
+
+/* ---- the images held ------------------------------------------------------------------------------------------------
+ * Each URL's image is kept while the page may show it again. Past the view's limit (cscdViewSetImageCacheLimit), the
+ * images nothing shows any more (only the view holds them: no style, no box, not playing) go, those asked for longest
+ * ago first, down to three quarters of the limit; one asked for again is read again. The app's own images
+ * (cscdViewSetImage) stay. */
+
+enum { kImageLimitDefault = 256 << 20, kDecodeAfter = 64 << 10 /* bytes of a file: smaller ones are decoded at once */ };
+
+static size_t imageBytesOf(const CscdImage* img) {
+    return img ? cscdImagePixelCount(img) * 4 : 0;
+}
+
+static bool imagePlaying(const CscdView* v, const CscdImage* img) {
+    for (size_t i = 0; i < v->playing.len; ++i)
+        if (v->playing.items[i].shown == img) return true;
+    return false;
+}
+
+static void imagesMakeRoom(CscdView* v) {
+    const size_t limit = v->imageLimit ? v->imageLimit : (size_t)kImageLimitDefault;
+    if (v->imageBytes <= limit) return;
+    CscdPtrVec idle = {0}; /* (slots) */
+    for (CscdStrMapSlot* s = NULL; (s = cscdStrMapNext(&v->images, s));) {
+        const ImageEntry* e = (const ImageEntry*)s->val.p;
+        if (e->img && !e->app && !e->decoding && cscdRcRefs(e->img) == 1 && !imagePlaying(v, e->img)) cscdVecPush(&idle, s);
+    }
+    /* longest unused first */
+    for (size_t i = 1; i < idle.len; ++i)
+        for (size_t k = i; k > 0 && ((const ImageEntry*)((CscdStrMapSlot*)idle.items[k - 1])->val.p)->used >
+                                    ((const ImageEntry*)((CscdStrMapSlot*)idle.items[k])->val.p)->used; --k) {
+            void* t = idle.items[k];
+            idle.items[k] = idle.items[k - 1];
+            idle.items[k - 1] = t;
+        }
+    CscdStrVec gone = {0};
+    for (size_t i = 0; i < idle.len && v->imageBytes > limit / 4 * 3; ++i) {
+        CscdStrMapSlot* s = (CscdStrMapSlot*)idle.items[i];
+        ImageEntry* e = (ImageEntry*)s->val.p;
+        v->imageBytes -= e->bytes;
+        cscdRelease(e->img);
+        cscdFree(e);
+        s->val.p = NULL;
+        cscdVecPush(&gone, cscdStrDup(cscdStrMapKey(s)));
+    }
+    for (size_t i = 0; i < gone.len; ++i) {
+        cscdStrMapRemove(&v->images, cscdStrSv(&gone.items[i]), NULL);
+        cscdStrFree(&gone.items[i]);
+    }
+    cscdVecFree(&gone);
+    cscdVecFree(&idle);
+}
+
+void cscdViewSetImageCacheLimit(CscdView* v, size_t bytes) {
+    v->imageLimit = bytes ? bytes : 1;
+    imagesMakeRoom(v);
+}
+
+size_t cscdViewImageCacheBytes(const CscdView* v) { return v->imageBytes; }
+
+/* ---- decoding on other threads (CSCD_FEATURE_ASYNC_IMAGES) ------------------------------------------------------------
+ * A large file is read here, and decoded by one of the decoder threads (two, started when first needed, kept for the
+ * process): the page shows without it meanwhile, and is styled and laid out again when it comes back
+ * (viewTakeDecodedImages, from cscdViewUpdate). The jobs reach the view through its inbox, which they hold a reference
+ * to: a view freed meanwhile only drops its own. */
+
+typedef struct Decoded { CscdStr url; CscdAnimatedImage* anim; } Decoded;
+struct ImageInbox {
+    CscdMutex lock;
+    CSCD_VEC(Decoded) done;
+};
+
+static void inboxDtor(void* p) {
+    ImageInbox* in = (ImageInbox*)p;
+    for (size_t i = 0; i < in->done.len; ++i) {
+        cscdStrFree(&in->done.items[i].url);
+        cscdRelease(in->done.items[i].anim);
+    }
+    cscdVecFree(&in->done);
+    cscdMutexDestroy(&in->lock);
+}
+
+typedef struct DecodeJob { ImageInbox* inbox; CscdStr url; CscdStr data; } DecodeJob;
+static CscdMutex jobsLock = CSCD_MUTEX_INIT;
+static CscdCond jobsReady = CSCD_COND_INIT;
+static CSCD_VEC(DecodeJob) jobs;
+static int decoders;
+enum { kDecoders = 2 };
+
+static void decoderMain(void* arg) {
+    (void)arg;
+    cscdThreadSetName("cascade decoder");
+    for (;;) {
+        cscdMutexLock(&jobsLock);
+        while (!jobs.len) cscdCondWait(&jobsReady, &jobsLock);
+        DecodeJob j = jobs.items[0];
+        cscdVecRemove(&jobs, 0);
+        cscdMutexUnlock(&jobsLock);
+        Decoded d = {j.url, cscdDecodeAnimatedImage((const uint8_t*)j.data.ptr, j.data.len)};
+        cscdStrFree(&j.data);
+        cscdMutexLock(&j.inbox->lock);
+        cscdVecPush(&j.inbox->done, d);
+        cscdMutexUnlock(&j.inbox->lock);
+        cscdRelease(j.inbox);
+    }
+}
+
+/* data (taken) decoded on a decoder thread; false when no thread could be started (decode it here) */
+static bool decodeLater(CscdView* v, CscdSv url, CscdStr* data) {
+    cscdMutexLock(&jobsLock);
+    while (decoders < kDecoders) {
+        CscdThread t;
+        if (!cscdThreadStart(&t, decoderMain, NULL)) break;
+        ++decoders;
+    }
+    if (!decoders) {
+        cscdMutexUnlock(&jobsLock);
+        return false;
+    }
+    if (!v->inbox) {
+        v->inbox = (ImageInbox*)cscdRcNew(sizeof(ImageInbox), inboxDtor);
+        cscdMutexInit(&v->inbox->lock);
+    }
+    DecodeJob j = {(ImageInbox*)cscdRetain(v->inbox), cscdStrDup(url), *data};
+    memset(data, 0, sizeof *data);
+    cscdVecPush(&jobs, j);
+    cscdCondBroadcast(&jobsReady);
+    cscdMutexUnlock(&jobsLock);
+    ++v->imagesDecoding;
+    return true;
+}
+
+bool viewTakeDecodedImages(CscdView* v) {
+    if (!v->imagesDecoding || !v->inbox) return false;
+    cscdMutexLock(&v->inbox->lock);
+    const size_t n = v->inbox->done.len;
+    Decoded* got = v->inbox->done.items;
+    memset(&v->inbox->done, 0, sizeof v->inbox->done);
+    cscdMutexUnlock(&v->inbox->lock);
+    bool any = false;
+    for (size_t i = 0; i < n; ++i) {
+        --v->imagesDecoding;
+        CscdMapVal* m = cscdStrMapGet(&v->images, cscdStrSv(&got[i].url));
+        ImageEntry* e = m ? (ImageEntry*)m->p : NULL;
+        if (e && e->decoding) {
+            e->decoding = false;
+            e->img = viewImageOf(v, got[i].anim);
+            e->bytes = imageBytesOf(e->img);
+            v->imageBytes += e->bytes;
+            if (!e->img) viewWarnf(v, CSCD_FEATURE_WARN_FILES, "cannot load the image %s", cscdStrC(&got[i].url));
+            any = true;
+        } else cscdRelease(got[i].anim); /* (a page replaced meanwhile) */
+        cscdStrFree(&got[i].url);
+    }
+    cscdFree(got);
+    if (!any) return false;
+    imagesMakeRoom(v);
+    cscdStyleEngineInvalidateCache(v->styles);
+    v->styleDirty = true;
+    cscdViewInvalidate(v);
+    return true;
+}
+
+int cscdViewImagesDecoding(const CscdView* v) { return v->imagesDecoding; }
+
+void viewClearImages(CscdView* v) {
+    for (CscdStrMapSlot* s = NULL; (s = cscdStrMapNext(&v->images, s));) {
+        ImageEntry* e = (ImageEntry*)s->val.p;
+        if (e) cscdRelease(e->img);
+        cscdFree(e);
+    }
+    cscdStrMapClear(&v->images);
+    v->imageBytes = 0;
+    for (size_t i = 0; i < v->playing.len; ++i) cscdRelease(v->playing.items[i].anim);
+    v->playing.len = 0;
 }
 
 /* The animated images whose next frame is due, a frame on; true when one changed. */
@@ -43,8 +221,13 @@ bool viewAdvanceImages(CscdView* v, double t) {
 
 CscdImage* viewImage(CscdView* v, CscdSv url) {
     CscdMapVal* known = cscdStrMapGet(&v->images, url);
-    if (known) return (CscdImage*)known->p;
+    if (known && known->p) {
+        ImageEntry* e = (ImageEntry*)known->p;
+        e->used = ++v->imageClock;
+        return e->img;
+    }
     CscdImage* img = NULL;
+    bool later = false;
     if (cscdSvStartsC(url, "data:")) {
         size_t comma = cscdSvFindChar(url, ',', 0);
         if (comma != CSCD_NPOS && cscdSvFind(cscdSvSub(url, 0, comma), CSCD_SV(";base64"), 0) != CSCD_NPOS) {
@@ -64,11 +247,20 @@ CscdImage* viewImage(CscdView* v, CscdSv url) {
         }
     } else {
         CscdStr file = {0};
-        if (cscdReadFile(url, &file)) img = viewDecodeImage(v, (const uint8_t*)file.ptr, file.len);
+        const bool read = cscdReadFile(url, &file);
+        if (read && file.len >= kDecodeAfter && viewOn(v, CSCD_FEATURE_ASYNC_IMAGES)) later = decodeLater(v, url, &file);
+        if (read && !later) img = viewDecodeImage(v, (const uint8_t*)file.ptr, file.len);
         cscdStrFree(&file);
-        if (!img) viewWarnf(v, CSCD_FEATURE_WARN_FILES, "cannot load the image %.*s", (int)url.len, url.ptr);
+        if (!img && !later) viewWarnf(v, CSCD_FEATURE_WARN_FILES, "cannot load the image %.*s", (int)url.len, url.ptr);
     }
-    cscdStrMapPut(&v->images, url, NULL)->p = img;
+    ImageEntry* e = CSCD_NEW(ImageEntry);
+    e->img = img;
+    e->bytes = imageBytesOf(img);
+    e->used = ++v->imageClock;
+    e->decoding = later;
+    v->imageBytes += e->bytes;
+    cscdStrMapPut(&v->images, url, NULL)->p = e;
+    if (e->bytes) imagesMakeRoom(v);
     return img;
 }
 
@@ -76,13 +268,21 @@ CscdImage* viewImageLoader(void* view, CscdSv url) { return (CscdImage*)cscdReta
 
 void cscdViewSetImage(CscdView* v, CscdSv url, CscdImage* img) {
     CscdMapVal* slot = cscdStrMapPut(&v->images, url, NULL);
+    ImageEntry* e = (ImageEntry*)slot->p;
+    if (!e) slot->p = e = CSCD_NEW(ImageEntry);
     for (size_t i = v->playing.len; i-- > 0;)
-        if (v->playing.items[i].shown == slot->p) {
+        if (v->playing.items[i].shown == e->img) {
             cscdRelease(v->playing.items[i].anim);
             cscdVecRemove(&v->playing, i);
         }
-    cscdRelease(slot->p);
-    slot->p = cscdRetain(img);
+    v->imageBytes -= e->bytes;
+    cscdRelease(e->img);
+    e->img = (CscdImage*)cscdRetain(img);
+    e->bytes = imageBytesOf(img);
+    e->app = true;
+    e->decoding = false; /* (one on its way is dropped when it comes) */
+    e->used = ++v->imageClock;
+    v->imageBytes += e->bytes;
     cscdStyleEngineInvalidateCache(v->styles);
     v->styleDirty = true;
     cscdViewInvalidate(v);
@@ -310,6 +510,7 @@ void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir) {
     v->popovers.len = 0;
     cscdLayoutBoxFree(v->root);
     v->root = NULL;
+    v->inkValid = false;
     cscdLayoutForget(v->doc);
     viewClearTransitions(v);
     viewClearAnimations(v);

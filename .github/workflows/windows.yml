@@ -50,12 +50,12 @@ jobs:
           msystem: UCRT64
           install: mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python
       - name: Build
-        run: cmake -S . -B build -G Ninja && cmake --build build
+        run: cmake -S . -B build -G Ninja -DCASCADE_WERROR=ON && cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Minimal build (software only, no screen readers)
         run: |
-          cmake -S . -B build-min -G Ninja -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake -S . -B build-min -G Ninja -DCASCADE_WERROR=ON -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
           cmake --build build-min
           ctest --test-dir build-min --output-on-failure
       - name: Python binding

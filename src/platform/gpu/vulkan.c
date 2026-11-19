@@ -1,7 +1,8 @@
 /* Vulkan presenter. The few Vulkan declarations it needs are written out here (matching
  * vulkan_core.h) and the loader is opened at run time, so building needs no Vulkan SDK. Each frame
- * is copied into a host-visible staging buffer and transferred into the swapchain image with
- * vkCmdCopyBufferToImage. The surface is a Win32 one, an Xlib one (Linux), an Android one or a Metal
+ * is copied into a host-visible staging buffer and transferred into an image of the device's own that keeps the frame
+ * (only the rectangles that changed, after the first), which is copied into the swapchain image on the device. The
+ * surface is a Win32 one, an Xlib one (Linux), an Android one or a Metal
  * one (macOS, through MoltenVK when it is installed). */
 #include "platform/common/platformInternal.h"
 
@@ -12,6 +13,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #ifdef __ANDROID__
 #include <android/native_window.h>
 #endif
@@ -36,7 +38,7 @@ enum { VK_OK = 0, VK_SUBOPTIMAL = 1000001003, VK_ERROR_OUT_OF_DATE = -1000001004
 enum {
     ST_APPLICATION_INFO = 0, ST_INSTANCE_CREATE_INFO = 1, ST_DEVICE_QUEUE_CREATE_INFO = 2, ST_DEVICE_CREATE_INFO = 3,
     ST_SUBMIT_INFO = 4, ST_MEMORY_ALLOCATE_INFO = 5, ST_FENCE_CREATE_INFO = 8, ST_SEMAPHORE_CREATE_INFO = 9,
-    ST_BUFFER_CREATE_INFO = 12, ST_COMMAND_POOL_CREATE_INFO = 39, ST_COMMAND_BUFFER_ALLOCATE_INFO = 40,
+    ST_BUFFER_CREATE_INFO = 12, ST_IMAGE_CREATE_INFO = 14, ST_COMMAND_POOL_CREATE_INFO = 39, ST_COMMAND_BUFFER_ALLOCATE_INFO = 40,
     ST_COMMAND_BUFFER_BEGIN_INFO = 42, ST_IMAGE_MEMORY_BARRIER = 45, ST_SWAPCHAIN_CREATE_INFO = 1000001000,
     ST_PRESENT_INFO = 1000001001, ST_WIN32_SURFACE_CREATE_INFO = 1000009000, ST_XLIB_SURFACE_CREATE_INFO = 1000004000,
     ST_METAL_SURFACE_CREATE_INFO = 1000217000, ST_ANDROID_SURFACE_CREATE_INFO = 1000008000
@@ -72,6 +74,8 @@ typedef struct ImageSubresourceRange { VkFlags aspectMask; uint32_t baseMipLevel
 typedef struct ImageMemoryBarrier { int32_t sType; const void* pNext; VkFlags srcAccessMask, dstAccessMask; int32_t oldLayout, newLayout; uint32_t srcQueueFamilyIndex, dstQueueFamilyIndex; VkImage image; ImageSubresourceRange subresourceRange; } ImageMemoryBarrier;
 typedef struct ImageSubresourceLayers { VkFlags aspectMask; uint32_t mipLevel, baseArrayLayer, layerCount; } ImageSubresourceLayers;
 typedef struct BufferImageCopy { VkDeviceSize bufferOffset; uint32_t bufferRowLength, bufferImageHeight; ImageSubresourceLayers imageSubresource; Offset3D imageOffset; Extent3D imageExtent; } BufferImageCopy;
+typedef struct ImageCreateInfo { int32_t sType; const void* pNext; VkFlags flags; int32_t imageType; int32_t format; Extent3D extent; uint32_t mipLevels; uint32_t arrayLayers; int32_t samples; int32_t tiling; VkFlags usage; int32_t sharingMode; uint32_t queueFamilyIndexCount; const uint32_t* pQueueFamilyIndices; int32_t initialLayout; } ImageCreateInfo;
+typedef struct ImageCopy { ImageSubresourceLayers srcSubresource; Offset3D srcOffset; ImageSubresourceLayers dstSubresource; Offset3D dstOffset; Extent3D extent; } ImageCopy;
 typedef struct SemaphoreCreateInfo { int32_t sType; const void* pNext; VkFlags flags; } SemaphoreCreateInfo;
 typedef struct FenceCreateInfo { int32_t sType; const void* pNext; VkFlags flags; } FenceCreateInfo;
 typedef struct SubmitInfo { int32_t sType; const void* pNext; uint32_t waitSemaphoreCount; const VkSemaphore* pWaitSemaphores; const VkFlags* pWaitDstStageMask; uint32_t commandBufferCount; const VkCommandBuffer* pCommandBuffers; uint32_t signalSemaphoreCount; const VkSemaphore* pSignalSemaphores; } SubmitInfo;
@@ -122,6 +126,12 @@ typedef struct PresentInfo { int32_t sType; const void* pNext; uint32_t waitSema
     X(vkEndCommandBuffer, VkResult, (VkCommandBuffer)) \
     X(vkCmdPipelineBarrier, void, (VkCommandBuffer, VkFlags, VkFlags, VkFlags, uint32_t, const void*, uint32_t, const void*, uint32_t, const ImageMemoryBarrier*)) \
     X(vkCmdCopyBufferToImage, void, (VkCommandBuffer, VkBuffer, VkImage, int32_t, uint32_t, const BufferImageCopy*)) \
+    X(vkCmdCopyImageToBuffer, void, (VkCommandBuffer, VkImage, int32_t, VkBuffer, uint32_t, const BufferImageCopy*)) \
+    X(vkCmdCopyImage, void, (VkCommandBuffer, VkImage, int32_t, VkImage, int32_t, uint32_t, const ImageCopy*)) \
+    X(vkCreateImage, VkResult, (VkDevice, const ImageCreateInfo*, const void*, VkImage*)) \
+    X(vkDestroyImage, void, (VkDevice, VkImage, const void*)) \
+    X(vkGetImageMemoryRequirements, void, (VkDevice, VkImage, MemoryRequirements*)) \
+    X(vkBindImageMemory, VkResult, (VkDevice, VkImage, VkDeviceMemory, VkDeviceSize)) \
     X(vkQueueSubmit, VkResult, (VkQueue, uint32_t, const SubmitInfo*, VkFence)) \
     X(vkCreateSemaphore, VkResult, (VkDevice, const SemaphoreCreateInfo*, const void*, VkSemaphore*)) \
     X(vkDestroySemaphore, void, (VkDevice, VkSemaphore, const void*)) \
@@ -158,6 +168,15 @@ typedef struct VulkanPresenter {
     void* mapped;
     bool swapRB;       /* an RGBA swapchain (Android has no BGRA one): red and blue change places on the way */
     bool stagingHolds; /* the staging buffer holds the last frame (partial copies are enough) */
+    /* The frame, kept on the device: what changed goes up into it, and it is copied into each swapchain image there
+     * (a swapchain image keeps nothing from the frames before). 0: none could be made, the whole frame goes up. */
+    VkImage frameImage;
+    VkDeviceMemory frameMem;
+    bool frameHolds;   /* it holds the last frame (and is in TRANSFER_SRC layout) */
+    bool check;        /* CASCADE_VULKAN_CHECK: each frame read back from frameImage and compared (slow; for tests) */
+    VkBuffer checkBuf;
+    VkDeviceMemory checkMem;
+    void* checkMapped;
     uint32_t heldW, heldH;  /* (of that frame) */
     VkDeviceSize stagingSize;
     uint32_t extentW, extentH;
@@ -214,6 +233,46 @@ static void destroyStaging(VulkanPresenter* v) {
     if (v->staging) { v->vkDestroyBuffer(v->device, v->staging, NULL); v->staging = 0; }
     if (v->stagingMem) { v->vkFreeMemory(v->device, v->stagingMem, NULL); v->stagingMem = 0; }
     v->stagingSize = 0;
+}
+
+static void destroyFrameImage(VulkanPresenter* v) {
+    if (!v->device) return;
+    if (v->frameImage) { v->vkDestroyImage(v->device, v->frameImage, NULL); v->frameImage = 0; }
+    if (v->frameMem) { v->vkFreeMemory(v->device, v->frameMem, NULL); v->frameMem = 0; }
+    if (v->checkMapped) { v->vkUnmapMemory(v->device, v->checkMem); v->checkMapped = NULL; }
+    if (v->checkBuf) { v->vkDestroyBuffer(v->device, v->checkBuf, NULL); v->checkBuf = 0; }
+    if (v->checkMem) { v->vkFreeMemory(v->device, v->checkMem, NULL); v->checkMem = 0; }
+    v->frameHolds = false;
+}
+
+/* (false: none; frames then go up whole, as before) */
+static bool createFrameImage(VulkanPresenter* v, uint32_t w, uint32_t h) {
+    destroyFrameImage(v);
+    ImageCreateInfo ici = {ST_IMAGE_CREATE_INFO, NULL, 0, 1 /*2D*/, v->format, {w, h, 1}, 1, 1, 1 /*1 sample*/, 0 /*OPTIMAL*/,
+                           1 | 2 /*TRANSFER_SRC | TRANSFER_DST*/, 0, 0, NULL, 0 /*UNDEFINED*/};
+    if (v->vkCreateImage(v->device, &ici, NULL, &v->frameImage) != VK_OK) { v->frameImage = 0; return false; }
+    MemoryRequirements req;
+    memset(&req, 0, sizeof req);
+    v->vkGetImageMemoryRequirements(v->device, v->frameImage, &req);
+    uint32_t type = memoryType(v, req.memoryTypeBits, 1 /*DEVICE_LOCAL*/);
+    MemoryAllocateInfo mai = {ST_MEMORY_ALLOCATE_INFO, NULL, req.size, type};
+    if (type == ~0u || v->vkAllocateMemory(v->device, &mai, NULL, &v->frameMem) != VK_OK || v->vkBindImageMemory(v->device, v->frameImage, v->frameMem, 0) != VK_OK) {
+        destroyFrameImage(v);
+        return false;
+    }
+    if (v->check) { /* (a buffer the frame is read back into) */
+        BufferCreateInfo bci = {ST_BUFFER_CREATE_INFO, NULL, 0, (VkDeviceSize)w * h * 4, 2 /*TRANSFER_DST*/, 0, 0, NULL};
+        if (v->vkCreateBuffer(v->device, &bci, NULL, &v->checkBuf) == VK_OK) {
+            v->vkGetBufferMemoryRequirements(v->device, v->checkBuf, &req);
+            type = memoryType(v, req.memoryTypeBits, 2 | 4);
+            MemoryAllocateInfo cai = {ST_MEMORY_ALLOCATE_INFO, NULL, req.size, type};
+            if (type != ~0u && v->vkAllocateMemory(v->device, &cai, NULL, &v->checkMem) == VK_OK) {
+                v->vkBindBufferMemory(v->device, v->checkBuf, v->checkMem, 0);
+                v->vkMapMemory(v->device, v->checkMem, 0, (VkDeviceSize)w * h * 4, 0, &v->checkMapped);
+            }
+        }
+    }
+    return true;
 }
 
 static bool createStaging(VulkanPresenter* v, VkDeviceSize size) {
@@ -291,6 +350,7 @@ static bool createSwapchain(VulkanPresenter* v) {
     v->extentW = w;
     v->extentH = h;
     if (!createStaging(v, (VkDeviceSize)w * h * 4)) NOPE("the staging buffer");
+    createFrameImage(v, w, h);
     return true;
 }
 
@@ -299,6 +359,7 @@ static bool vkInit(VulkanPresenter* v, void* nativeWindow, int w, int ht) {
     v->width = w;
     v->height = ht;
     v->format = FORMAT_B8G8R8A8_UNORM;
+    v->check = getenv("CASCADE_VULKAN_CHECK") != NULL;
 #if defined(_WIN32)
     static const char* const libs[] = {"vulkan-1.dll", NULL};
     const char* exts[] = {"VK_KHR_surface", "VK_KHR_win32_surface", NULL};
@@ -454,7 +515,21 @@ static bool vkPresent(CscdPresenter* p, const CscdImage* frame) {
     uint32_t cw = v->extentW < (uint32_t)frame->width ? v->extentW : (uint32_t)frame->width;
     uint32_t ch = v->extentH < (uint32_t)frame->height ? v->extentH : (uint32_t)frame->height;
     uint8_t* dst = (uint8_t*)v->mapped;
-    if (v->base.partial && v->stagingHolds && v->heldW == (uint32_t)frame->width && v->heldH == (uint32_t)frame->height) {
+    enum { kMaxRegions = 32 };
+    BufferImageCopy up[kMaxRegions];
+    uint32_t ups = 0; /* (0: the whole frame goes up) */
+    const bool partial = v->base.partial && v->stagingHolds && v->heldW == (uint32_t)frame->width && v->heldH == (uint32_t)frame->height;
+    if (partial && v->frameImage && v->frameHolds && v->base.damageCount <= kMaxRegions)
+        for (size_t i = 0; i < v->base.damageCount; ++i) {
+            const CscdIRect r = v->base.damage[i];
+            const uint32_t x0 = (uint32_t)cscdMaxi(0, r.x), y0 = (uint32_t)cscdMaxi(0, r.y);
+            const uint32_t x1 = (uint32_t)cscdMini((int)cw, r.x + r.w), y1 = (uint32_t)cscdMini((int)ch, r.y + r.h);
+            if (x1 <= x0 || y1 <= y0) continue;
+            BufferImageCopy c = {((VkDeviceSize)y0 * v->extentW + x0) * 4, v->extentW, v->extentH, {1, 0, 0, 1}, {(int32_t)x0, (int32_t)y0, 0}, {x1 - x0, y1 - y0, 1}};
+            up[ups++] = c;
+        }
+    const bool whole = !(partial && v->frameImage && v->frameHolds && v->base.damageCount <= kMaxRegions);
+    if (partial) {
         /* only what changed: the staging buffer keeps the rest of the frames before */
         for (size_t i = 0; i < v->base.damageCount; ++i) {
             const CscdIRect r = v->base.damage[i];
@@ -480,11 +555,30 @@ static bool vkPresent(CscdPresenter* p, const CscdImage* frame) {
     CommandBufferBeginInfo bi = {ST_COMMAND_BUFFER_BEGIN_INFO, NULL, 1, NULL};
     v->vkBeginCommandBuffer(v->cmd, &bi);
     VkImage image = v->images.items[index];
+    BufferImageCopy region = {0, 0, 0, {1, 0, 0, 1}, {0, 0, 0}, {v->extentW, v->extentH, 1}};
+    if (v->frameImage) {
+        /* what changed (or all of it) up into the frame kept on the device (TRANSFER_SRC between frames: the copy
+         * out of it; UNDEFINED the first time, its contents dropped) */
+        if (whole || ups) {
+            ImageMemoryBarrier keep = {ST_IMAGE_MEMORY_BARRIER, NULL, 0x800 /*TRANSFER_READ*/, 0x1000, v->frameHolds && !whole ? 6 : 0, 7,
+                                       QUEUE_FAMILY_IGNORED, QUEUE_FAMILY_IGNORED, v->frameImage, {1, 0, 1, 0, 1}};
+            v->vkCmdPipelineBarrier(v->cmd, 0x1000, 0x1000, 0, 0, NULL, 0, NULL, 1, &keep);
+            if (whole) v->vkCmdCopyBufferToImage(v->cmd, v->staging, v->frameImage, 7, 1, &region);
+            else v->vkCmdCopyBufferToImage(v->cmd, v->staging, v->frameImage, 7, ups, up);
+            ImageMemoryBarrier toSrc = {ST_IMAGE_MEMORY_BARRIER, NULL, 0x1000, 0x800, 7, 6 /*TRANSFER_SRC*/,
+                                        QUEUE_FAMILY_IGNORED, QUEUE_FAMILY_IGNORED, v->frameImage, {1, 0, 1, 0, 1}};
+            v->vkCmdPipelineBarrier(v->cmd, 0x1000, 0x1000, 0, 0, NULL, 0, NULL, 1, &toSrc);
+            v->frameHolds = true;
+        }
+    }
     ImageMemoryBarrier toDst = {ST_IMAGE_MEMORY_BARRIER, NULL, 0, 0x1000 /*TRANSFER_WRITE*/, 0 /*UNDEFINED*/, 7 /*TRANSFER_DST*/,
                                 QUEUE_FAMILY_IGNORED, QUEUE_FAMILY_IGNORED, image, {1, 0, 1, 0, 1}};
     v->vkCmdPipelineBarrier(v->cmd, 0x1000 /*TRANSFER*/, 0x1000, 0, 0, NULL, 0, NULL, 1, &toDst);
-    BufferImageCopy region = {0, 0, 0, {1, 0, 0, 1}, {0, 0, 0}, {v->extentW, v->extentH, 1}};
-    v->vkCmdCopyBufferToImage(v->cmd, v->staging, image, 7, 1, &region);
+    if (v->frameImage) {
+        ImageCopy all = {{1, 0, 0, 1}, {0, 0, 0}, {1, 0, 0, 1}, {0, 0, 0}, {v->extentW, v->extentH, 1}};
+        v->vkCmdCopyImage(v->cmd, v->frameImage, 6, image, 7, 1, &all);
+        if (v->checkMapped) v->vkCmdCopyImageToBuffer(v->cmd, v->frameImage, 6, v->checkBuf, 1, &region);
+    } else v->vkCmdCopyBufferToImage(v->cmd, v->staging, image, 7, 1, &region);
     ImageMemoryBarrier toPresent = {ST_IMAGE_MEMORY_BARRIER, NULL, 0x1000, 0, 7, 1000001002 /*PRESENT_SRC*/,
                                     QUEUE_FAMILY_IGNORED, QUEUE_FAMILY_IGNORED, image, {1, 0, 1, 0, 1}};
     v->vkCmdPipelineBarrier(v->cmd, 0x1000, 0x2000 /*BOTTOM_OF_PIPE*/, 0, 0, NULL, 0, NULL, 1, &toPresent);
@@ -501,6 +595,16 @@ static bool vkPresent(CscdPresenter* p, const CscdImage* frame) {
     if (r == VK_ERROR_OUT_OF_DATE || r == VK_SUBOPTIMAL) v->needRecreate = true;
 #endif
     else if (r != VK_OK) return false;
+    if (v->checkMapped) {
+        /* (CASCADE_VULKAN_CHECK: the frame the device keeps against the staging buffer, which holds the whole frame) */
+        v->vkWaitForFences(v->device, 1, &v->fence, 1, ~0ull);
+        const size_t n = (size_t)v->extentW * v->extentH;
+        size_t bad = 0, first = 0;
+        for (size_t i = 0; i < n; ++i)
+            if (((const uint32_t*)v->checkMapped)[i] != ((const uint32_t*)v->mapped)[i] && !bad++) first = i;
+        if (bad) fprintf(stderr, "cascade: Vulkan check: %zu pixels differ, the first at %zu,%zu (%u regions sent)\n", bad, first % v->extentW, first / v->extentW, ups);
+        else fprintf(stderr, "cascade: Vulkan check: same (%s, %u regions)\n", whole ? "whole" : "partial", ups);
+    }
     return true;
 }
 
@@ -509,6 +613,7 @@ static void vkDestroy(CscdPresenter* p) {
     if (v->device && v->vkResetFences) { /* (a device whose functions all loaded) */
         v->vkDeviceWaitIdle(v->device);
         destroyStaging(v);
+        destroyFrameImage(v);
         for (size_t i = 0; i < v->renderDone.len; ++i) v->vkDestroySemaphore(v->device, v->renderDone.items[i], NULL);
         if (v->acquired) v->vkDestroySemaphore(v->device, v->acquired, NULL);
         if (v->fence) v->vkDestroyFence(v->device, v->fence, NULL);

@@ -1502,7 +1502,10 @@ static bool updateList(CscdView* v, VirtualList* l, bool all) {
             setPx(row, "top", (float)i * rh);
             setPx(row, "height", rh);
             if (l->fill) l->fill(l->user, row, i);
-            cscdNodeAppendChild(&l->box->node, &row->node);
+            if (!cscdNodeAppendChild(&l->box->node, &row->node)) { /* (the list is as deep as a tree goes) */
+                cscdNodeDestroy(&row->node);
+                row = NULL;
+            }
         }
         cscdVecPush(&rows, row);
     }

@@ -22,30 +22,76 @@
 
 /* ---- memory ---------------------------------------------------------------------------------- */
 
-static void outOfMemory(size_t size) {
+/* The program's allocator (cscdSetAllocator), or the C library's. Set once, before the first block: a block is freed by
+ * the allocator that made it. */
+static CscdAllocator gAlloc;
+static volatile int gAllocUsed;
+static CscdOutOfMemoryFn gOomFn;
+static void* gOomUser;
+
+bool cscdSetAllocator(const CscdAllocator* a) {
+    if (gAllocUsed) return false;
+    if (a && (!a->realloc || !a->free)) return false;
+    if (a) gAlloc = *a;
+    else memset(&gAlloc, 0, sizeof gAlloc);
+    return true;
+}
+
+void cscdSetOutOfMemoryHandler(CscdOutOfMemoryFn fn, void* user) {
+    gOomFn = fn;
+    gOomUser = user;
+}
+
+static void* rawRealloc(void* p, size_t size) {
+    if (!gAllocUsed) gAllocUsed = 1;
+    return gAlloc.realloc ? gAlloc.realloc(gAlloc.user, p, size) : realloc(p, size);
+}
+
+/* A request that failed: the program's handler may free memory of its own and ask for another try; without one, or
+ * when it gives up, the process ends (no caller checks for NULL). */
+static void* outOfMemory(void* p, size_t size) {
+    for (;;) {
+        if (!gOomFn || !gOomFn(gOomUser, size)) {
+            fprintf(stderr, "cascade: out of memory (%zu bytes)\n", size);
+            abort();
+        }
+        void* q = rawRealloc(p, size);
+        if (q) return q;
+    }
+}
+
+/* a size no memory could hold (an array's count times its element wrapped around): nothing to try again */
+static void tooLarge(size_t size) {
     fprintf(stderr, "cascade: out of memory (%zu bytes)\n", size);
     abort();
 }
 
 void* cscdMalloc(size_t size) {
-    void* p = malloc(size ? size : 1);
-    if (!p) outOfMemory(size);
-    return p;
+    if (!size) size = 1;
+    void* p = rawRealloc(NULL, size);
+    return p ? p : outOfMemory(NULL, size);
 }
 
 void* cscdCalloc(size_t count, size_t size) {
-    void* p = calloc(count ? count : 1, size ? size : 1);
-    if (!p) outOfMemory(count * size);
+    if (!count) count = 1;
+    if (!size) size = 1;
+    if (count > SIZE_MAX / size) tooLarge(SIZE_MAX);
+    void* p = cscdMalloc(count * size);
+    memset(p, 0, count * size);
     return p;
 }
 
 void* cscdRealloc(void* p, size_t size) {
-    void* q = realloc(p, size ? size : 1);
-    if (!q) outOfMemory(size);
-    return q;
+    if (!size) size = 1;
+    void* q = rawRealloc(p, size);
+    return q ? q : outOfMemory(p, size);
 }
 
-void cscdFree(void* p) { free(p); }
+void cscdFree(void* p) {
+    if (!p) return;
+    if (gAlloc.free) gAlloc.free(gAlloc.user, p);
+    else free(p);
+}
 
 /* the count before the block, the block aligned as malloc's are (MSVC's C has no max_align_t) */
 typedef union RcHeader {
@@ -63,6 +109,8 @@ void* cscdRcNew(size_t size, CscdFreeFn dtor) {
     h->h.dtor = dtor;
     return h + 1;
 }
+
+int cscdRcRefs(const void* p) { return p ? ((const RcHeader*)p - 1)->h.refs : 0; }
 
 void* cscdRetain(void* p) {
     if (p) cscdAtomicAdd(&((RcHeader*)p - 1)->h.refs, 1);
@@ -101,7 +149,7 @@ CscdColor cscdColorLerp(CscdColor x, CscdColor y, float t) {
 void cscdVecGrow_(void** items, size_t* cap, size_t need, size_t elemSize) {
     if (need <= *cap) return;
     const size_t most = SIZE_MAX / (elemSize ? elemSize : 1); /* (n * elemSize must not wrap around) */
-    if (need > most) outOfMemory(SIZE_MAX);
+    if (need > most) tooLarge(SIZE_MAX);
     size_t n = *cap ? (*cap <= most / 2 ? *cap * 2 : most) : 4;
     if (n < need) n = need;
     *items = cscdRealloc(*items, n * elemSize);
@@ -118,7 +166,7 @@ void cscdVecResize_(void** items, size_t* len, size_t* cap, size_t n, size_t ele
 
 void cscdVecAppend_(void** items, size_t* len, size_t* cap, const void* src, size_t n, size_t elemSize) {
     if (!n) return;
-    if (n > SIZE_MAX - *len) outOfMemory(SIZE_MAX);
+    if (n > SIZE_MAX - *len) tooLarge(SIZE_MAX);
     cscdVecGrow_(items, cap, *len + n, elemSize);
     memmove((char*)*items + *len * elemSize, src, n * elemSize);
     *len += n;
@@ -234,7 +282,7 @@ void cscdSplitSpaces(CscdSv s, CscdSvVec* out) {
 }
 
 void cscdStrReserve(CscdStr* s, size_t n) {
-    if (n >= SIZE_MAX / 2) outOfMemory(n);
+    if (n >= SIZE_MAX / 2) tooLarge(n);
     if (n + 1 <= s->cap) return;
     size_t c = s->cap ? s->cap * 2 : 16;
     if (c < n + 1) c = n + 1;

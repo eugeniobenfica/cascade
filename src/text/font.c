@@ -442,7 +442,7 @@ int cscdOtClass(const uint8_t* cd, size_t avail, uint16_t glyph) {
         if (avail < 6) return 0;
         const uint16_t start = u16(cd + 2);
         const size_t n = cscdMinz(u16(cd + 4), (avail - 6) / 2);
-        if (glyph >= start && glyph - start < n) return u16(cd + 6 + 2 * (glyph - start));
+        if (glyph >= start && (size_t)(glyph - start) < n) return u16(cd + 6 + 2 * (glyph - start));
     } else if (fmt == 2) {
         int n = (int)cscdMinz(u16(cd + 2), (avail - 4) / 6), lo = 0, hi = n - 1;
         while (lo <= hi) {

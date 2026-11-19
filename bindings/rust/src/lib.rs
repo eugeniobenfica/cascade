@@ -168,7 +168,7 @@ fn take(p: *mut c_char) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
     PaintThreads = 0, PartialRepaint, Animations, SmoothScroll, Tooltips, LiveReload, Accessibility, Inspector, Stats, Gpu,
-    WarnFiles, WarnCss, WarnSelectors,
+    WarnFiles, WarnCss, WarnSelectors, AsyncImages,
 }
 
 /// What an edit menu offers (CscdEditAction).

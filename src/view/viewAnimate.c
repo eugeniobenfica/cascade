@@ -291,6 +291,7 @@ void viewRemoveAnimation(CscdView* v, size_t i) {
 
 void viewTickAnimations(CscdView* v, double t) {
     if (!v->transitions.len && !v->animations.len) return; /* (nothing moving: nothing to repaint) */
+    v->inkValid = false; /* (the styles the boxes show change in place) */
     bool needLayout = false;
     for (size_t i = 0; i < v->transitions.len;) {
         RunningTransition* r = &v->transitions.items[i];

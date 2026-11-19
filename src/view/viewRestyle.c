@@ -147,9 +147,10 @@ static bool restyleImpl(CscdView* v, CscdPtrVec* roots) {
     v->layoutDirty = true;
     if (roots) return true;
     v->styledVersion = v->doc->version;
-    if (v->doc->structural) viewA11yStructure(v);
+    if (v->doc->structural || v->doc->attrChanged.len) viewA11yStructure(v); /* (an aria- attribute, a role...) */
     v->doc->textChanged.len = 0;
     v->doc->paintChanged.len = 0;
+    v->doc->attrChanged.len = 0;
     v->doc->structural = false;
     v->stateChanged.len = 0;
     v->styleDirty = false;
@@ -158,8 +159,17 @@ static bool restyleImpl(CscdView* v, CscdPtrVec* roots) {
 
 void viewRestyleAll(CscdView* v) { viewRestyle(v, NULL); }
 
-/* Where each element's boxes are (layout coordinates): element -> index in rects. */
-typedef struct BoxRects { CscdU64Map at; CscdRectVec rects; } BoxRects;
+/* Where each element's boxes are (layout coordinates): element -> index in rects; for a box that scrolls, what it
+ * holds and where it is scrolled to (its scrollbars: x, y the scroll offsets, w, h the overflow's size); and how its
+ * boxes look, as one number: the styles they were given (its own and its ::before, ::after, ::marker), and where its
+ * text and its inline pieces are (a line centered in a box that kept its size moves when a neighbor grows). Kept (kept):
+ * the styles stay alive, so that one freed meanwhile cannot come back at the same address and look the same. */
+typedef struct BoxRects {
+    CscdU64Map at;
+    CscdRectVec rects, scrolls;
+    CSCD_VEC(uint64_t) looks;
+    CscdPtrVec kept;
+} BoxRects;
 
 static CscdRect* boxRectSlot(BoxRects* m, const CscdElement* e) {
     bool inserted = false;
@@ -168,23 +178,62 @@ static CscdRect* boxRectSlot(BoxRects* m, const CscdElement* e) {
         v->u = m->rects.len;
         CscdRect z = {0, 0, 0, 0};
         cscdVecPush(&m->rects, z);
+        cscdVecPush(&m->scrolls, z);
+        cscdVecPush(&m->looks, 14695981039346656037ull);
     }
     return &m->rects.items[v->u];
 }
 
-static void boxRects(const CscdLayoutBox* b, BoxRects* m) {
-    if (b->element && !b->anonymous && !b->pseudo.len) {
-        CscdRect r = cscdBoxBorderBox(b);
-        for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
-        CscdRect* known = boxRectSlot(m, b->element);
-        *known = cscdRectUnite(*known, r);
-    }
-    for (size_t i = 0; i < b->children.len; ++i) boxRects(cscdBoxChild(b, i), m);
+static uint64_t mixFloat(uint64_t h, float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof bits);
+    return (h ^ bits) * 1099511628211ull;
 }
+
+static uint64_t mixFrags(uint64_t h, const CscdLayoutBox* b) {
+    for (size_t i = 0; i < b->textFrags.len; ++i) {
+        const CscdTextFrag* f = &b->textFrags.items[i];
+        h = mixFloat(mixFloat(mixFloat(mixFloat(h, f->x), f->baseline), f->width), f->justify);
+    }
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) {
+        const CscdRect r = b->inlineFrags.items[i].rect;
+        h = mixFloat(mixFloat(mixFloat(mixFloat(h, r.x), r.y), r.w), r.h);
+    }
+    return h;
+}
+
+static void boxRectsWalk(const CscdLayoutBox* b, BoxRects* m, bool keep) {
+    if (b->element && b->anonymous) { /* (its pieces are the element's: an anonymous block holds its lines) */
+        CscdRect* known = boxRectSlot(m, b->element);
+        const size_t at = (size_t)(known - m->rects.items);
+        m->looks.items[at] = mixFrags(m->looks.items[at], b);
+    }
+    if (b->element && !b->anonymous) {
+        CscdRect* known = boxRectSlot(m, b->element);
+        const size_t at = (size_t)(known - m->rects.items);
+        m->looks.items[at] = mixFrags(m->looks.items[at], b);
+        if (!b->pseudo.len) {
+            CscdRect r = cscdBoxBorderBox(b);
+            for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
+            *known = cscdRectUnite(*known, r);
+            if (b->style && cscdStyleClipsOverflow(b->style) && b->parent)
+                m->scrolls.items[at] = cscdRect(b->element->scrollLeft, b->element->scrollTop, b->overflow.w, b->overflow.h);
+        }
+        m->looks.items[at] = (m->looks.items[at] ^ (uint64_t)(uintptr_t)b->style) * 1099511628211ull;
+        if (keep && b->style) cscdVecPush(&m->kept, cscdRetain(b->style));
+    }
+    for (size_t i = 0; i < b->children.len; ++i) boxRectsWalk(cscdBoxChild(b, i), m, keep);
+}
+
+static void boxRects(const CscdLayoutBox* b, BoxRects* m) { boxRectsWalk(b, m, false); }
 
 static void boxRectsFree(BoxRects* m) {
     cscdU64MapFree(&m->at);
     cscdVecFree(&m->rects);
+    cscdVecFree(&m->scrolls);
+    cscdVecFree(&m->looks);
+    for (size_t i = 0; i < m->kept.len; ++i) cscdRelease(m->kept.items[i]);
+    cscdVecFree(&m->kept);
 }
 
 /* The block a changed text lies in, with the ink of all its text (layout coordinates). */
@@ -194,7 +243,8 @@ static const CscdLayoutBox* textBlock(const CscdElement* e) {
     return b;
 }
 
-static CscdRect textInk(const CscdLayoutBox* b) {
+/* what a box draws itself (not its children): its box, its text, its outline and shadows */
+static CscdRect ownInk(const CscdLayoutBox* b) {
     CscdRect r = cscdBoxBorderBox(b);
     for (size_t i = 0; i < b->textFrags.len; ++i) {
         const CscdTextFrag* f = &b->textFrags.items[i];
@@ -205,12 +255,23 @@ static CscdRect textInk(const CscdLayoutBox* b) {
     if (s) {
         /* what is drawn outside the box: its outline and its shadows */
         float out = s->outlineStyle != CSCD_BORDER_NONE ? cscdMaxf(0.f, s->outlineWidth + s->outlineOffset) : 0;
+        /* a blur reaches 3 sigmas (sigma: half the blur radius) and a device pixel past the shape (the canvas's pad):
+         * the blur radius alone left the faint tail of a grown shadow on screen */
         for (size_t i = 0; i < s->boxShadow.len; ++i) {
             const CscdShadow* sh = &s->boxShadow.items[i];
-            if (!sh->inset) out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + sh->blur + cscdMaxf(0.f, sh->spread));
+            if (!sh->inset) out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 1.5f * sh->blur + 1 + cscdMaxf(0.f, sh->spread));
+        }
+        for (size_t i = 0; i < s->textShadow.len; ++i) {
+            const CscdShadow* sh = &s->textShadow.items[i];
+            out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 1.5f * sh->blur + 1);
         }
         if (out > 0) r = cscdRectUnite(r, cscdRect(r.x - out, r.y - out, r.w + 2 * out, r.h + 2 * out));
     }
+    return r;
+}
+
+static CscdRect textInk(const CscdLayoutBox* b) {
+    CscdRect r = ownInk(b);
     for (size_t i = 0; i < b->children.len; ++i) r = cscdRectUnite(r, textInk(cscdBoxChild(b, i)));
     return r;
 }
@@ -226,22 +287,45 @@ static CscdRect drawnArea(CscdView* v, const CscdLayoutBox* b) {
     return cscdRect(r.x + d.x - 2, r.y + d.y - 2, r.w + 4, r.h + 4);
 }
 
-static void noteDrawn(CscdView* v, const CscdLayoutBox* b, BoxRects* wasAt) {
-    if (b->element && !b->anonymous && !b->pseudo.len) {
-        CscdRect* w = boxRectSlot(wasAt, b->element);
-        *w = cscdRectUnite(*w, drawnArea(v, b));
+/* drawnArea of every element, in one pass (each box's ink is its own and its children's): d is the offset of the page's
+ * and the scrolled ancestors' scrolling above b; returns b's ink */
+static CscdRect noteDrawnWalk(const CscdLayoutBox* b, CscdPoint d, BoxRects* wasAt) {
+    CscdRect ink = ownInk(b);
+    CscdPoint inner = d;
+    if (b->style && cscdStyleClipsOverflow(b->style) && b->element && b->parent) {
+        inner.x -= b->element->scrollLeft;
+        inner.y -= b->element->scrollTop;
     }
-    for (size_t i = 0; i < b->children.len; ++i) noteDrawn(v, cscdBoxChild(b, i), wasAt);
+    for (size_t i = 0; i < b->children.len; ++i) ink = cscdRectUnite(ink, noteDrawnWalk(cscdBoxChild(b, i), inner, wasAt));
+    if (b->element && !b->anonymous && !b->pseudo.len) {
+        const CscdPoint at = b->style && b->style->position == CSCD_POS_FIXED ? cscdPoint(0, 0) : d;
+        CscdRect* w = boxRectSlot(wasAt, b->element);
+        *w = cscdRectUnite(*w, cscdRect(ink.x + at.x - 2, ink.y + at.y - 2, ink.w + 4, ink.h + 4));
+    }
+    return ink;
+}
+
+static void noteDrawn(CscdView* v, const CscdLayoutBox* b, BoxRects* wasAt) { noteDrawnWalk(b, cscdPoint(-v->scrollX, -v->scrollY), wasAt); }
+
+/* painted beyond its box by something above it (a transform, a sticky offset, a filter that spreads it, a backdrop
+ * that reads it): its area alone is not enough */
+static bool drawnElsewhere(const CscdLayoutBox* b) {
+    for (const CscdLayoutBox* p = b; p; p = p->parent)
+        if (p->style && (p->style->transform.len || p->style->position == CSCD_POS_STICKY || p->style->blur > 0 || cscdBackdropAny(&p->style->backdrop)))
+            return true;
+    return false;
 }
 
 static CscdRect areaOf(CscdView* v, const CscdElement* e) { return e->layout ? drawnArea(v, e->layout) : cscdRect(0, 0, 0, 0); }
 
-/* lays out; repaints just there when nothing moved */
+/* Lays out; repaints only what changed: blocks (the texts that changed), the boxes that moved or resized, and those
+ * whose styles are not the ones they had (a class that only changed colors); many of them, or most of the page: all
+ * of it. */
 static void relayoutAround(CscdView* v, const CscdPtrVec* blocks) {
     CscdRect changed = {0, 0, 0, 0};
     for (size_t i = 0; i < blocks->len; ++i) changed = cscdRectUnite(changed, areaOf(v, (const CscdElement*)blocks->items[i]));
     BoxRects before = {0}, after = {0}, wasAt = {0};
-    boxRects(v->root, &before);
+    boxRectsWalk(v->root, &before, true);
     /* where the boxes are, before, in the viewport (for those that move) */
     noteDrawn(v, v->root, &wasAt);
     viewRelayout(v);
@@ -254,7 +338,11 @@ static void relayoutAround(CscdView* v, const CscdPtrVec* blocks) {
         const CscdMapVal* n = cscdU64MapGet(&after.at, s->key);
         if (!n) { all = true; break; }
         const CscdRect a = before.rects.items[s->val.u], b = after.rects.items[n->u];
-        if (fabsf(b.x - a.x) > 0.01f || fabsf(b.y - a.y) > 0.01f || fabsf(b.w - a.w) > 0.01f || fabsf(b.h - a.h) > 0.01f) {
+        const CscdRect sa = before.scrolls.items[s->val.u], sb = after.scrolls.items[n->u];
+        /* (a box that scrolls and holds more or less now, or is scrolled elsewhere: its scrollbars changed) */
+        if (fabsf(b.x - a.x) > 0.01f || fabsf(b.y - a.y) > 0.01f || fabsf(b.w - a.w) > 0.01f || fabsf(b.h - a.h) > 0.01f ||
+            fabsf(sb.x - sa.x) > 0.01f || fabsf(sb.y - sa.y) > 0.01f || fabsf(sb.w - sa.w) > 0.01f || fabsf(sb.h - sa.h) > 0.01f ||
+            before.looks.items[s->val.u] != after.looks.items[n->u]) {
             cscdVecPush(&moved, (void*)(uintptr_t)s->key);
             if (moved.len > 32) all = true;
         }
@@ -264,8 +352,7 @@ static void relayoutAround(CscdView* v, const CscdPtrVec* blocks) {
     cscdVecPush(&areas, changed);
     for (size_t i = 0; i < moved.len && !all; ++i) {
         const CscdElement* e = (const CscdElement*)moved.items[i];
-        for (const CscdLayoutBox* p = e->layout; p && !all; p = p->parent)
-            if (p->style && (p->style->transform.len || p->style->position == CSCD_POS_STICKY)) all = true;
+        if (e->layout && drawnElsewhere(e->layout)) all = true;
         cscdVecPush(&areas, cscdRectUnite(*boxRectSlot(&wasAt, e), areaOf(v, e)));
     }
     float covered = 0;
@@ -294,7 +381,8 @@ static void relayoutAround(CscdView* v, const CscdPtrVec* blocks) {
  * see the change. (A removed element made the change structural: none is reached here.) */
 bool viewRepaintAttributes(CscdView* v) {
     CscdDocument* d = v->doc;
-    if (!d->paintChanged.len || d->structural || d->textChanged.len || !v->root || v->styleDirty || v->layoutDirty) return false;
+    if (!d->paintChanged.len || d->structural || d->textChanged.len || d->attrChanged.len || !v->root || v->styleDirty || v->layoutDirty)
+        return false;
     static const char* const kNames[] = {"value", "max", "min", "low", "high", "optimum"};
     for (size_t i = 0; i < CSCD_COUNT(kNames); ++i)
         if (cscdStyleEngineSelectsAttribute(v->styles, cscdSv(kNames[i]))) return false;
@@ -311,7 +399,8 @@ bool viewRepaintAttributes(CscdView* v) {
 
 bool viewRelayoutText(CscdView* v) {
     CscdDocument* d = v->doc;
-    if (d->structural || !d->textChanged.len || d->paintChanged.len || !v->root || v->styleDirty || v->layoutDirty) return false;
+    if (d->structural || !d->textChanged.len || d->paintChanged.len || d->attrChanged.len || !v->root || v->styleDirty || v->layoutDirty)
+        return false;
     /* each text's block, where it is drawn; a transform or a sticky offset: the usual way */
     CscdPtrVec blocks = {0};
     for (size_t i = 0; i < d->textChanged.len; ++i) {
@@ -330,6 +419,20 @@ bool viewRelayoutText(CscdView* v) {
     d->textChanged.len = 0;
     relayoutAround(v, &blocks);
     cscdVecFree(&blocks);
+    return true;
+}
+
+/* Only attributes that matter through styles changed (a class toggled, an inline style, data-state): the styles are
+ * computed again and the page laid out, and what is painted again is what moved or now looks different, not the whole
+ * window. */
+bool viewRestyleAttributes(CscdView* v) {
+    CscdDocument* d = v->doc;
+    if (!d->attrChanged.len || d->structural || d->textChanged.len || d->paintChanged.len || !v->root || v->styleDirty || v->layoutDirty ||
+        v->stateChanged.len)
+        return false;
+    viewRestyle(v, NULL);
+    const CscdPtrVec none = {0};
+    relayoutAround(v, &none);
     return true;
 }
 
@@ -440,6 +543,7 @@ static bool restyleInPlace(CscdView* v, const CscdPtrVec* roots, const CscdU64Ma
         /* painted again where they were drawn and where they are drawn now (a shadow may have grown) */
         CscdRectVec areas = {0};
         for (size_t i = 0; i < roots->len; ++i) cscdVecPush(&areas, drawnArea(v, ((CscdElement*)roots->items[i])->layout));
+        v->inkValid = false; /* (a shadow may have grown) */
         for (size_t i = 0; i < P.repoint.len; ++i) {
             CscdLayoutBox* b = P.repoint.items[i].b;
             cscdRelease(b->style);
@@ -533,6 +637,24 @@ static void containerSizes(const CscdLayoutBox* b, CscdU64Map* sizes) {
     for (size_t i = 0; i < b->children.len; ++i) containerSizes(cscdBoxChild(b, i), sizes);
 }
 
+/* the boxes that scroll kept in range when what they hold shrank: past the end, the content showed a gap and the
+ * thumb was drawn below the box, where nothing painted over it again */
+static void clampScrolls(CscdView* v, CscdLayoutBox* b) {
+    CscdElement* e = b->element;
+    if (e && !b->anonymous && !b->pseudo.len && (e->scrollTop != 0 || e->scrollLeft != 0) && b->parent) {
+        float maxX, maxY;
+        if (cscdElementIs(e, "textarea")) viewTextAreaRange(v, e, &maxX, &maxY);
+        else {
+            const CscdRect pb = cscdBoxPaddingBox(b);
+            maxY = cscdMaxf(0.f, b->overflow.h - pb.h);
+            maxX = cscdMaxf(0.f, b->overflow.w - pb.w);
+        }
+        e->scrollTop = cscdClampf(e->scrollTop, 0.f, maxY);
+        e->scrollLeft = cscdClampf(e->scrollLeft, 0.f, maxX);
+    }
+    for (size_t i = 0; i < b->children.len; ++i) clampScrolls(v, cscdBoxChild(b, i));
+}
+
 void viewRelayout(CscdView* v) {
     const double t0 = cscdNowSeconds();
     CscdViewport vp = {v->vw, v->vh};
@@ -549,6 +671,8 @@ void viewRelayout(CscdView* v) {
         v->root = cscdLayoutDocument(v->doc, v->styles, vp, viewImageLoader, v);
     }
     v->layoutDirty = false;
+    v->inkValid = false;
+    if (v->root) clampScrolls(v, v->root);
     /* keep scroll offsets in range */
     float maxY = cscdMaxf(0.f, cscdViewContentHeight(v) - v->vh);
     v->scrollY = cscdClampf(v->scrollY, 0.f, maxY);
@@ -558,8 +682,61 @@ void viewRelayout(CscdView* v) {
     ++v->stats.layouts;
 }
 
+/* ---- the oracle of the incremental paths -----------------------------------------------------------------------
+ * What the light paths left (styles in place, a text's block laid out again, damage painted over the last frame)
+ * against what the whole pipeline makes from nothing: every element's boxes where they are, and every pixel. */
+
+static void describeElement(CscdStr* out, const CscdElement* e) {
+    cscdStrAppend(out, cscdStrSv(&e->tag));
+    const CscdSv id = cscdElementAttrC(e, "id"), cls = cscdElementAttrC(e, "class");
+    if (id.len) cscdStrAppendf(out, "#%.*s", CSCD_SVF(id));
+    if (cls.len) cscdStrAppendf(out, ".%.*s", CSCD_SVF(cls));
+}
+
+bool viewCheckIncremental(CscdView* v, CscdImage* frame, CscdStr* why) {
+    BoxRects light = {0}, full = {0};
+    if (v->root) boxRects(v->root, &light);
+    v->styleDirty = true;
+    viewRestyle(v, NULL);
+    viewRelayout(v);
+    v->dirty = v->fullPaint = true;
+    if (v->root) boxRects(v->root, &full);
+    bool same = light.at.len == full.at.len;
+    if (!same) cscdStrAppendf(why, "%u elements with boxes, from scratch %u; ", (unsigned)light.at.len, (unsigned)full.at.len);
+    for (CscdU64MapSlot* s = NULL; (s = cscdU64MapNext(&full.at, s));) {
+        const CscdMapVal* l = cscdU64MapGet(&light.at, s->key);
+        const CscdRect b = full.rects.items[s->val.u];
+        const CscdRect a = l ? light.rects.items[l->u] : cscdRect(NAN, NAN, NAN, NAN);
+        if (l && fabsf(a.x - b.x) <= 0.01f && fabsf(a.y - b.y) <= 0.01f && fabsf(a.w - b.w) <= 0.01f && fabsf(a.h - b.h) <= 0.01f) continue;
+        if (same) {
+            describeElement(why, (const CscdElement*)(uintptr_t)s->key);
+            cscdStrAppendf(why, " at %g,%g %gx%g, from scratch %g,%g %gx%g; ", a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h);
+        }
+        same = false;
+    }
+    boxRectsFree(&light);
+    boxRectsFree(&full);
+    /* the frame the damage was painted over, against one painted whole */
+    CscdImage fresh;
+    cscdImageInit(&fresh, frame->width, frame->height);
+    cscdViewPaint(v, &fresh, false);
+    for (int y = 0; y < frame->height && same; ++y) {
+        const uint32_t *a = cscdImageRow(frame, y), *b = cscdImageRow(&fresh, y);
+        for (int x = 0; x < frame->width; ++x)
+            if (a[x] != b[x]) {
+                cscdStrAppendf(why, "pixel %d,%d is %08x, from scratch %08x; ", x, y, (unsigned)a[x], (unsigned)b[x]);
+                same = false;
+                break;
+            }
+    }
+    for (int y = 0; y < frame->height; ++y) memcpy(cscdImageRow(frame, y), cscdImageRow(&fresh, y), (size_t)frame->width * 4);
+    cscdImageFini(&fresh);
+    v->incrementalValid = true; /* (frame is what was painted whole: the next paint goes over it, damage only) */
+    return same;
+}
+
 void viewLayoutNow(CscdView* v) {
-    if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v)) v->styleDirty = true;
+    if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v)) v->styleDirty = true;
     if (!v->styleDirty) viewRestyleStates(v);
     if (v->styleDirty) viewRestyle(v, NULL);
     if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; }

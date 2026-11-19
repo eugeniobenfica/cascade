@@ -32,6 +32,16 @@ typedef struct VirtualList {
 typedef struct SheetMedia { CscdStr query; bool held; } SheetMedia; /* a <style> or <link media> */
 typedef struct SmoothScroll { CscdElement* e; float dx, dy; } SmoothScroll;
 typedef struct Timer { int id; double due; int interval; CscdAction fn; } Timer;
+/* An image the view holds, by its URL (v->images). */
+typedef struct ImageEntry {
+    CscdImage* img;    /* a reference; NULL: it could not be read, or it is still being decoded */
+    size_t bytes;      /* what its pixels take */
+    uint64_t used;     /* the view's image clock when it was last asked for */
+    bool app;          /* given by cscdViewSetImage: never dropped */
+    bool decoding;     /* on its way back from a decoder thread (CSCD_FEATURE_ASYNC_IMAGES) */
+} ImageEntry;
+typedef struct ImageInbox ImageInbox;
+
 /* An animated image (GIF, WebP) playing: shown is the image the page holds, its pixels the frame's */
 typedef struct PlayingImage { CscdImage* shown; CscdAnimatedImage* anim; int frame, played; double due; } PlayingImage;
 typedef struct RunningTransition {
@@ -102,7 +112,11 @@ struct CscdView {
     CscdPtrVec authorSheets; /* CscdStyleSheet*, references */
     void* baseSheet;         /* a CscdStyleSheet*, under the document's; or NULL */
     size_t tabPlace;         /* where Tab went last, among what takes focus, from 1; 0: nowhere yet */
-    CscdStrMap images;       /* url -> CscdImage* (a reference, or NULL) */
+    CscdStrMap images;       /* url -> ImageEntry* */
+    size_t imageBytes, imageLimit; /* what the images held take, and the most they may (cscdViewSetImageCacheLimit) */
+    uint64_t imageClock;
+    ImageInbox* inbox;       /* images decoded on other threads, coming back (a reference) */
+    int imagesDecoding;      /* sent to be decoded, not back yet */
     CSCD_VEC(PlayingImage) playing;
     CscdPtrVec bindings;     /* bind.c's Binding*, owned */
     float vw, vh, dpr;
@@ -120,6 +134,13 @@ struct CscdView {
     bool recordHits;         /* false while painting part of the page (the hits stay) */
     CscdPtrVec stateChanged;   /* elements whose :hover / :active changed since the last restyle */
     bool hitsStale;          /* the layout changed under the hit areas (a scroll) */
+    /* What each box and everything in it draws (layout coordinates), for painting to pass over what is out of sight:
+     * box -> index in inks, for the boxes of inkRoot. Made again when inkValid is false (a new layout, styles changed
+     * in place: a hover, an animation). */
+    CscdU64Map inkAt;
+    CscdRectVec inks;
+    const CscdLayoutBox* inkRoot;
+    bool inkValid;
     CSCD_VEC(SmoothScroll) smooth; /* wheel scrolls still on their way */
     double smoothTime;
     float scrollX, scrollY;
@@ -243,6 +264,13 @@ void viewRemoveAnimation(CscdView* v, size_t i);
 void viewRestyleAll(CscdView* v);
 void viewRelayout(CscdView* v);
 void viewLayoutNow(CscdView* v);
+bool viewTakeDecodedImages(CscdView* v); /* (true: images came back, the page is styled again) */
+void viewClearImages(CscdView* v);
+bool viewRestyleAttributes(CscdView* v);
+/* The oracle of the light paths, for tests: after cscdViewUpdate and cscdViewPaint(v, frame, true), the boxes and the
+ * frame against those the whole pipeline makes from scratch (which it then leaves, frame included). False: they differ,
+ * and why says where. */
+bool viewCheckIncremental(CscdView* v, CscdImage* frame, CscdStr* why);
 void viewRecordHits(CscdView* v);
 void viewCenterModals(CscdView* v);
 void viewRestyleStates(CscdView* v);

@@ -230,6 +230,7 @@ class Feature(enum.IntEnum):
     WARN_FILES = 10
     WARN_CSS = 11
     WARN_SELECTORS = 12
+    ASYNC_IMAGES = 13
 
 
 class EditAction(enum.IntEnum):

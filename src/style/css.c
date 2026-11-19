@@ -1,6 +1,7 @@
 /* CSS tokenizer, component values, selectors, declarations, style sheets and media queries. */
 #include "cascade/css.h"
 #include "cascade/dom.h"
+#include "core/thread.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -697,7 +698,7 @@ bool cscdParseSelectorList(CscdSv text, CscdSelectorVec* out) {
 
 static bool nthMatch(int a, int b, int index) { /* index is 1-based */
     if (a == 0) return index == b;
-    int n = index - b;
+    const long long n = (long long)index - b; /* (in 64 bits: a and b come from the page, as large as an int goes) */
     return n % a == 0 && n / a >= 0;
 }
 
@@ -763,10 +764,86 @@ static bool hasDescendantMatching(const CscdElement* e, const CscdSelectorVec* l
     return false;
 }
 
+/* Each element's place among its siblings, for all of a parent's children at once, kept while the document does not
+ * change: counted again for each test, :nth-child and its kin made styling a list of n items cost n * n. (Per thread:
+ * views styled on two threads keep their own.) */
+typedef struct SiblingPlaces {
+    size_t len;
+    const CscdNode** nodes; /* the children it was worked out for */
+    int* nth;               /* 1-based among the elements (0: not an element) */
+    int* nthType;           /* 1-based among the elements of its tag */
+    int* ofType;            /* how many elements of its tag there are */
+    int elements;
+} SiblingPlaces;
+
+static CSCD_THREAD_LOCAL struct {
+    const CscdDocument* doc;
+    uint64_t version;
+    CscdU64Map byParent; /* parent -> SiblingPlaces* */
+} siblingCache;
+
+static void siblingCacheClear(void) {
+    for (CscdU64MapSlot* s = NULL; (s = cscdU64MapNext(&siblingCache.byParent, s));) {
+        SiblingPlaces* p = (SiblingPlaces*)s->val.p;
+        cscdFree(p->nodes);
+        cscdFree(p->nth);
+        cscdFree(p->nthType);
+        cscdFree(p->ofType);
+        cscdFree(p);
+    }
+    cscdU64MapFree(&siblingCache.byParent);
+}
+
+static const SiblingPlaces* siblingPlaces(const CscdNode* parent) {
+    const CscdDocument* d = parent->owner;
+    if (!d || parent->children.len < 8) return NULL; /* (a few: counted as they are) */
+    if (siblingCache.doc != d || siblingCache.version != d->version) {
+        siblingCacheClear();
+        siblingCache.doc = d;
+        siblingCache.version = d->version;
+    }
+    bool inserted = false;
+    CscdMapVal* v = cscdU64MapPut(&siblingCache.byParent, CSCD_PKEY(parent), &inserted);
+    SiblingPlaces* p = (SiblingPlaces*)v->p;
+    if (!inserted && p && p->len == parent->children.len) return p;
+    if (p) { /* (another parent once at this address) */
+        cscdFree(p->nodes); cscdFree(p->nth); cscdFree(p->nthType); cscdFree(p->ofType); cscdFree(p);
+    }
+    const size_t n = parent->children.len;
+    p = CSCD_NEW(SiblingPlaces);
+    p->len = n;
+    p->nodes = (const CscdNode**)cscdMalloc(sizeof(CscdNode*) * n);
+    p->nth = (int*)cscdCalloc(n, sizeof(int));
+    p->nthType = (int*)cscdCalloc(n, sizeof(int));
+    p->ofType = (int*)cscdCalloc(n, sizeof(int));
+    CscdStrMap byTag = {0};
+    for (size_t i = 0; i < n; ++i) {
+        const CscdNode* c = cscdNodeChild(parent, i);
+        p->nodes[i] = c;
+        const CscdElement* ce = cscdNodeAsElementC(c);
+        if (!ce) continue;
+        p->nth[i] = ++p->elements;
+        CscdMapVal* t = cscdStrMapPut(&byTag, cscdStrSv(&ce->tag), NULL);
+        p->nthType[i] = (int)++t->u;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const CscdElement* ce = cscdNodeAsElementC(p->nodes[i]);
+        if (ce) p->ofType[i] = (int)cscdStrMapGet(&byTag, cscdStrSv(&ce->tag))->u;
+    }
+    cscdStrMapFree(&byTag);
+    v->p = p;
+    return p;
+}
+
 static int siblingsIndex(const CscdElement* e, bool ofType, bool fromEnd) {
     const CscdNode* parent = e->node.parent;
     const int at = cscdNodeIndexInParent(&e->node);
     if (!parent || at < 0) return 1;
+    const SiblingPlaces* places = siblingPlaces(parent);
+    if (places && (size_t)at < places->len && places->nodes[at] == &e->node) {
+        if (!ofType) return fromEnd ? places->elements - places->nth[at] + 1 : places->nth[at];
+        return fromEnd ? places->ofType[at] - places->nthType[at] + 1 : places->nthType[at];
+    }
     int idx = 1;
     const int n = (int)parent->children.len, step = fromEnd ? 1 : -1;
     for (int i = at + step; i >= 0 && i < n; i += step) {

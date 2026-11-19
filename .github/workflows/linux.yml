@@ -196,6 +196,24 @@ jobs:
           name: fuzz-crashes
           path: crashes/
 
+  threads:
+    name: ThreadSanitizer
+    # the paint threads, the workers' loops and the caches they share (glyphs, shadows, fonts), watched for races
+    runs-on: ubuntu-24.04
+    env:
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+      CASCADE_PAINT_THREADS: 4
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang libx11-dev fonts-dejavu-core
+      - name: Build (Clang, ThreadSanitizer)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCASCADE_SANITIZE=thread -DCASCADE_BUILD_EXAMPLES=OFF
+          cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   bindings:
     name: Bindings (Python, Rust)
     runs-on: ubuntu-24.04

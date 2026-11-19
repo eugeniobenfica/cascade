@@ -115,6 +115,8 @@ typedef enum CscdFeature {
     CSCD_FEATURE_WARN_FILES,      /* "warn-files": a page, sheet, image or font that cannot be read (on) */
     CSCD_FEATURE_WARN_CSS,        /* "warn-css": properties nothing computes, with what they probably meant (on) */
     CSCD_FEATURE_WARN_SELECTORS,  /* "warn-selectors": cscdViewGet finding nothing (on) */
+    CSCD_FEATURE_ASYNC_IMAGES,    /* "async-images": large image files decoded on other threads, the page shown
+                                    * without them until they come (off: each is decoded when first needed) */
     CSCD_FEATURE_COUNT
 } CscdFeature;
 #endif
@@ -201,10 +203,10 @@ void cscdViewInvalidateElement(CscdView* v, CscdElement* e);
 void cscdViewMouseMove(CscdView* v, float x, float y, int buttons, CscdModifiers m);
 void cscdViewMouseDown(CscdView* v, float x, float y, int button, CscdModifiers m, int clicks);
 void cscdViewMouseUp(CscdView* v, float x, float y, int button, CscdModifiers m);
-void cscdViewMouseLeave(CscdView* v);
-void cscdViewWheel(CscdView* v, float x, float y, float dx, float dy, CscdModifiers m);
 /* The mouse buttons held now (bit 0 left, 1 right, 2 middle), as an event's buttons: an app can tell a drag still going on. */
 int cscdViewMouseButtons(const CscdView* v);
+void cscdViewMouseLeave(CscdView* v);
+void cscdViewWheel(CscdView* v, float x, float y, float dx, float dy, CscdModifiers m);
 void cscdViewKeyDown(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName);
 void cscdViewKeyUp(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName);
 void cscdViewTextInput(CscdView* v, CscdSv utf8);
@@ -423,6 +425,13 @@ int cscdViewNextTimerMs(const CscdView* v); /* milliseconds until the next timer
 /* custom fonts and images */
 bool cscdViewAddFont(CscdView* v, CscdSv family, CscdSv path, int weight, bool italic);
 void cscdViewSetImage(CscdView* v, CscdSv url, CscdImage* image); /* provide images from memory (retained; NULL forgets) */
+/* The images read from files are kept up to bytes (256 MB by default): past it, those nothing shows any more go, the
+ * longest unused first (read again if asked for). What they hold now. */
+void cscdViewSetImageCacheLimit(CscdView* v, size_t bytes);
+size_t cscdViewImageCacheBytes(const CscdView* v);
+/* Images still being decoded (CSCD_FEATURE_ASYNC_IMAGES); cscdViewUpdate takes those that came back. A program that
+ * renders without a window waits for 0 before it paints. */
+int cscdViewImagesDecoding(const CscdView* v);
 
 CscdLayoutBox* cscdViewRootBox(CscdView* v);
 CscdStyleEngine* cscdViewStyleEngine(CscdView* v);

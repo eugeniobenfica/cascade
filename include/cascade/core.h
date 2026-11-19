@@ -36,12 +36,29 @@ extern "C" {
 
 /* ---- memory ------------------------------------------------------------------------------ */
 
-/* The allocator every module uses. Running out of memory aborts: no caller checks for NULL. */
+/* The allocator every module uses. No caller checks for NULL: a request that fails goes to the out-of-memory handler,
+ * and without one (or when it gives up) the process ends. */
 void* cscdMalloc(size_t size);
 void* cscdCalloc(size_t count, size_t size);
 void* cscdRealloc(void* p, size_t size);
 void cscdFree(void* p);
 typedef void (*CscdFreeFn)(void* p);
+
+/* The program's own allocator for every block cascade makes: a heap of its own, accounting, limits. realloc(user, NULL,
+ * size) allocates; realloc returns NULL when it cannot. Set before cascade allocates anything (first thing in main):
+ * false once it has, or when a function is missing. NULL goes back to the C library's. */
+typedef struct CscdAllocator {
+    void* (*realloc)(void* user, void* p, size_t size);
+    void (*free)(void* user, void* p);
+    void* user;
+} CscdAllocator;
+bool cscdSetAllocator(const CscdAllocator* a);
+
+/* Called when a request fails, with its size, on the thread that made it: free what the program can (memory of its
+ * own; never call cascade from here) and return true to have the request tried again, false to end the process. With
+ * no handler the process ends at once. */
+typedef bool (*CscdOutOfMemoryFn)(void* user, size_t size);
+void cscdSetOutOfMemoryHandler(CscdOutOfMemoryFn fn, void* user);
 
 #define CSCD_NEW(T) ((T*)cscdCalloc(1, sizeof(T)))
 #define CSCD_COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -78,6 +95,7 @@ CSCD_INLINE size_t cscdMaxz(size_t a, size_t b) { return a > b ? a : b; }
  * one; cscdRelease drops one and, at zero, calls dtor (which frees what the block holds, not the
  * block) and frees it. The count is atomic: blocks may be shared between threads. */
 void* cscdRcNew(size_t size, CscdFreeFn dtor);
+int cscdRcRefs(const void* p); /* how many references it has (a moment's answer, when others may hold it) */
 void* cscdRetain(void* p); /* returns p; NULL is allowed */
 void cscdRelease(void* p); /* NULL is allowed */
 int cscdRcCount(const void* p);

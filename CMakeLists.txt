@@ -49,7 +49,9 @@ option(CASCADE_INSTALL "Install the library, its headers and its CMake package" 
 # Checks for development (GCC, Clang): -DCASCADE_SANITIZE=address,undefined builds the library and
 # what links it with those sanitizers; CASCADE_FUZZ builds cascade-fuzz-* (tests/fuzz.c), with
 # libFuzzer when the compiler is Clang, or as a program that runs the files it is given.
-set(CASCADE_SANITIZE "" CACHE STRING "Sanitizers to build with (GCC, Clang): address, undefined, ...")
+set(CASCADE_SANITIZE "" CACHE STRING "Sanitizers to build with (GCC, Clang): address, undefined, thread, ...")
+# Warnings as errors (CI turns it on where the build is known to be clean).
+option(CASCADE_WERROR "Treat the library's warnings as errors" OFF)
 option(CASCADE_FUZZ "Build the cascade-fuzz-* programs" OFF)
 # The library's target name, for projects that already have a target called "cascade".
 set(CASCADE_TARGET cascade CACHE STRING "Name of the cascade library target")
@@ -117,13 +119,20 @@ if(MSVC)
 else()
   # -ffp-contract=off: no a*b+c fused into one rounding (ARM compilers fuse by default, x86 ones
   # do not), so that every platform paints the same pixels
-  target_compile_options(${BT} PRIVATE -Wall -Wno-parentheses -Wno-unused-function -ffp-contract=off)
+  # (-Wextra but its missing-field-initializers: positional initializers that leave the last fields zero are a
+  # habit of the code, not a mistake)
+  target_compile_options(${BT} PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-parentheses -Wno-unused-function
+                                       -ffp-contract=off)
   # each function in a section of its own: a program's release link drops what it does not call
   # (cascade_app)
   target_compile_options(${BT} PRIVATE -ffunction-sections -fdata-sections)
   if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(${BT} PRIVATE -O2)
   endif()
+endif()
+
+if(CASCADE_WERROR)
+  target_compile_options(${BT} PRIVATE $<IF:$<C_COMPILER_ID:MSVC>,/WX,-Werror>)
 endif()
 
 if(CASCADE_SANITIZE)
@@ -268,6 +277,14 @@ if(CASCADE_BUILD_TESTS)
   add_executable(cascade-stress tests/stress.c)
   target_link_libraries(cascade-stress PRIVATE ${BT})
   add_test(NAME cascade-stress COMMAND cascade-stress)
+  # the program's allocator: blocks counted (nothing that grows), and requests made to fail and retried
+  add_executable(cascade-memory-tests tests/memory.c)
+  target_link_libraries(cascade-memory-tests PRIVATE ${BT})
+  add_test(NAME cascade-memory-tests COMMAND cascade-memory-tests)
+  # the light paths (hover, text, attributes, scrolling, damage) against the whole pipeline from scratch
+  add_executable(cascade-incremental-tests tests/incremental.c)
+  target_link_libraries(cascade-incremental-tests PRIVATE ${BT})
+  add_test(NAME cascade-incremental-tests COMMAND cascade-incremental-tests)
   # a presenter of the app's in a real window (it opens one with CASCADE_TEST_WINDOW)
   if(cascade_window)
     add_executable(cascade-window-tests tests/window.c)

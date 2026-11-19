@@ -381,7 +381,7 @@ sliders, and they hear about focus and value changes as they happen.
 Write the page as for the web and it reads well: real `<button>`s, `<label for>` on fields, `alt` on
 pictures, `aria-label` on buttons that only show an icon. `cscdAccessibleRole`, `Name`, `State`,
 `Children` and the rest give the same tree to a host with its own accessibility bridge.
-`CSCD_FEATURE_ACCESSIBILITY` turns it off. (Linux's AT-SPI is not there yet.)
+`CSCD_FEATURE_ACCESSIBILITY` turns it off. On Linux the bridge is AT-SPI (Orca).
 
 ## The inspector
 
@@ -408,6 +408,7 @@ A view's behaviour is made of features, each of which an application can turn of
 | `STATS` | off | the window shows what the last frame cost |
 | `GPU` | on | the window presents through Vulkan or OpenGL (off: the system's software path) |
 | `WARN_FILES`, `WARN_CSS`, `WARN_SELECTORS` | on | the warnings of each kind |
+| `ASYNC_IMAGES` | off | large image files decoded on other threads: the page shows without them until they come |
 
 `CASCADE_FEATURES` in the environment changes the defaults without rebuilding:
 `CASCADE_FEATURES=+stats,-gpu,+inspector ./app`.

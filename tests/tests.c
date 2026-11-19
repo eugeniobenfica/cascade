@@ -4,6 +4,7 @@
 #include "../src/text/bidiInternal.h" /* (internal: the algorithm on its own) */
 #include "../src/view/viewInternal.h" /* (internal: viewSetInputAge, the platforms' touch times) */
 #include "../src/core/thread.h"        /* (internal: the parallel loops) */
+#include "../src/paint/canvasInternal.h"  /* (internal: shadows blurred whole, to compare) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -3322,6 +3323,49 @@ static uint64_t paintPixelPage(const PixelPage* page, float scale, int threads, 
     return h;
 }
 
+/* Shadows blurred as nine patches (only the corners, the sides drawn along) against the same blurred whole: shapes of
+ * every size, radius, blur, offset and spread, at whole and fractional scales and places. */
+static void testShadowPatches(void) {
+    CscdImage a, b;
+    cscdImageInit(&a, 420, 300);
+    cscdImageInit(&b, 420, 300);
+    uint64_t rs = 12345;
+    int shadows = 0, differ = 0, worst = 0;
+    for (int i = 0; i < 160; ++i) {
+        rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17;
+        const float x = 20 + (float)(rs % 600) / 10, y = 20 + (float)((rs >> 10) % 500) / 10;
+        const float w = 30 + (float)((rs >> 20) % 3000) / 10, h = 30 + (float)((rs >> 32) % 2000) / 10;
+        const float r = (float)((rs >> 44) % 40), blur = 1 + (float)((rs >> 50) % 60), spread = (float)((int)((rs >> 56) % 16) - 4);
+        const float scale = i % 3 == 0 ? 1.5f : i % 3 == 1 ? 1.f : 0.75f;
+        CscdRRect box = cscdRRect(cscdRect(x, y, w, h));
+        for (int k = 0; k < 4; ++k) box.rx[k] = box.ry[k] = k == 2 ? r / 2 : r;
+        for (int pass = 0; pass < 2; ++pass) {
+            cscdShadowNinePatch = pass == 0;
+            CscdImage* img = pass == 0 ? &a : &b;
+            memset(img->pixels, 0, (size_t)img->width * img->height * 4);
+            CscdCanvas* c = cscdCanvasNew(img);
+            cscdCanvasScale(c, scale, scale);
+            cscdCanvasDrawBoxShadow(c, &box, 3, 5, blur, spread, cscdRgba(20, 10, 40, 200), false);
+            cscdCanvasFree(c);
+        }
+        ++shadows;
+        int most = 0;
+        for (int p = 0; p < a.width * a.height; ++p)
+            for (int s = 0; s < 32; s += 8) {
+                const int d = abs((int)((a.pixels[p] >> s) & 255) - (int)((b.pixels[p] >> s) & 255));
+                if (d > most) most = d;
+            }
+        differ += most > 0;
+        if (most > worst) worst = most;
+    }
+    cscdShadowNinePatch = true;
+    CHECK(shadows == 160);
+    CHECK(worst <= 1); /* (the blur's running sums round a little differently along a long side: a level at most) */
+    if (worst > 0) printf("  shadow patches: %d of %d differ, by %d at most\n", differ, shadows, worst);
+    cscdImageFini(&a);
+    cscdImageFini(&b);
+}
+
 /* What painting keeps: within its limits, and what is costly stays when a scroll makes many new ones. */
 static void testPaintCache(void) {
     const CscdPaintCacheLimits was = cscdPaintCacheLimits();
@@ -3579,6 +3623,230 @@ static void testManyAttributes(void) {
     cscdStrFree(&html);
 }
 
+/* A PNG file of noise (it does not compress: as large as its pixels), for the image cache and the decoder threads. */
+static void writeNoisePng(const char* path, int w, int h, uint32_t seed) {
+    CscdImage img;
+    cscdImageInit(&img, w, h);
+    for (int i = 0; i < w * h; ++i) {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        img.pixels[i] = 0xff000000u | (seed & 0xffffff);
+    }
+    CscdBytes png = {0};
+    cscdEncodePNG(&img, &png);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fwrite(png.items, 1, png.len, f);
+        fclose(f);
+    }
+    cscdVecFree(&png);
+    cscdImageFini(&img);
+}
+
+/* The images a view keeps: within its limit, the unused ones going first, and those still shown staying; decoded
+ * on other threads when asked, the page laid out again as they come; a view freed with decodes on their way. */
+static void testImageCache(void) {
+    writeNoisePng("cascade-test-a.png", 200, 150, 1);
+    writeNoisePng("cascade-test-b.png", 200, 150, 2);
+    writeNoisePng("cascade-test-c.png", 200, 150, 3);
+    const size_t one = 200 * 150 * 4;
+    CscdView* v = cscdViewNew();
+    cscdViewSetViewport(v, 800, 600, 1);
+    cscdViewSetImageCacheLimit(v, one * 2 + one / 2); /* (two fit, not three) */
+    cscdViewLoadHTML(v, CSCD_SV("<style>body{margin:0}</style><img id=i src=cascade-test-a.png>"), CSCD_SV("."));
+    cscdViewUpdate(v);
+    CHECK(cscdViewImageCacheBytes(v) == one);
+    CscdElement* img = query(v, "#i");
+    cscdElementSetAttribute(img, CSCD_SV("src"), CSCD_SV("cascade-test-b.png"));
+    cscdViewUpdate(v);
+    CHECK(cscdViewImageCacheBytes(v) == 2 * one);
+    cscdElementSetAttribute(img, CSCD_SV("src"), CSCD_SV("cascade-test-c.png"));
+    cscdViewUpdate(v); /* (a: shown by nothing and the oldest, goes; c, shown, stays) */
+    CHECK(cscdViewImageCacheBytes(v) <= one * 2 + one / 2);
+    NEAR(rectOf(v, "i").w, 200);
+    cscdElementSetAttribute(img, CSCD_SV("src"), CSCD_SV("cascade-test-a.png")); /* (read again) */
+    cscdViewUpdate(v);
+    NEAR(rectOf(v, "i").w, 200);
+    CHECK(cscdViewImageCacheBytes(v) <= one * 2 + one / 2);
+    cscdViewFree(v);
+
+    /* decoded on a decoder thread: the page without it first, then with it */
+    CscdView* a = cscdViewNew();
+    cscdViewSetFeature(a, CSCD_FEATURE_ASYNC_IMAGES, true);
+    cscdViewSetViewport(a, 800, 600, 1);
+    cscdViewLoadHTML(a, CSCD_SV("<style>body{margin:0}</style><img id=i src=cascade-test-b.png><p id=p>after</p>"), CSCD_SV("."));
+    cscdViewUpdate(a);
+    CHECK(cscdViewImagesDecoding(a) == 1);
+    CHECK(cscdViewNextTimerMs(a) >= 0 && cscdViewNextTimerMs(a) <= 8);
+    for (int i = 0; i < 500 && cscdViewImagesDecoding(a); ++i) {
+        sleepMs(2);
+        cscdViewUpdate(a);
+    }
+    CHECK(cscdViewImagesDecoding(a) == 0);
+    NEAR(rectOf(a, "i").w, 200);
+    NEAR(rectOf(a, "i").h, 150);
+    CHECK(rectOf(a, "p").y >= 150);
+    CscdImage shot;
+    cscdImageInit(&shot, 800, 600);
+    cscdViewPaint(a, &shot, false);
+    CHECK(cscdImageRow(&shot, 10)[10] != 0xffffffffu); /* (the noise, not the page's white) */
+    cscdImageFini(&shot);
+    cscdViewFree(a);
+
+    /* a view freed, and a page replaced, while their images are being decoded */
+    for (int k = 0; k < 4; ++k) {
+        CscdView* g = cscdViewNew();
+        cscdViewSetFeature(g, CSCD_FEATURE_ASYNC_IMAGES, true);
+        cscdViewLoadHTML(g, CSCD_SV("<img src=cascade-test-a.png><img src=cascade-test-b.png><img src=cascade-test-c.png>"), CSCD_SV("."));
+        cscdViewUpdate(g);
+        if (k % 2) {
+            cscdViewLoadHTML(g, CSCD_SV("<p>another page</p>"), CSCD_SV("."));
+            cscdViewUpdate(g);
+            for (int i = 0; i < 500 && cscdViewImagesDecoding(g); ++i) {
+                sleepMs(2);
+                cscdViewUpdate(g);
+            }
+            /* (kept for a page that shows them again: a view keeps its images from page to page, within its limit) */
+            CHECK(cscdViewImagesDecoding(g) == 0 && cscdViewImageCacheBytes(g) == 3 * one);
+        }
+        cscdViewFree(g);
+    }
+    sleepMs(50); /* (what was on its way finishes, into inboxes only it still holds) */
+    remove("cascade-test-a.png");
+    remove("cascade-test-b.png");
+    remove("cascade-test-c.png");
+}
+
+/* :nth-child and its kin over a long list of mixed elements (their places are worked out once for all the siblings,
+ * and again when the list changes): the same answers as counting. */
+static void testNthInLongLists(void) {
+    CscdView* v = cscdViewNew();
+    CscdStr html = {0};
+    cscdStrAppendC(&html, "<ul id=l>");
+    for (int i = 1; i <= 40; ++i) cscdStrAppendf(&html, i % 3 == 0 ? "<p id=e%d></p>" : "<li id=e%d></li>", i);
+    cscdStrAppendC(&html, "</ul>");
+    cscdViewLoadHTML(v, cscdStrSv(&html), CSCD_SV("."));
+    cscdStrFree(&html);
+    CHECK(countOf(v, "#l > :nth-child(2n)") == 20);
+    CHECK(countOf(v, "#l > :nth-child(3n+1)") == 14);
+    CHECK(countOf(v, "#l > :nth-last-child(-n+5)") == 5);
+    CHECK(countOf(v, "#l > p:nth-of-type(2n)") == 6);
+    CHECK(countOf(v, "#l > li:nth-last-of-type(1)") == 1 && query(v, "li:last-of-type") == query(v, "#e40"));
+    CHECK(query(v, "p:last-of-type") == query(v, "#e39") && query(v, "p:first-of-type") == query(v, "#e3"));
+    CHECK(query(v, "#l > :nth-child(17)") == query(v, "#e17"));
+    CHECK(query(v, "#l > :nth-last-child(1)") == query(v, "#e40"));
+    /* a new first child: every place moves by one */
+    CscdElement* l = query(v, "#l");
+    CscdElement* first = cscdDocumentCreateElement(v->doc, CSCD_SV("li"));
+    cscdNodeInsertBefore(&l->node, &first->node, cscdNodeChild(&l->node, 0));
+    CHECK(query(v, "#l > :nth-child(18)") == query(v, "#e17"));
+    CHECK(query(v, "li:first-of-type") == first && query(v, "#l > :nth-last-child(1)") == query(v, "#e40"));
+    /* and one removed */
+    cscdElementRemove(query(v, "#e3"));
+    CHECK(query(v, "p:first-of-type") == query(v, "#e6") && countOf(v, "#l > p:nth-of-type(n)") == 12);
+    /* numbers as large as a page writes them: no overflow */
+    CHECK(countOf(v, "#l > :nth-child(-2147483647n+2147483647)") == 0);
+    CHECK(countOf(v, "#l > :nth-child(2147483647n-2147483647)") == 0); /* (index - b went past an int) */
+    CHECK(countOf(v, "#l > :nth-child(n-2147483647)") == 40);
+    cscdViewFree(v);
+}
+
+/* A class, an inline style or a data- attribute that only changes how things look: what is painted again is the
+ * elements that look different, not the window; one that moves things paints them where they were and are; and the
+ * window again when most of it changed. */
+static void testAttributeRepaints(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewSetFeature(v, CSCD_FEATURE_ANIMATIONS, false);
+    cscdViewSetViewport(v, 400, 600, 1);
+    CscdStr html = {0};
+    cscdStrAppendC(&html, "<style>body{margin:0;font:14px sans-serif} .row{height:20px;padding:0 6px}"
+                          " .sel{background:#8b5cf6;color:white} [data-state=warn]{color:#c00} .tall{height:40px}"
+                          " .list .sel + .row{background:#eee}</style><div class=list>");
+    for (int i = 0; i < 25; ++i) cscdStrAppendf(&html, "<div class=row id=r%d>row %d</div>", i, i);
+    cscdStrAppendC(&html, "</div>");
+    cscdViewLoadHTML(v, cscdStrSv(&html), CSCD_SV("."));
+    cscdStrFree(&html);
+    CscdImage img;
+    cscdImageInit(&img, 400, 600);
+    cscdViewUpdate(v);
+    cscdViewPaint(v, &img, true); /* (as a window paints: over its last frame) */
+    CscdIRectVec damage = {0};
+    /* a class that changes colors: that row, and the next one its sibling selector reaches */
+    cscdElementAddClass(query(v, "#r5"), CSCD_SV("sel"));
+    cscdViewUpdate(v);
+    cscdViewPaint(v, &img, true);
+    CHECK(cscdViewPaintDamage(v, &damage));
+    int covered = 0;
+    bool five = false, six = false, others = false;
+    for (size_t i = 0; i < damage.len; ++i) {
+        const CscdIRect r = damage.items[i];
+        covered += r.w * r.h;
+        five = five || (r.y <= 100 && r.y + r.h >= 120);
+        six = six || (r.y <= 120 && r.y + r.h >= 140);
+        others = others || r.y + r.h > 150 || r.y < 90;
+    }
+    CHECK(five && six && !others);
+    CHECK(covered < 400 * 600 / 8);
+    /* a data- attribute and an inline style that only change colors */
+    damage.len = 0;
+    cscdElementSetAttribute(query(v, "#r20"), CSCD_SV("data-state"), CSCD_SV("warn"));
+    cscdElementSetStyle(query(v, "#r21"), CSCD_SV("color"), CSCD_SV("green"));
+    cscdViewUpdate(v);
+    cscdViewPaint(v, &img, true);
+    CHECK(cscdViewPaintDamage(v, &damage) && damage.len >= 1);
+    covered = 0;
+    for (size_t i = 0; i < damage.len; ++i) covered += damage.items[i].w * damage.items[i].h;
+    CHECK(covered < 400 * 600 / 8);
+    /* one that moves the rows below it: painted as they were and as they are, which is most of the window */
+    damage.len = 0;
+    cscdElementAddClass(query(v, "#r1"), CSCD_SV("tall"));
+    cscdViewUpdate(v);
+    cscdViewPaint(v, &img, true);
+    CHECK(!cscdViewPaintDamage(v, &damage));
+    CHECK(cscdViewElementRect(v, query(v, "#r2")).y == 60);
+    cscdVecFree(&damage);
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
+/* A tree as deep as cascade takes, built from code (the parser stops at 512 by itself): deeper is refused, as is a
+ * loop, and what is there styles, lays out and paints within the main thread's stack. */
+static void testTreeDepth(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    cscdViewSetViewport(v, 200, 120, 1);
+    cscdViewLoadHTML(v, CSCD_SV("<style>div{padding-left:1px;display:flex}div:nth-child(1){color:red}</style><body>"), CSCD_SV("."));
+    CscdElement* body = query(v, "body");
+    CscdElement* e = body;
+    while (cscdNodeDepth(&e->node) < CSCD_MAX_TREE_DEPTH) {
+        CscdElement* inner = cscdElementAppendElement(e, CSCD_SV("div"));
+        if (!inner) break;
+        e = inner;
+    }
+    CHECK(cscdNodeDepth(&e->node) == CSCD_MAX_TREE_DEPTH);
+    CHECK(cscdElementAppendElement(e, CSCD_SV("div")) == NULL);
+    CHECK(cscdElementAppendText(e, CSCD_SV("x")) == NULL);
+    cscdElementSetText(e, CSCD_SV("deep")); /* (no room for the text: nothing, and nothing lost) */
+    CHECK(e->node.children.len == 0);
+    cscdElementSetInnerHTML(e, CSCD_SV("<p><b>x</b></p>"));
+    CHECK(e->node.children.len == 0);
+    CscdElement* parent = cscdNodeParentElement(&e->node);
+    cscdElementSetText(parent, CSCD_SV("deep")); /* (replaces e: the text is at the last level) */
+    CHECK(parent->node.children.len == 1);
+    /* a loop: an element into itself or into what it holds */
+    CscdElement* top = (CscdElement*)cscdNodeChild(&body->node, 0);
+    CHECK(cscdNodeAppendChild(&top->node, &top->node) == NULL);
+    CHECK(cscdNodeAppendChild(&parent->node, &top->node) == NULL);
+    CHECK(top->node.parent == &body->node);
+    /* a subtree too tall to go deeper: refused, left where it was */
+    CscdElement* tall = (CscdElement*)cscdNodeChild(&top->node, 0);
+    CscdElement* side = cscdElementAppendElement(cscdElementAppendElement(body, CSCD_SV("div")), CSCD_SV("div"));
+    CHECK(side && cscdNodeAppendChild(&side->node, &tall->node) == NULL && tall->node.parent == &top->node);
+    CHECK(cscdNodeAppendChild(&body->node, &tall->node) == &tall->node); /* (one level up: it fits) */
+    paintOnce(v);
+    CHECK(top->layout != NULL);
+    cscdViewFree(v);
+}
+
 static void testHostileRequests(void) {
     CscdView* v = cscdViewNew();
     cscdViewOnWarning(v, NULL, NULL);
@@ -3716,6 +3984,11 @@ int main(void) {
     testSelectorSearch();
     testManyAttributes();
     testHostileRequests();
+    testTreeDepth();
+    testAttributeRepaints();
+    testShadowPatches();
+    testNthInLongLists();
+    testImageCache();
     for (int i = 0; i < 16; ++i) cscdStrFree(&kept[i]);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

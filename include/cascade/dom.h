@@ -121,7 +121,13 @@ CSCD_INLINE CscdNode* cscdNodeChild(const CscdNode* n, size_t i) { return (CscdN
 CscdText* cscdTextNew(CscdSv data);
 CscdComment* cscdCommentNew(CscdSv data);
 CscdElement* cscdNodeParentElement(const CscdNode* n);
-/* Takes child (out of its old parent first); returns it. */
+/* How deep a tree goes: the document is level 0, <html> 1. Deeper trees are refused, so that styling, layout and
+ * painting, which recurse, stay within a thread's stack (the parser puts deeper elements side by side, as browsers do). */
+#define CSCD_MAX_TREE_DEPTH 1024
+size_t cscdNodeDepth(const CscdNode* n); /* (0 for a node with no parent) */
+/* Takes child (out of its old parent first); returns it. NULL, and nothing changes (child stays where it was, and the
+ * caller's when it had no parent), when child is parent or holds it, or the tree would go deeper than
+ * CSCD_MAX_TREE_DEPTH. */
 CscdNode* cscdNodeAppendChild(CscdNode* parent, CscdNode* child);
 CscdNode* cscdNodeInsertBefore(CscdNode* parent, CscdNode* child, CscdNode* ref);
 /* Takes child out; the caller owns it then (cscdNodeDestroy). NULL when it is not a child. */
@@ -298,6 +304,10 @@ struct CscdDocument {
     int dispatchDepth;
     CscdPtrVec graveyard;
     bool retired;
+    /* Since the last restyle: only attributes that matter through the styles they select changed on these elements
+     * (class, style, id, data-, aria-...), and nothing else did: the view computes the styles again, and when they lay
+     * out as before it only paints those elements again. */
+    CscdPtrVec attrChanged; /* CscdElement* */
 };
 
 CscdDocument* cscdDocumentNew(void);

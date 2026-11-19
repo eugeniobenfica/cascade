@@ -98,6 +98,20 @@ Functions that can fail return `bool` (or NULL) and report what went wrong throu
 warning callback (`cscdViewOnWarning`) when there is something to say. Memory allocation failing
 aborts the program: no function returns half-made objects.
 
+A program can give cascade its own allocator, first thing in `main` (`cscdSetAllocator`: a heap of
+its own, accounting, limits), and an out-of-memory handler (`cscdSetOutOfMemoryHandler`) that frees
+memory of the program's and has the request tried again, before the process ends.
+
+```c
+static bool relieve(void* user, size_t size) { return dropMyCaches((App*)user); } /* true: try again */
+
+int main(void) {
+    cscdSetAllocator(&(CscdAllocator){myRealloc, myFree, &heap});
+    cscdSetOutOfMemoryHandler(relieve, &app);
+    ...
+}
+```
+
 ## Threads
 
 Use a view, its document and its window from the thread that made them. `cscdWindowPost` is the one
