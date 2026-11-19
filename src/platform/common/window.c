@@ -1,3 +1,6 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* (clock_gettime's process clock under a strict C standard) */
+#endif
 /* What the native windows share: construction, the posted-function queue, the frame (update, paint,
  * present, and the software fallback), the title taken from the document, and the run loop. The
  * platforms (windowWin32.c, windowX11.c, windowCocoa.m) supply the window itself and its events. */
@@ -6,6 +9,13 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 CscdWindowOptions cscdWindowOptions(void) {
     CscdWindowOptions o;
@@ -286,6 +296,7 @@ void windowRunPosted(CscdWindow* w) {
 CscdBackend cscdWindowBackend(const CscdWindow* w) { return w->presenter ? cscdPresenterBackend(w->presenter) : CSCD_BACKEND_SOFTWARE; }
 void cscdWindowSetBackend(CscdWindow* w, CscdBackend backend) {
     w->requested = backend;
+    w->trial = 0; /* (Auto: tried again as the next frame shows) */
     w->gpuApplied = backend != CSCD_BACKEND_SOFTWARE;
     if (w->presenter) {
         cscdPresenterFree(w->presenter);
@@ -469,6 +480,59 @@ void windowBackdropForget(CscdWindow* w) {
     cscdVecFree(&w->sideDragRects);
 }
 
+/* --- CSCD_BACKEND_AUTO: which engine shows this window most cheaply on this computer -----------------------------------
+ * As the window first shows, each engine there is shows a few frames, whole (as when everything moves: playing a video);
+ * the processor time each present takes, for the whole program (a driver's own threads count too), is summed. The
+ * cheapest is kept. Not wall time: OpenGL waits for the screen's refresh there, which costs nothing. */
+#define TRIAL_FRAMES 6
+/* (OpenGL first: on Windows a window that has had a Vulkan swap chain no longer takes OpenGL) */
+static const CscdBackend TrialOrder[] = {CSCD_BACKEND_OPENGL, CSCD_BACKEND_VULKAN, CSCD_BACKEND_SOFTWARE};
+
+static double processorTime(void) {
+#ifdef _WIN32
+    ULONG64 cycles = 0; /* (cycles: only compared with each other) */
+    QueryProcessCycleTime(GetCurrentProcess(), &cycles);
+    return (double)cycles;
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
+#endif
+}
+
+static void trialUse(CscdWindow* w, CscdBackend b) {
+    cscdPresenterFree(w->presenter);
+    w->presenter = windowPresenterNew(w, windowSurface(w), b, w->clientW, w->clientH);
+    cscdImageFini(&w->frame); /* (painted whole for the new presenter) */
+    memset(&w->frame, 0, sizeof w->frame);
+    w->dirty = true;
+}
+
+static void trialStep(CscdWindow* w, double cost) {
+    const int k = w->trial - 1;
+    if (w->trialFrames++ > 0) w->trialCost += cost; /* (the first frame of each: setting up) */
+    if (w->trialFrames <= TRIAL_FRAMES) {
+        w->dirty = true;
+        return;
+    }
+    if (w->presenter && cscdPresenterBackend(w->presenter) == TrialOrder[k] && (w->bestCost < 0 || w->trialCost < w->bestCost)) {
+        w->bestCost = w->trialCost;
+        w->best = TrialOrder[k];
+    }
+    w->trialFrames = 0;
+    w->trialCost = 0;
+    if (k + 1 < (int)CSCD_COUNT(TrialOrder)) {
+        w->trial = k + 2;
+        trialUse(w, TrialOrder[k + 1]);
+        return;
+    }
+    w->trial = -1;
+    w->requested = w->bestCost >= 0 ? w->best : CSCD_BACKEND_SOFTWARE;
+    trialUse(w, w->requested);
+}
+
+bool cscdWindowBackendSettled(const CscdWindow* w) { return w->trial <= 0 && (w->trial < 0 || w->requested != CSCD_BACKEND_AUTO); }
+
 void windowRender(CscdWindow* w) {
     if (!w->hwnd || w->rendering || w->background || w->clientW <= 0 || w->clientH <= 0) return;
     w->rendering = true;
@@ -482,6 +546,16 @@ void windowRender(CscdWindow* w) {
             windowShowTitle(w, cscdStrC(&t));
         }
         cscdStrFree(&t);
+    }
+#ifdef _WIN32
+    /* On Windows a window that has had a Vulkan swap chain shows nothing else after it, neither OpenGL nor the system's
+     * software path (the window stayed on its last frame): when Auto's first engine is Vulkan, it is kept, untried. */
+    if (!w->trial && w->requested == CSCD_BACKEND_AUTO && w->presenter && cscdPresenterBackend(w->presenter) == CSCD_BACKEND_VULKAN) w->trial = -1;
+#endif
+    if (!w->trial && w->requested == CSCD_BACKEND_AUTO && w->presenter && !w->makePresenter && w->shown && cscdViewFeature(w->view, CSCD_FEATURE_GPU)) {
+        w->trial = 1;
+        w->bestCost = -1.0;
+        trialUse(w, TrialOrder[0]);
     }
     /* the GPU feature: the presenter follows it when it changes (a GPU one, or the system's software path) */
     const bool gpu = cscdViewFeature(w->view, CSCD_FEATURE_GPU) && w->requested != CSCD_BACKEND_SOFTWARE;
@@ -512,13 +586,14 @@ void windowRender(CscdWindow* w) {
      * stats panel is now and was before) */
     CscdIRectVec damage = {0};
     if (w->presenter) {
-        w->presenter->partial = !fresh && cscdViewPaintDamage(w->view, &damage);
+        w->presenter->partial = !fresh && cscdViewPaintDamage(w->view, &damage) && w->trial <= 0; /* (on trial: whole frames) */
         if (stats.w > 0) cscdVecPush(&damage, stats);
         if (w->lastOverlay.w > 0) cscdVecPush(&damage, w->lastOverlay);
         w->presenter->damage = damage.items;
         w->presenter->damageCount = damage.len;
     }
     w->lastOverlay = stats;
+    const double before = w->trial > 0 ? processorTime() : 0.0;
     if (w->presenter && !cscdPresenterPresent(w->presenter, &w->frame)) {
         /* the GPU path failed (device lost): fall back to software (an app makes its own again) */
         cscdPresenterFree(w->presenter);
@@ -532,6 +607,7 @@ void windowRender(CscdWindow* w) {
         w->presenter->damageCount = 0;
     }
     cscdVecFree(&damage);
+    if (w->trial > 0) trialStep(w, processorTime() - before);
     w->rendering = false;
 }
 

@@ -428,7 +428,11 @@ bool cscdViewUpdate(CscdView* v) {
         if (best == CSCD_NPOS || v->timers.items[best].due > t) break;
         Timer tm = v->timers.items[best];
         if (tm.interval > 0) {
-            v->timers.items[best].due = t + tm.interval / 1000.0;
+            /* The next one an interval after this one was due, not after it ran: waking late (the system's
+             * timer, a frame being presented) does not stretch the interval. Fallen behind by a whole one: from now. */
+            double next = tm.due + tm.interval / 1000.0;
+            if (next <= t) next = t + tm.interval / 1000.0;
+            v->timers.items[best].due = next;
             cscdActionCall(&tm.fn);
         } else {
             cscdVecRemove(&v->timers, best);

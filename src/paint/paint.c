@@ -235,7 +235,19 @@ static bool emptyCellHasContent(const CscdLayoutBox* b) {
     return false;
 }
 
-static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect borderBox, CscdRRect outer, bool skipText) {
+/* Whether the border is one opaque solid ring all around: the color under it then never shows, and stops half way into
+ * it. Filled to the outer edge, the color's soft edge and the ring's soft edge met on the same pixels, and the color
+ * showed through there: a dark (or light) fringe around rounded boxes, darkest in the corners. */
+static bool opaqueRing(const CscdLayoutBox* b) {
+    const CscdBorderSide* sd = b->style->border;
+    for (int i = 0; i < 4; ++i)
+        if (!cscdBorderVisible(&sd[i]) || b->border[i] <= 0 || sd[i].style != CSCD_BORDER_SOLID || sd[i].color.a < 255 ||
+            !cscdColorEq(sd[i].color, sd[0].color))
+            return false;
+    return true;
+}
+
+static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect borderBox, CscdRRect outer, bool skipText, bool wholeBorder) {
     CscdCanvas* canvas = P->canvas;
     const CscdComputedStyle* s = b->style;
     CscdRect paddingBox = cscdRectInset(borderBox, b->border[3], b->border[0], b->border[1], b->border[2]);
@@ -244,6 +256,8 @@ static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect borderBox, Cs
     if (colorClip == CSCD_BG_TEXT && skipText) return;
     if (s->backgroundColor.a && colorClip != CSCD_BG_TEXT) {
         CscdRRect cl = clipFor(b, outer, colorClip);
+        if (colorClip == CSCD_BG_BORDER_BOX && wholeBorder && opaqueRing(b))
+            cl = rrInset(outer, b->border[0] * 0.5f, b->border[1] * 0.5f, b->border[2] * 0.5f, b->border[3] * 0.5f);
         cscdCanvasFillRRect(canvas, &cl, s->backgroundColor);
     }
     for (size_t i = s->backgrounds.len; i-- > 0;) {
@@ -520,7 +534,7 @@ static void paintDecorations(Painter* P, CscdLayoutBox* b) {
             float saveL = b->border[3], saveR = b->border[1], pl = b->padding[3], pr = b->padding[1];
             if (!f.first) { b->border[3] = 0; b->padding[3] = 0; }
             if (!f.last) { b->border[1] = 0; b->padding[1] = 0; }
-            paintBackground(P, b, f.rect, rr, true);
+            paintBackground(P, b, f.rect, rr, true, f.first && f.last);
             paintBorder(P, b, rr, s->border, f.first, f.last);
             b->border[3] = saveL; b->border[1] = saveR; b->padding[3] = pl; b->padding[1] = pr;
             record(P, b->element, f.rect, false, b, -1);
@@ -546,7 +560,7 @@ static void paintDecorations(Painter* P, CscdLayoutBox* b) {
         if (!sh->inset) cscdCanvasDrawBoxShadow(canvas, &outer, sh->x, sh->y, sh->blur, sh->spread, sh->color, false);
     }
     bool isCanvasRoot = (b->parent == NULL) || (b->element && cscdElementIs(b->element, "body") && P->rootPropagated);
-    if (!isCanvasRoot) paintBackground(P, b, bb, outer, true);
+    if (!isCanvasRoot) paintBackground(P, b, bb, outer, true, true);
     for (size_t k = s->boxShadow.len; k-- > 0;) {
         const CscdShadow* sh = &s->boxShadow.items[k];
         if (sh->inset) {
@@ -1917,7 +1931,7 @@ static void paintLayerContent(Painter* P, CscdLayoutBox* b) {
         CscdComputedStyle* saved = b->style;
         b->style = style;
         const CscdRect bb = cscdBoxBorderBox(b);
-        paintBackground(&mp, b, bb, borderRRect(b, bb), true);
+        paintBackground(&mp, b, bb, borderRRect(b, bb), true, false);
         b->style = saved;
         cscdRelease(style);
         cscdCanvasFree(mc);
@@ -2130,7 +2144,7 @@ void paintRoot(CscdView* v, CscdCanvas* canvas, CscdLayoutBox* root) {
             s->backgroundColor = cscdRgba(0, 0, 0, 0); /* (for a moment) */
             CscdRect area2 = rr.rect;
             for (int i = 0; i < 4; ++i) { b->border[i] = 0; b->padding[i] = 0; }
-            paintBackground(P, b, area2, rr, true);
+            paintBackground(P, b, area2, rr, true, false);
             for (int i = 0; i < 4; ++i) { b->border[i] = saveB[i]; b->padding[i] = saveP[i]; }
             s->backgroundColor = saveC;
         }

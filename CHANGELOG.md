@@ -7,6 +7,9 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- Windows: keys with Alt are the page's. Alt and a key beeped (the window has no menu for it), and Alt or F10 let go
+  alone put the window in its system menu's mode, where the next key went. Alt+F4 still closes the window and
+  Alt+Space still opens its menu.
 - Enter in a field of a form presses its default button (HTML's implicit submission): a `<form method=dialog>` used
   to close with no value.
 - `cscdViewSetBaseStyleSheet`: a sheet under the document's own, kept from page to page.

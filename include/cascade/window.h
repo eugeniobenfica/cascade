@@ -85,6 +85,9 @@ const char* cscdWindowBackendDescription(const CscdWindow* w);
 /* Shows frames through this backend from now on; what could be had in the end: cscdWindowBackend.
  * Not from inside a frame (cscdWindowOnFrame). */
 void cscdWindowSetBackend(CscdWindow* w, CscdBackend backend);
+/* CSCD_BACKEND_AUTO tries the engines there are as the window first shows (a few frames each, the processor time each
+ * costs) and keeps the cheapest: false while that trial runs, then cscdWindowBackend says which it kept. */
+bool cscdWindowBackendSettled(const CscdWindow* w);
 /* The HWND (Windows), the X11 Window id (Linux), the NSWindow* (macOS), the UIWindow* (iOS) or the
  * activity (Android: a JNI global reference to the org.cascade.CascadeActivity). */
 void* cscdWindowNativeHandle(const CscdWindow* w);

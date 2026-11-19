@@ -203,6 +203,8 @@ void cscdViewMouseDown(CscdView* v, float x, float y, int button, CscdModifiers 
 void cscdViewMouseUp(CscdView* v, float x, float y, int button, CscdModifiers m);
 void cscdViewMouseLeave(CscdView* v);
 void cscdViewWheel(CscdView* v, float x, float y, float dx, float dy, CscdModifiers m);
+/* The mouse buttons held now (bit 0 left, 1 right, 2 middle), as an event's buttons: an app can tell a drag still going on. */
+int cscdViewMouseButtons(const CscdView* v);
 void cscdViewKeyDown(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName);
 void cscdViewKeyUp(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName);
 void cscdViewTextInput(CscdView* v, CscdSv utf8);

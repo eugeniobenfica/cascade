@@ -97,6 +97,11 @@ struct CscdWindow {
     CscdBackend requested;
     CscdPresenterFn makePresenter; void* makePresenterUser; /* (an app's presenter, in place of cascade's) */
     bool gpuApplied;       /* (CSCD_FEATURE_GPU as the presenter was last chosen for it) */
+    /* CSCD_BACKEND_AUTO: the trial of the engines as the window first shows (0 not yet, k + 1 the k-th on trial, -1
+     * over), the frames and processor time of the one on trial, and the cheapest so far (cost < 0: none) */
+    int trial, trialFrames;
+    double trialCost, bestCost;
+    CscdBackend best;
     CscdIRect lastOverlay; /* where the stats panel was in the frame shown last */
     bool titleFromDocument;
     bool rendering;

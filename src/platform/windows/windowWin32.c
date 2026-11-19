@@ -695,16 +695,23 @@ static LRESULT handle(CscdWindow* wnd, CscdWindowNative* n, UINT msg, WPARAM wp,
         char name[16];
         CscdKey k = mapKey(wp, name);
         cscdViewKeyDown(view, k, mods(), cscdSv(name));
-        if (msg == WM_SYSKEYDOWN && wp != VK_F10) break;
+        /* with Alt held, the keys are the page's (Alt+A, Alt+1...): only Alt+F4 still closes the window */
+        if (msg == WM_SYSKEYDOWN && wp == VK_F4) break;
         return 0;
     }
     case WM_KEYUP: case WM_SYSKEYUP: {
         char name[16];
         CscdKey k = mapKey(wp, name);
         cscdViewKeyUp(view, k, mods(), cscdSv(name));
-        if (msg == WM_SYSKEYUP) break;
+        /* (Alt or F10 let go alone would put the window in its system menu's mode: the next key went there, not to
+         * the page) */
         return 0;
     }
+    case WM_SYSCHAR:
+        /* Alt and a key the window has no menu for beeps: the page has had it already. Alt+Space opens the system
+         * menu, as it does in every window. */
+        if (wp == ' ') break;
+        return 0;
     case WM_CHAR: {
         uint32_t c = (uint32_t)wp;
         if (c >= 0xD800 && c < 0xDC00) { n->highSurrogate = c; return 0; }

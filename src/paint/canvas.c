@@ -91,9 +91,20 @@ typedef struct ShaderCtx {
     const CscdShader* s;
     CscdMatrix inv;
     uint32_t solid;
-    uint32_t lut[256];
+    union {
+        uint32_t lut[256];
+        float radial[256][4]; /* premultiplied BGRA, in byte units, rounded only at the destination */
+    };
     float alpha;
 } ShaderCtx;
+
+static void radialStop(float out[4], CscdColor color, float opacity) {
+    const float a = color.a * opacity / 255.0f;
+    out[0] = color.b * a;
+    out[1] = color.g * a;
+    out[2] = color.r * a;
+    out[3] = color.a * opacity;
+}
 
 static void shaderInit(ShaderCtx* sc, const CscdShader* sh, CscdMatrix m, float globalAlpha) {
     sc->s = sh;
@@ -106,23 +117,28 @@ static void shaderInit(ShaderCtx* sc, const CscdShader* sh, CscdMatrix m, float 
     /* gradient lookup table */
     const CscdGradientStop* st = sh->stops.items;
     const size_t n = sh->stops.len;
+    size_t k = 1;
     for (int i = 0; i < 256; ++i) {
         float t = i / 255.f;
         CscdColor c = {0, 0, 0, 0};
-        if (!n) c = (CscdColor){0, 0, 0, 0};
-        else if (t <= st[0].offset) c = st[0].color;
+        if (n && t <= st[0].offset) c = st[0].color;
+        else if (!n) c = (CscdColor){0, 0, 0, 0};
         else if (t >= st[n - 1].offset) c = st[n - 1].color;
         else {
-            for (size_t k = 1; k < n; ++k) {
-                if (t <= st[k].offset) {
-                    float span = st[k].offset - st[k - 1].offset;
-                    float u = span <= 0 ? 1 : (t - st[k - 1].offset) / span;
-                    c = cscdColorLerp(st[k - 1].color, st[k].color, u);
-                    break;
-                }
+            while (t > st[k].offset) ++k;
+            const float span = st[k].offset - st[k - 1].offset;
+            const float u = span <= 0 ? 1 : (t - st[k - 1].offset) / span;
+            if (sh->kind == CSCD_SHADER_RADIAL) {
+                float a[4], b[4];
+                radialStop(a, st[k - 1].color, sc->alpha);
+                radialStop(b, st[k].color, sc->alpha);
+                for (int ch = 0; ch < 4; ++ch) sc->radial[i][ch] = a[ch] + (b[ch] - a[ch]) * u;
+                continue;
             }
+            c = cscdColorLerp(st[k - 1].color, st[k].color, u);
         }
-        sc->lut[i] = premul(c, sc->alpha);
+        if (sh->kind == CSCD_SHADER_RADIAL) radialStop(sc->radial[i], c, sc->alpha);
+        else sc->lut[i] = premul(c, sc->alpha);
     }
 }
 
@@ -133,6 +149,33 @@ static uint32_t gradientAt(const ShaderCtx* sc, float t) {
     t = t > 0 ? (t < 1 ? t : 1) : 0;
     int i = (int)(t * 255.f + 0.5f);
     return sc->lut[i];
+}
+
+static uint32_t radialAt(const ShaderCtx* sc, float t, int x, int y) {
+    if (sc->s->repeating) t -= floorf(t);
+    t = t > 0.0f ? cscdMinf(t, 1.0f) : 0.0f;
+    const float entry = t * 255.0f;
+    const int i = cscdMini((int)entry, 254);
+    const float u = entry - i;
+    /* Ordered dithering hides 8-bit bands. One threshold for all channels preserves neutral colors
+     * and keeps the premultiplied channels below alpha. Anchor it to the pixel, including in banded replay. */
+    static const uint8_t bayer[8][8] = {
+        { 0, 48, 12, 60,  3, 51, 15, 63},
+        {32, 16, 44, 28, 35, 19, 47, 31},
+        { 8, 56,  4, 52, 11, 59,  7, 55},
+        {40, 24, 36, 20, 43, 27, 39, 23},
+        { 2, 50, 14, 62,  1, 49, 13, 61},
+        {34, 18, 46, 30, 33, 17, 45, 29},
+        {10, 58,  6, 54,  9, 57,  5, 53},
+        {42, 26, 38, 22, 41, 25, 37, 21},
+    };
+    const float bias = (bayer[y & 7][x & 7] + 0.5f) / 64.0f;
+    uint32_t color = 0;
+    for (int ch = 0; ch < 4; ++ch) {
+        const float a = sc->radial[i][ch], b = sc->radial[i + 1][ch];
+        color |= clampByte(a + (b - a) * u + (bias - 0.5f)) << (ch * 8);
+    }
+    return color;
 }
 
 static int wrapIndex(int a, int n, bool rep) {
@@ -184,7 +227,7 @@ static uint32_t shadeAt(const ShaderCtx* sc, float dx, float dy) {
     }
     case CSCD_SHADER_RADIAL: {
         float ux = s->rx > 0 ? (p.x - s->center.x) / s->rx : 0, uy = s->ry > 0 ? (p.y - s->center.y) / s->ry : 0;
-        return gradientAt(sc, sqrtf(ux * ux + uy * uy));
+        return radialAt(sc, sqrtf(ux * ux + uy * uy), (int)dx, (int)dy);
     }
     case CSCD_SHADER_CONIC: {
         float a = cscdAtan2f(p.x - s->center.x, -(p.y - s->center.y)) - s->startAngle;
@@ -217,7 +260,7 @@ static bool shadeRow(const ShaderCtx* sc, int x0, int y, int len, uint32_t* out)
     const float ux = (p.x - s->center.x) * kx, uy = (p.y - s->center.y) * ky, dux = sx * kx, duy = sy * ky;
     for (int i = 0; i < len; ++i) {
         const float a = ux + dux * i, b = uy + duy * i;
-        out[i] = gradientAt(sc, sqrtf(a * a + b * b));
+        out[i] = radialAt(sc, sqrtf(a * a + b * b), x0 + i, y);
     }
     return false;
 }
@@ -1174,6 +1217,8 @@ void cscdCanvasPopLayer(CscdCanvas* c) {
             float sa = (p >> 24) / 255.f, da = (t[x] >> 24) / 255.f;
             float out[3];
             for (int ci = 0; ci < 3; ++ci) {
+            /* not a color mix: what the layer covers is taken out of what is under it (an eraser) */
+            if (L.blend == CSCD_BLEND_DST_OUT) { t[x] = mulPixel(t[x], 255 - (p >> 24)); continue; }
                 float sc = ((p >> (8 * ci)) & 255) / 255.f, dc = ((t[x] >> (8 * ci)) & 255) / 255.f;
                 float su = sa > 0 ? sc / sa : 0, du = da > 0 ? dc / da : 0;
                 float bl;

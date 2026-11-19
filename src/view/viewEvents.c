@@ -222,6 +222,8 @@ float viewAttrNumber(const CscdElement* e, const char* name, float def) {
     return f;
 }
 
+int cscdViewMouseButtons(const CscdView* v) { return v->buttons; }
+
 void cscdViewMouseMove(CscdView* v, float x, float y, int buttons, CscdModifiers m) {
     v->mouseX = x;
     v->mouseY = y;
@@ -323,6 +325,7 @@ void cscdViewMouseLeave(CscdView* v) {
 void cscdViewMouseDown(CscdView* v, float x, float y, int button, CscdModifiers m, int clicks) {
     v->mouseX = x;
     v->mouseY = y;
+    if (button >= 0 && button < 31) v->buttons |= 1 << button; /* (held until its MouseUp: cscdViewMouseButtons) */
     if (viewInspectorMouse(v, 1, x, y)) return;
     cscdViewHideTooltip(v);
     if (v->dragActive) return;
@@ -399,6 +402,7 @@ void cscdViewMouseDown(CscdView* v, float x, float y, int button, CscdModifiers 
 void cscdViewMouseUp(CscdView* v, float x, float y, int button, CscdModifiers m) {
     v->mouseX = x;
     v->mouseY = y;
+    if (button >= 0 && button < 31) v->buttons &= ~(1 << button);
     if (viewInspectorMouse(v, 2, x, y)) return;
     v->selecting = false;
     if (v->splitter) { viewSplitterUp(v); viewSetActive(v, NULL); v->pressed = NULL; return; }
