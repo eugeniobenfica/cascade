@@ -290,6 +290,15 @@ typedef struct CscdAttrChange {
     bool had;
 } CscdAttrChange;
 
+/* A change to the tree since the last restyle: kind CSCD_CHANGE_INSERTED (node came in, with what it holds),
+ * CSCD_CHANGE_CHILDREN (children of node went), CSCD_CHANGE_SELF (the element itself: an attribute, its value, a
+ * state). */
+enum { CSCD_CHANGE_INSERTED = 1, CSCD_CHANGE_CHILDREN = 2, CSCD_CHANGE_SELF = 3 };
+typedef struct CscdNodeChange {
+    CscdNode* node;
+    int kind;
+} CscdNodeChange;
+
 struct CscdDocument {
     CscdNode node;
     CscdStr baseDir;   /* where relative URLs (stylesheets, images, fonts) resolve */
@@ -323,10 +332,15 @@ struct CscdDocument {
      * went decides what the styles reach) */
     CSCD_VEC(CscdAttrChange) attrChanges;
     uint64_t layoutEpoch; /* (counts layouts: what changes is stamped with it, and the layout after moves it on) */
+    /* What made it structural, node by node (the view restyles as far as the rules see them); full: too many, or one
+     * the whole document is concerned by. A node removed meanwhile is taken out of it. */
+    CSCD_VEC(CscdNodeChange) nodeChanges;
+    bool nodeChangesFull;
 };
 
 CscdDocument* cscdDocumentNew(void);
 void cscdDocumentClearAttrChanges(CscdDocument* d); /* (the view, once it has restyled for them) */
+void cscdDocumentClearNodeChanges(CscdDocument* d);
 /* n changed in a way its layout sees: it and its ancestors are stamped with the current layout epoch (up to the first one
  * already stamped with it). */
 void cscdNodeTouch(CscdNode* n);

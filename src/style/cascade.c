@@ -382,6 +382,10 @@ struct CscdStyleEngine {
     bool statesReachSiblings;
     CscdPtrVec stateCompounds; /* const CscdCompound*: the compounds with :hover or :active in them */
     bool stateNested;          /* one is inside :is(), :not(), :has()...: every element's change matters */
+    bool structSiblings;       /* a rule sees an element's place among its siblings: + ~ :nth-* :first-child :empty... */
+    bool structHas;            /* a rule has :has(): a change anywhere may restyle its ancestors */
+    CscdPtrVec emptyCompounds; /* const CscdCompound*: those with :empty (an element whose children come or go) */
+    bool emptyNested;          /* one inside :is(), :not()...: every element's children matter */
     CscdStrMap reachClass, reachId, reachAttr; /* name -> CSCD_REACH_* bits */
     CscdStrMap selectedAttrs; /* attribute names the selectors test (lowercase) */
     bool valuesUseAttr;       /* a declaration reads an attribute (attr()) */
@@ -492,6 +496,7 @@ void cscdStyleEngineFree(CscdStyleEngine* se) {
     freeIndexMap(&se->byTag);
     cscdStrMapFree(&se->selectedAttrs);
     cscdVecFree(&se->stateCompounds);
+    cscdVecFree(&se->emptyCompounds);
     cscdStrMapFree(&se->reachClass);
     cscdStrMapFree(&se->reachId);
     cscdStrMapFree(&se->reachAttr);
@@ -613,6 +618,39 @@ static void noteReach(CscdStyleEngine* se, const CscdSelector* s, unsigned subje
     }
 }
 
+static void noteStructure(CscdStyleEngine* se, const CscdSelector* s, bool nested) {
+    static const char* const kPlaces[] = {"first-child", "last-child", "only-child", "nth-child", "nth-last-child", "first-of-type",
+                                          "last-of-type", "only-of-type", "nth-of-type", "nth-last-of-type"};
+    for (size_t i = 0; i < s->compounds.len; ++i) {
+        const CscdCompound* c = &s->compounds.items[i];
+        if (c->combinator == CSCD_COMB_ADJACENT || c->combinator == CSCD_COMB_SIBLING) se->structSiblings = true;
+        for (size_t k = 0; k < c->parts.len; ++k) {
+            const CscdSimpleSelector* p = &c->parts.items[k];
+            if (p->kind == CSCD_SEL_PSEUDO_CLASS) {
+                if (cscdStrEqC(&p->name, "has")) se->structHas = true;
+                if (cscdStrEqC(&p->name, "empty")) {
+                    if (nested) se->emptyNested = true;
+                    else cscdVecPush(&se->emptyCompounds, (void*)c);
+                }
+                for (size_t n = 0; n < CSCD_COUNT(kPlaces); ++n) se->structSiblings = se->structSiblings || cscdStrEqC(&p->name, kPlaces[n]);
+            }
+            for (size_t a = 0; a < p->args.len; ++a) noteStructure(se, &p->args.items[a], true);
+        }
+    }
+}
+
+bool cscdStyleEngineEmptyMatters(const CscdStyleEngine* se, const CscdElement* e) {
+    if (!se->indexValid || se->emptyNested) return true;
+    for (size_t i = 0; i < se->emptyCompounds.len; ++i)
+        if (cscdCompoundMatchesIgnoring((const CscdCompound*)se->emptyCompounds.items[i], e, CSCD_SV("empty"))) return true;
+    return false;
+}
+
+unsigned cscdStyleEngineStructureReach(const CscdStyleEngine* se) {
+    if (!se->indexValid || se->structHas) return CSCD_REACH_ALL;
+    return se->structSiblings ? CSCD_REACH_SIBLINGS : CSCD_REACH_SELF;
+}
+
 static void noteStates(CscdStyleEngine* se, const CscdSelector* s) {
     for (size_t i = 0; i < s->compounds.len; ++i) {
         const CscdCompound* c = &s->compounds.items[i];
@@ -687,6 +725,9 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
     cscdStrMapClear(&se->selectedAttrs);
     cscdVecClear(&se->stateCompounds);
     se->stateNested = false;
+    se->structSiblings = se->structHas = false;
+    cscdVecClear(&se->emptyCompounds);
+    se->emptyNested = false;
     cscdStrMapClear(&se->reachClass);
     cscdStrMapClear(&se->reachId);
     cscdStrMapClear(&se->reachAttr);
@@ -703,6 +744,7 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
                 se->statesReachSiblings = se->statesReachSiblings || stateReachesSiblings(sel);
                 noteAttributes(se, sel);
                 noteStates(se, sel);
+                noteStructure(se, sel, false);
                 noteReach(se, sel, CSCD_REACH_SELF, 0, false);
                 Indexed ix = {rule, sel, si, sheet->origin};
                 const CscdCompound* last = &cscdVecLast(&sel->compounds);

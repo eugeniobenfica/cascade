@@ -977,6 +977,21 @@ static bool matchCompound(const CscdCompound* c, const CscdElement* e) {
 }
 
 /* (the element is the caller's and is left as it was: the states are only assumed while it is tested) */
+bool cscdCompoundMatchesIgnoring(const CscdCompound* c, const CscdElement* e, CscdSv pseudo) {
+    CscdCompound without = *c;
+    CSCD_VEC(CscdSimpleSelector) parts = {0};
+    for (size_t i = 0; i < c->parts.len; ++i) {
+        const CscdSimpleSelector* p = &c->parts.items[i];
+        if (!(p->kind == CSCD_SEL_PSEUDO_CLASS && cscdSvEq(cscdStrSv(&p->name), pseudo))) cscdVecPush(&parts, *p); /* (shallow) */
+    }
+    without.parts.items = parts.items;
+    without.parts.len = parts.len;
+    without.parts.cap = parts.cap;
+    const bool r = matchCompound(&without, e);
+    cscdVecFree(&parts);
+    return r;
+}
+
 bool cscdCompoundMatchesAssuming(const CscdCompound* c, const CscdElement* e, uint32_t states) {
     CscdElement* m = (CscdElement*)e;
     const uint32_t was = m->state;

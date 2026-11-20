@@ -154,9 +154,12 @@ static void freeNode(CscdNode* n) {
     cscdFree(n);
 }
 
+static void forgetChanges(CscdDocument* d, const CscdNode* n);
+
 void cscdNodeDestroy(CscdNode* n) {
     if (!n) return;
     CscdDocument* d = n->owner;
+    if (d && n != &d->node) forgetChanges(d, n); /* (destroyed without being taken out first: a menu, a cut-off subtree) */
     if (d && n != &d->node && d->dispatchDepth > 0) {
         cscdVecPush(&d->graveyard, n);
         return;
@@ -181,6 +184,7 @@ static void notifyRemoved(CscdDocument* d, CscdNode* n) {
 CscdElement* cscdNodeParentElement(const CscdNode* n) { return n->parent && n->parent->type == CSCD_NODE_ELEMENT ? (CscdElement*)n->parent : NULL; }
 
 static CscdDocument* docOf(CscdNode* n) { return n->type == CSCD_NODE_DOCUMENT ? (CscdDocument*)n : n->owner; }
+static void markDirtyAs(CscdNode* n, CscdNode* subject, int kind);
 
 /* how many levels a node's subtree has (itself: 1); a tree is never deeper than CSCD_MAX_TREE_DEPTH, so neither is
  * this recursion */
@@ -218,7 +222,7 @@ CscdNode* cscdNodeAppendChild(CscdNode* parent, CscdNode* child) {
     setOwner(child, docOf(parent));
     child->indexHint = parent->children.len;
     cscdVecPush(&parent->children, child);
-    cscdNodeMarkDirty(parent);
+    markDirtyAs(parent, child, CSCD_CHANGE_INSERTED);
     return child;
 }
 
@@ -232,26 +236,28 @@ CscdNode* cscdNodeInsertBefore(CscdNode* parent, CscdNode* child, CscdNode* ref)
     if (at >= 0) {
         cscdVecInsert(&parent->children, (size_t)at, child);
         child->indexHint = (size_t)at;
-        cscdNodeMarkDirty(parent);
+        markDirtyAs(parent, child, CSCD_CHANGE_INSERTED);
         return child;
     }
     child->indexHint = parent->children.len;
     cscdVecPush(&parent->children, child);
-    cscdNodeMarkDirty(parent);
+    markDirtyAs(parent, child, CSCD_CHANGE_INSERTED);
     return child;
 }
 
 CscdNode* cscdNodeRemoveChild(CscdNode* parent, CscdNode* child) {
     const int i = child->parent == parent ? cscdNodeIndexInParent(child) : -1;
     if (i < 0) return NULL;
+    forgetChanges(docOf(parent), child); /* (before it is cut off: found through its parents) */
     cscdVecRemove(&parent->children, (size_t)i);
     notifyRemoved(parent->owner, child);
     child->parent = NULL;
-    cscdNodeMarkDirty(parent);
+    markDirtyAs(parent, parent, CSCD_CHANGE_CHILDREN);
     return child;
 }
 
 void cscdNodeClearChildren(CscdNode* n) {
+    for (size_t i = 0; i < n->children.len; ++i) forgetChanges(docOf(n), cscdNodeChild(n, i));
     for (size_t i = 0; i < n->children.len; ++i) notifyRemoved(n->owner, cscdNodeChild(n, i));
     for (size_t i = 0; i < n->children.len; ++i) {
         CscdNode* c = cscdNodeChild(n, i);
@@ -259,7 +265,7 @@ void cscdNodeClearChildren(CscdNode* n) {
         cscdNodeDestroy(c);
     }
     n->children.len = 0;
-    cscdNodeMarkDirty(n);
+    markDirtyAs(n, n, CSCD_CHANGE_CHILDREN);
 }
 
 int cscdNodeIndexInParent(const CscdNode* n) {
@@ -333,14 +339,74 @@ void cscdNodeTouch(CscdNode* n) {
     for (CscdNode* a = n; a && a->changedAt != d->layoutEpoch; a = a->parent) a->changedAt = d->layoutEpoch;
 }
 
-void cscdNodeMarkDirty(CscdNode* n) {
+/* whether a is n or holds it */
+static bool holds(const CscdNode* a, const CscdNode* n) {
+    for (; n; n = n->parent)
+        if (n == a) return true;
+    return false;
+}
+
+/* whether n is in d's tree (not cut off from it: a removed subtree keeps its owner) */
+static bool inDocument(const CscdNode* n, const CscdDocument* d) { return holds(&d->node, n); }
+
+/* (the subject of a change: kept for the view, unless a node that came in holds it already, being styled whole; one
+ * not in the document is not: it is styled when it comes in) */
+static void recordChange(CscdDocument* d, CscdNode* subject, int kind) {
+    if (d->nodeChangesFull) return;
+    if (subject->type != CSCD_NODE_DOCUMENT && !inDocument(subject, d)) return;
+    if (subject->type == CSCD_NODE_DOCUMENT || d->nodeChanges.len >= 256) {
+        d->nodeChangesFull = true;
+        return;
+    }
+    for (size_t i = 0; i < d->nodeChanges.len; ++i) {
+        const CscdNodeChange* c = &d->nodeChanges.items[i];
+        if (c->kind == CSCD_CHANGE_INSERTED && holds(c->node, subject)) return;
+        if (c->node == subject && c->kind == kind) return;
+    }
+    CscdNodeChange c = {subject, kind};
+    cscdVecPush(&d->nodeChanges, c);
+}
+
+/* the changes about n or what it holds (it leaves the document, or goes) */
+static void forgetChanges(CscdDocument* d, const CscdNode* n) {
+    if (!d) return;
+    size_t w = 0;
+    for (size_t i = 0; i < d->nodeChanges.len; ++i)
+        if (!holds(n, d->nodeChanges.items[i].node)) d->nodeChanges.items[w++] = d->nodeChanges.items[i];
+    d->nodeChanges.len = w;
+    w = 0;
+    for (size_t i = 0; i < d->attrChanges.len; ++i) {
+        CscdAttrChange* c = &d->attrChanges.items[i];
+        if (!holds(n, &c->element->node)) d->attrChanges.items[w++] = *c;
+        else {
+            cscdStrFree(&c->name);
+            cscdStrFree(&c->old);
+        }
+    }
+    d->attrChanges.len = w;
+    w = 0;
+    for (size_t i = 0; i < d->attrChanged.len; ++i)
+        if (!holds(n, &((CscdElement*)d->attrChanged.items[i])->node)) d->attrChanged.items[w++] = d->attrChanged.items[i];
+    d->attrChanged.len = w;
+}
+
+void cscdDocumentClearNodeChanges(CscdDocument* d) {
+    d->nodeChanges.len = 0;
+    d->nodeChangesFull = false;
+}
+
+/* n changed (what changed: subject, of this kind) */
+static void markDirtyAs(CscdNode* n, CscdNode* subject, int kind) {
     CscdDocument* d = docOf(n);
     if (d) {
         ++d->version;
         d->structural = true;
         cscdNodeTouch(n);
+        recordChange(d, subject, kind);
     }
 }
+
+void cscdNodeMarkDirty(CscdNode* n) { markDirtyAs(n, n, CSCD_CHANGE_SELF); }
 
 /* ---- elements -------------------------------------------------------------------------------------- */
 
@@ -380,6 +446,7 @@ static void markAttributeChanged(CscdElement* e, CscdSv name, const CscdStr* old
     if (!d) return;
     ++d->version;
     cscdNodeTouch(&e->node); /* (attr() in generated content reads it as the boxes are made) */
+    if (!inDocument(&e->node, d)) return; /* (a cut-off subtree: styled when it comes in) */
     if (d->attrChanges.len >= 64) {
         d->structural = true;
         return;
@@ -795,7 +862,10 @@ void cscdElementSetChecked(CscdElement* e, bool c) {
             cscdDocumentQuerySelectorAll(e->node.owner, CSCD_SV("input[type=radio]"), &radios);
             for (size_t i = 0; i < radios.len; ++i) {
                 CscdElement* other = (CscdElement*)radios.items[i];
-                if (other != e && cscdSvEq(cscdElementAttrC(other, "name"), name)) other->state &= ~(uint32_t)CSCD_STATE_CHECKED;
+                if (other != e && cscdSvEq(cscdElementAttrC(other, "name"), name) && (other->state & CSCD_STATE_CHECKED)) {
+                    other->state &= ~(uint32_t)CSCD_STATE_CHECKED;
+                    cscdNodeMarkDirty(&other->node); /* (its :checked too) */
+                }
             }
             cscdVecFree(&radios);
         }
@@ -1019,6 +1089,7 @@ CscdDocument* cscdDocumentNew(void) {
     d->version = 1;
     d->structural = true;
     d->layoutEpoch = 1;
+    d->nodeChangesFull = true; /* (nothing styled yet) */
     return d;
 }
 
@@ -1031,6 +1102,7 @@ static void freeDocument(CscdDocument* d) {
     cscdVecFree(&d->attrChanged);
     cscdDocumentClearAttrChanges(d);
     cscdVecFree(&d->attrChanges);
+    cscdVecFree(&d->nodeChanges);
 }
 
 void cscdDocumentClearAttrChanges(CscdDocument* d) {

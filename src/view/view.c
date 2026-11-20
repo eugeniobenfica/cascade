@@ -442,14 +442,18 @@ bool cscdViewUpdate(CscdView* v) {
     viewAdvanceScrolls(v, t);
     if (v->playing.len && viewAdvanceImages(v, t)) v->dirty = v->fullPaint = true;
     if (v->bindings.len) viewApplyBindings(v);
-    if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v)) v->styleDirty = true;
+    if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v) &&
+        !viewRestyleStructure(v))
+        v->styleDirty = true;
     if (!v->styleDirty) viewRestyleStates(v);
     if (v->styleDirty) viewRestyle(v, NULL);
     else if (v->transitions.len || v->animations.len) viewTickAnimations(v, t);
     if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; viewCenterModals(v); }
     if (v->lists.len && viewUpdateLists(v)) {
         /* the rows of a list that scrolled (or whose box changed size), in this same frame */
-        if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v)) v->styleDirty = true;
+        if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v) &&
+            !viewRestyleStructure(v))
+            v->styleDirty = true;
         if (v->styleDirty) viewRestyle(v, NULL);
         if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; }
     }

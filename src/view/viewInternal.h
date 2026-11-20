@@ -135,6 +135,7 @@ struct CscdView {
     CscdPtrVec stateChanged;   /* elements whose :hover / :active changed since the last restyle */
     bool hitsStale;          /* the layout changed under the hit areas (a scroll) */
     float layoutDpr;         /* (the scale the boxes were laid out at: another, and none are taken) */
+    bool layoutBoxesChanged; /* (the last relayout gave an element a box it had not, or took one away) */
     /* What each box and everything in it draws (layout coordinates), for painting to pass over what is out of sight:
      * box -> index in inks, for the boxes of inkRoot. Made again when inkValid is false (a new layout, styles changed
      * in place: a hover, an animation). */
@@ -142,6 +143,8 @@ struct CscdView {
     CscdRectVec inks;
     const CscdLayoutBox* inkRoot;
     bool inkValid;
+    uint64_t inkEpoch;   /* (the layout the table was made for: the next one may keep what it kept) */
+    size_t inkBoxes;     /* (boxes in the table when it was last made whole) */
     CSCD_VEC(SmoothScroll) smooth; /* wheel scrolls still on their way */
     double smoothTime;
     float scrollX, scrollY;
@@ -268,6 +271,7 @@ void viewLayoutNow(CscdView* v);
 bool viewTakeDecodedImages(CscdView* v); /* (true: images came back, the page is styled again) */
 void viewClearImages(CscdView* v);
 bool viewRestyleAttributes(CscdView* v);
+bool viewRestyleStructure(CscdView* v);
 /* The oracle of the light paths, for tests: after cscdViewUpdate and cscdViewPaint(v, frame, true), the boxes and the
  * frame against those the whole pipeline makes from scratch (which it then leaves, frame included). False: they differ,
  * and why says where. */

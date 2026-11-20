@@ -292,6 +292,7 @@ void viewRemoveAnimation(CscdView* v, size_t i) {
 void viewTickAnimations(CscdView* v, double t) {
     if (!v->transitions.len && !v->animations.len) return; /* (nothing moving: nothing to repaint) */
     v->inkValid = false; /* (the styles the boxes show change in place) */
+    v->inkEpoch = 0;
     for (size_t i = 0; i < v->transitions.len; ++i) cscdNodeTouch(&v->transitions.items[i].e->node);
     for (size_t i = 0; i < v->animations.len; ++i) cscdNodeTouch(&v->animations.items[i].e->node);
     bool needLayout = false;

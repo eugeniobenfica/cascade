@@ -1697,7 +1697,17 @@ static CscdRect inkBounds(const CscdLayoutBox* b) {
  * a box whose ink misses the area being painted is passed over with all it holds. Text counts with room for glyphs
  * that overhang their line (a font size around it), as paintText's own test does. */
 
-static CscdRect inkOfTree(CscdView* v, const CscdLayoutBox* b) {
+/* (kept: the epoch of the layout just made, when the table holds what the one before it drew; a box that layout took
+ * as it was, where it was, keeps its entry and its subtree's) */
+static CscdRect inkOfTreeFrom(CscdView* v, const CscdLayoutBox* b, uint64_t kept);
+
+static CscdRect inkOfTree(CscdView* v, const CscdLayoutBox* b) { return inkOfTreeFrom(v, b, 0); }
+
+static CscdRect inkOfTreeFrom(CscdView* v, const CscdLayoutBox* b, uint64_t kept) {
+    if (kept && b->keptIn == kept && b->x == b->keptX && b->y == b->keptY) {
+        const CscdMapVal* at = cscdU64MapGet(&v->inkAt, CSCD_PKEY(b));
+        if (at) return v->inks.items[at->u];
+    }
     CscdRect r = cscdBoxBorderBox(b);
     const CscdComputedStyle* s = b->style;
     float pad = 0;
@@ -1725,7 +1735,7 @@ static CscdRect inkOfTree(CscdView* v, const CscdLayoutBox* b) {
     }
     const bool clips = s && cscdStyleClipsOverflow(s) && b->parent;
     for (size_t i = 0; i < b->children.len; ++i) {
-        const CscdRect c = inkOfTree(v, cscdBoxChild(b, i)); /* (every box gets its own, clipped or not) */
+        const CscdRect c = inkOfTreeFrom(v, cscdBoxChild(b, i), kept); /* (every box gets its own, clipped or not) */
         if (!clips) r = cscdRectUnite(r, c);
     }
     /* (a box that clips draws its contents inside its padding box, its scrollbars at its edge: within r) */
@@ -1741,6 +1751,7 @@ static CscdRect inkOfTree(CscdView* v, const CscdLayoutBox* b) {
 void paintInkChanged(CscdView* v, CscdLayoutBox* b) {
     if (!v->inkValid || !cscdU64MapGet(&v->inkAt, CSCD_PKEY(b))) {
         v->inkValid = false;
+        v->inkEpoch = 0;
         return;
     }
     const CscdRect r = inkOfTree(v, b); /* (its subtree's entries too) */
@@ -1750,6 +1761,7 @@ void paintInkChanged(CscdView* v, CscdLayoutBox* b) {
         const CscdMapVal* at = cscdU64MapGet(&v->inkAt, CSCD_PKEY(p));
         if (!at) {
             v->inkValid = false;
+            v->inkEpoch = 0;
             return;
         }
         v->inks.items[at->u] = cscdRectUnite(v->inks.items[at->u], r);
@@ -1758,9 +1770,17 @@ void paintInkChanged(CscdView* v, CscdLayoutBox* b) {
 
 static void inkPrepare(CscdView* v, const CscdLayoutBox* root) {
     if (v->inkValid && v->inkRoot == root) return;
-    cscdU64MapFree(&v->inkAt);
-    v->inks.len = 0;
-    if (root) inkOfTree(v, root);
+    /* After a layout that kept most of the page, the table of the one before is kept for what it kept (its entries
+     * left for boxes freed since go when they pile up: the table is made whole again). */
+    const uint64_t now = v->doc->layoutEpoch - 1;
+    const bool partial = root && v->inkEpoch && v->inkEpoch + 1 == now && v->inks.len < 4 * v->inkBoxes + 4096;
+    if (!partial) {
+        cscdU64MapFree(&v->inkAt);
+        v->inks.len = 0;
+    }
+    if (root) inkOfTreeFrom(v, root, partial ? now : 0);
+    if (!partial) v->inkBoxes = v->inks.len;
+    v->inkEpoch = now;
     v->inkRoot = root;
     v->inkValid = true;
 }

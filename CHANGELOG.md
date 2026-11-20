@@ -7,6 +7,24 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Structural changes restyle only what the rules see.** Inserts, removals and an element's own changes (an attribute
+  layout reads, a value, a check) are recorded node by node (`CscdDocument.nodeChanges`): the new subtree is styled,
+  the parent's children only when a rule sees places among siblings (`+ ~ :nth-* :first-child`), the parent alone when
+  an `:empty` rule could match it (`cscdStyleEngineEmptyMatters`), the whole page only with `:has()`
+  (`cscdStyleEngineStructureReach`). A row appended to a list of 20,000: 40 ms of styles → 0.
+- **Plain blocks are memoized too**: a block without a formatting context of its own, when no float is around it and
+  none comes out of it. 20,000 paragraphs, a class on one: 148 ms of layout → 8.
+- **The damage comes from what layout touched.** Each box layout makes or lays out again carries what its element drew
+  before (`prevInk`, `prevLook`); a box kept where it was is passed over with all it holds, and one a flex or grid
+  parent shifted after its memo is damaged where it was and is. The painter's culling table is kept across layouts the
+  same way. A class on one of 20,000 rows: the whole update 87 ms → 15 (it compared every element before and after).
+- Fixed: the page's scrollbar was not repainted when a light path changed the content's height; a box kept from the last
+  layout and laid out again started from its old geometry (an inline box with no text was shifted twice); changes
+  recorded for an element freed without being taken out of the document first (a closed menu, a cut-off subtree, also
+  attribute changes) were read afterwards.
+- The oracle runs three versions of its page (with `:has()`, with rules on places among siblings, with neither), with
+  floats, plain paragraphs, inserts and `hidden`; planted under-invalidations in each new path were caught.
+
 - **Incremental layout.** Each change stamps its element and their ancestors with the layout epoch
   (`CscdNode.changedAt`, `cscdNodeTouch`), and a style that is not the one it had stamps its element too. The next
   layout (`cscdLayoutDocumentFrom`) takes from the last one the boxes of the block, flex and grid elements with nothing

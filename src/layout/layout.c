@@ -385,6 +385,8 @@ static void setReplaced(CscdLayoutBox* b, CscdReplacedKind k, bool inl) {
 }
 
 static CscdLayoutBox* reusable(Layouter* L, CscdElement* e);
+static void forgetKeptLayout(CscdLayoutBox* b);
+static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was);
 static void noteOrdered(CscdLayoutBox* b);
 
 static void appendChild(CscdLayoutBox* parent, CscdLayoutBox* c) {
@@ -642,7 +644,10 @@ static void buildChildren(Layouter* L, CscdElement* e, CscdLayoutBox* parent) {
                 cscdVecPush(&parent->children, kept);
                 continue;
             }
+            CscdLayoutBox* was = L->reuse && ce->layout && ce->layout->builtIn != L->epoch && !ce->layout->taken ? ce->layout : NULL;
             CscdLayoutBox* b = makeBox(L, ce, (CscdComputedStyle*)cscdRetain(ce->style));
+            if (was) notePrevious(b, was); /* (the old tree is whole yet: what it drew) */
+            else L->boxesChanged = true;   /* (a box it had not) */
             ce->layout = b;
             b->parent = parent;
             if (b->kind != CSCD_BOX_REPLACED && b->kind != CSCD_BOX_LINE_BREAK && !cscdElementIs(ce, "input")) buildChildren(L, ce, b);
@@ -803,20 +808,140 @@ static CscdLayoutBox* reusable(Layouter* L, CscdElement* e) {
     if (d != CSCD_DISPLAY_BLOCK && d != CSCD_DISPLAY_FLEX && d != CSCD_DISPLAY_GRID && d != CSCD_DISPLAY_FLOW_ROOT) return NULL;
     b->taken = true;
     b->builtIn = L->epoch;
+    b->keptX = b->x;
+    b->keptY = b->y;
+    b->hasPrev = false;
     if (b->memoPass) b->memoPass = MEMO_KEPT; /* (its last layout: as good as one of this pass, for the same input) */
+    else forgetKeptLayout(b); /* (none: it will be laid out, from nothing as a new box is) */
     return b;
+}
+
+/* ---- what an element's own boxes draw ------------------------------------------------------------------------------ */
+
+static CscdRect inkOfOne(const CscdLayoutBox* b) {
+    CscdRect r = cscdBoxBorderBox(b);
+    for (size_t i = 0; i < b->textFrags.len; ++i) {
+        const CscdTextFrag* f = &b->textFrags.items[i];
+        r = cscdRectUnite(r, cscdRect(f->x, f->top, f->width, f->height));
+    }
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
+    const CscdComputedStyle* s = b->style;
+    if (s) {
+        /* (a blur reaches 3 sigmas, half its radius each, and a device pixel more) */
+        float out = s->outlineStyle != CSCD_BORDER_NONE ? cscdMaxf(0.f, s->outlineWidth + s->outlineOffset) : 0;
+        for (size_t i = 0; i < s->boxShadow.len; ++i) {
+            const CscdShadow* sh = &s->boxShadow.items[i];
+            if (!sh->inset) out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 1.5f * sh->blur + 1 + cscdMaxf(0.f, sh->spread));
+        }
+        for (size_t i = 0; i < s->textShadow.len; ++i) {
+            const CscdShadow* sh = &s->textShadow.items[i];
+            out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 1.5f * sh->blur + 1);
+        }
+        if (out > 0) r = cscdRectUnite(r, cscdRect(r.x - out, r.y - out, r.w + 2 * out, r.h + 2 * out));
+    }
+    return r;
+}
+
+static uint64_t mixLook(uint64_t h, uint64_t v) { return (h ^ v) * 1099511628211ull; }
+static uint64_t mixLookF(uint64_t h, float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof bits);
+    return mixLook(h, bits);
+}
+
+static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* look) {
+    if (!top && cscdBoxIsElements(b)) return; /* (another element's: its own) */
+    uint64_t h = *look;
+    if (b->anonymous) {
+        /* (a wrapper the build made, with a style of its own made each time: only what it holds counts, its texts and the
+         * pieces of its inline boxes, not its block, which spans whatever is beside them) */
+        for (size_t i = 0; i < b->textFrags.len; ++i) {
+            const CscdTextFrag* f = &b->textFrags.items[i];
+            *ink = cscdRectUnite(*ink, cscdRect(f->x, f->top, f->width, f->height));
+        }
+    } else {
+        *ink = cscdRectUnite(*ink, inkOfOne(b));
+        h = mixLook(h, (uint64_t)(uintptr_t)b->style);
+        h = mixLookF(mixLookF(mixLookF(mixLookF(h, b->x), b->y), b->w), b->h);
+    }
+    h = mixLook(h, (uint64_t)(uintptr_t)b->image);
+    for (size_t i = 0; i < b->text.len; ++i) h = mixLook(h, (uint8_t)b->text.ptr[i]); /* (another text as wide) */
+    for (size_t i = 0; i < b->textFrags.len; ++i) {
+        const CscdTextFrag* f = &b->textFrags.items[i];
+        h = mixLookF(mixLookF(mixLookF(mixLookF(h, f->x), f->baseline), f->width), f->justify);
+    }
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) {
+        const CscdRect r = b->inlineFrags.items[i].rect;
+        h = mixLookF(mixLookF(mixLookF(mixLookF(h, r.x), r.y), r.w), r.h);
+    }
+    if (top && b->element && b->style && cscdStyleClipsOverflow(b->style) && b->parent) /* (its scrollbars) */
+        h = mixLookF(mixLookF(mixLookF(mixLookF(h, b->element->scrollLeft), b->element->scrollTop), b->overflow.w), b->overflow.h);
+    *look = h;
+    for (size_t i = 0; i < b->children.len; ++i) ownWalk(cscdBoxChild(b, i), false, ink, look);
+}
+
+CscdRect cscdBoxOwnInk(const CscdLayoutBox* b) {
+    CscdRect ink = cscdBoxBorderBox(b);
+    uint64_t look = 14695981039346656037ull;
+    ownWalk(b, true, &ink, &look);
+    return ink;
+}
+
+uint64_t cscdBoxOwnLook(const CscdLayoutBox* b) {
+    CscdRect ink = cscdBoxBorderBox(b);
+    uint64_t look = 14695981039346656037ull;
+    ownWalk(b, true, &ink, &look);
+    return look;
+}
+
+/* (what it was, for the damage, before it is made or laid out again) */
+static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was) {
+    CscdRect ink = cscdBoxBorderBox(was);
+    uint64_t look = 14695981039346656037ull;
+    ownWalk(was, true, &ink, &look);
+    to->prevInk = ink;
+    to->prevLook = look;
+    to->hasPrev = true;
+}
+
+/* A box kept from the layout before, laid out again (it moved, or its input is not the same): every box in it back to
+ * what a new one is before its layout, what the build made kept. (Laid out over its old places, an inline box with no
+ * text was shifted from where it was, not from nothing.) */
+static void forgetKeptLayout(CscdLayoutBox* b) {
+    if (cscdBoxIsElements(b)) notePrevious(b, b); /* (before its own boxes, and its texts', are wiped) */
+    b->inlineOwner = b->inlineSlot = 0;
+    cscdVecClear(&b->shape);
+    b->logicalDX = b->logicalDY = 0;
+    b->font = cscdFontDefault();
+    b->x = b->y = b->w = b->h = 0;
+    for (int i = 0; i < 4; ++i) b->margin[i] = b->border[i] = b->padding[i] = 0;
+    b->baseline = b->lastBaseline = 0;
+    b->hasBaseline = false;
+    b->overflow = cscdRect(0, 0, 0, 0);
+    b->staticX = b->staticY = 0;
+    b->hasStaticPos = false;
+    cscdTextFragVecClear(&b->textFrags);
+    b->inlineFrags.len = 0;
+    b->lines.len = 0;
+    b->minContent = b->maxContent = -1;
+    b->memoPass = b->sensPass = 0;
+    b->heightSensitive = false;
+    for (size_t i = 0; i < b->children.len; ++i) forgetKeptLayout(cscdBoxChild(b, i));
 }
 
 /* After a build that took boxes: an element whose box is not in the new tree (not shown now, under one not shown) forgets
  * the old one, which goes with the old tree. The boxes taken hold their elements' boxes as they were. */
-static void forgetOldBoxes(CscdNode* root, uint64_t epoch) {
+static void forgetOldBoxes(Layouter* L, CscdNode* root, uint64_t epoch) {
     CscdPtrVec todo = {0}; /* (a list, not a recursion: every element must be reached, however deep) */
     cscdVecPush(&todo, root);
     while (todo.len) {
         CscdNode* n = (CscdNode*)todo.items[--todo.len];
         CscdElement* e = cscdNodeAsElement(n);
         if (e && e->layout) {
-            if (e->layout->builtIn != epoch) e->layout = NULL;
+            if (e->layout->builtIn != epoch) {
+                e->layout = NULL;
+                L->boxesChanged = true; /* (a box it had, and has not now) */
+            }
             else if (e->layout->taken && e->layout->element == e) continue;
         }
         for (size_t i = 0; i < n->children.len; ++i) cscdVecPush(&todo, cscdNodeChild(n, i));
@@ -847,7 +972,10 @@ CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc) {
         if (L->reuse) clearLayoutPointers(&doc->node); /* (nothing shown: no element keeps an old box) */
         return NULL;
     }
+    CscdLayoutBox* was = L->reuse && html->layout && html->layout->builtIn != L->epoch ? html->layout : NULL;
     CscdLayoutBox* root = makeBox(L, html, (CscdComputedStyle*)cscdRetain(html->style));
+    if (was) notePrevious(root, was);
+    else L->boxesChanged = true;
     root->atomicInline = false;
     if (root->kind == CSCD_BOX_INLINE) root->kind = CSCD_BOX_BLOCK;
     html->layout = root;
@@ -856,7 +984,7 @@ CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc) {
     layApplyCounters(L, html->style, NULL);
     buildChildren(L, html, root);
     layFixupChildren(L, root);
-    if (L->reuse) forgetOldBoxes(&doc->node, L->epoch);
+    if (L->reuse) forgetOldBoxes(L, &doc->node, L->epoch);
     return root;
 }
 
@@ -2644,6 +2772,8 @@ static bool memoMatches(Layouter* L, CscdLayoutBox* b, const float key[8], const
      * off from the same page laid out from nothing. Moved, it is laid out again (within a layout, every pass shifts as
      * the one from nothing does). */
     if (b->memoPass == MEMO_KEPT && (in->x != b->memoInX || in->y != b->memoInY)) return false;
+    /* (one without a formatting context of its own: only with no floats around it now either) */
+    if (in->floats && in->floats->floats.len && !establishesBFC(b, in)) return false;
     for (int i = 0; i < 8; ++i)
         if (i != 3 && key[i] != b->memoIn[i]) return false;
     if (key[3] == b->memoIn[3]) return true;
@@ -2725,6 +2855,7 @@ MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
     float key[8];
     memoKey(b, in, key);
     if (memoMatches(L, b, key, in)) {
+        if (b->memoPass == MEMO_KEPT) b->keptIn = L->epoch; /* (where it was, as it was: nothing in it to look at again) */
         /* the same layout, at another place: the box is moved there (from wherever it was put since) */
         const float x = b->memoX + in->x - b->memoInX, y = b->memoY + in->y - b->memoInY;
         if (x != b->x || y != b->y) {
@@ -2740,6 +2871,8 @@ MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
         return out;
     }
     forgetLayout(b->parent); /* (what holds it changes with it) */
+    if (b->memoPass == MEMO_KEPT) forgetKeptLayout(b); /* (its memo missed: once, as a new box is new once) */
+    b->keptIn = 0; /* (laid out now: a flex item kept as it was when measured, then laid out at its size, is looked at) */
     b->memoPass = 0;
     /* what it lays out must not escape it for the layout to be kept: positioned boxes waiting for a
      * containing block further out (or fixed ones), a subgrid's tracks */
@@ -2812,6 +2945,7 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
     memset(&own, 0, sizeof own);
     FloatCtx* fc = bfc ? &own : in->floats;
     if (!fc) fc = &own;
+    const size_t floatsBefore = fc->floats.len;
 
     bool hdef;
     float sh = laySpecifiedHeight(b, in->cbH, &hdef);
@@ -2851,6 +2985,10 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
         float fb = fcBottom(fc);
         if (fb > -1e29f) contentH = cscdMaxf(contentH, fb - cscdBoxContentY(b));
     }
+    /* A block without a formatting context of its own is remembered as one with is when no float was around it and
+     * none came out of it: then nothing outside its input reached it, and what it did reaches out only through its
+     * margins, which the memo keeps (see memoMatches, which asks for no floats again). */
+    b->memoBfc = bfc || (floatsBefore == 0 && fc->floats.len == 0);
     cscdVecFree(&own.floats);
     float bh;
     if (in->forcedH >= 0) bh = in->forcedH;
@@ -3023,11 +3161,11 @@ static void freeLayouter(Layouter* L) {
 }
 
 CscdLayoutBox* cscdLayoutDocument(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser) {
-    return cscdLayoutDocumentFrom(doc, styles, vp, images, imagesUser, NULL);
+    return cscdLayoutDocumentFrom(doc, styles, vp, images, imagesUser, NULL, NULL);
 }
 
 CscdLayoutBox* cscdLayoutDocumentFrom(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser,
-                                      CscdLayoutBox* previous) {
+                                      CscdLayoutBox* previous, bool* boxesChanged) {
     Layouter L;
     memset(&L, 0, sizeof L);
     L.reuse = previous != NULL;
@@ -3039,6 +3177,7 @@ CscdLayoutBox* cscdLayoutDocumentFrom(CscdDocument* doc, const CscdStyleEngine* 
     L.imagesUser = imagesUser;
     CscdLayoutBox* root = layBuild(&L, doc);
     if (root) layRoot(&L, root);
+    if (boxesChanged) *boxesChanged = L.boxesChanged || !previous;
     freeLayouter(&L);
     return root;
 }

@@ -92,6 +92,14 @@ struct CscdLayoutBox {
      * it leaves frees what is left without it) */
     bool ordered, taken;
     uint64_t builtIn; /* (the layout epoch of the layout that made it, or took it) */
+    /* (across layouts) keptIn: the layout that took it as it was, where it was (it and all in it unchanged); prevInk
+     * and prevLook: what its element's own boxes drew, and how, before this layout made it again or laid it out again
+     * (hasPrev: there was one), for the damage */
+    uint64_t keptIn;
+    float keptX, keptY; /* (where it was when the layout took it: a flex or grid parent may shift it afterwards) */
+    CscdRect prevInk;
+    uint64_t prevLook;
+    bool hasPrev;
     float memoIn[8];
     float memoInX, memoInY, memoX, memoY, memoH, memoOut[2];
 };
@@ -132,7 +140,15 @@ CscdLayoutBox* cscdLayoutDocument(CscdDocument* doc, const CscdStyleEngine* styl
  * Free previous with cscdLayoutBoxFreeReplaced once this returns (not before: elements still point into it). The
  * document's layout epoch moves on. */
 CscdLayoutBox* cscdLayoutDocumentFrom(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser,
-                                      CscdLayoutBox* previous);
+                                      CscdLayoutBox* previous, bool* boxesChanged);
+/* What an element's own boxes draw (its box, its text, its ::before and ::after, its marker: not the elements in it),
+ * in layout coordinates, with its outline and shadows; and how, as a number (styles, places, scrolling). An element
+ * box (one with an element, not anonymous, not a pseudo element's nor a text). */
+CscdRect cscdBoxOwnInk(const CscdLayoutBox* b);
+uint64_t cscdBoxOwnLook(const CscdLayoutBox* b);
+CSCD_INLINE bool cscdBoxIsElements(const CscdLayoutBox* b) {
+    return b->element && !b->anonymous && !b->pseudo.len && b->kind != CSCD_BOX_TEXT;
+}
 /* Frees what is left of a layout cscdLayoutDocumentFrom took boxes from (not those), and forgets it in the elements
  * whose boxes go. */
 void cscdLayoutBoxFreeReplaced(CscdLayoutBox* b);

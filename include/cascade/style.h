@@ -530,6 +530,12 @@ bool cscdStyleEngineStateMatters(const CscdStyleEngine* se, const CscdElement* e
 enum { CSCD_REACH_SELF = 1, CSCD_REACH_DESCENDANTS = 2, CSCD_REACH_SIBLINGS = 4, CSCD_REACH_ALL = 8 };
 typedef enum CscdReachKind { CSCD_REACH_CLASS, CSCD_REACH_ID, CSCD_REACH_ATTRIBUTE } CscdReachKind;
 unsigned cscdStyleEngineReach(const CscdStyleEngine* se, CscdReachKind kind, CscdSv name);
+/* How far an element coming in, going or changing itself reaches by what the rules see of the tree: itself (and what is
+ * in it), its parent's children when a rule sees places among siblings (+ ~ :nth-* :first-child :empty...), the whole
+ * document with :has(). */
+unsigned cscdStyleEngineStructureReach(const CscdStyleEngine* se);
+/* Whether e's children coming or going could change its style (a rule's :empty compound could match it). */
+bool cscdStyleEngineEmptyMatters(const CscdStyleEngine* se, const CscdElement* e);
 /* A selector tests this attribute, or a value reads attributes (attr()): its changes need styles
  * computed again. True too while the rules' index is out of date. */
 bool cscdStyleEngineSelectsAttribute(const CscdStyleEngine* se, CscdSv name);

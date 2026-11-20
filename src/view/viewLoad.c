@@ -511,6 +511,7 @@ void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir) {
     cscdLayoutBoxFree(v->root);
     v->root = NULL;
     v->inkValid = false;
+    v->inkEpoch = 0;
     cscdLayoutForget(v->doc);
     viewClearTransitions(v);
     viewClearAnimations(v);

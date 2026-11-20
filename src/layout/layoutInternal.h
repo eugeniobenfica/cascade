@@ -75,6 +75,7 @@ typedef struct Layouter {
      * epoch now (an element stamped before it is unchanged) */
     bool reuse;
     uint64_t epoch;
+    bool boxesChanged; /* an element got a box it had not, or lost one (the damage is the whole page) */
     /* the outermost list in absStack a positioned box was handed to since the layout under way began
      * (-1: a fixed one; INT_MAX: none) */
     int deferredTo;

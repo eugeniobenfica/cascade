@@ -32,24 +32,38 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] The pointer entering the page no longer restyles everything (`cscdStyleEngineStateMatters`): ~235 → 3.4 ms.
 - [x] Incremental layout: change stamps (`CscdNode.changedAt`), boxes kept from the last layout
       (`cscdLayoutDocumentFrom`), memo across layouts when a box stays in place: 158 → 7.4 ms.
+- [x] Structural changes without a full restyle: inserts, removals and an element's own changes are recorded node by
+      node (`CscdDocument.nodeChanges`) and restyle the new subtree, the parent's children only when a rule sees
+      places among siblings, the parent alone when an `:empty` rule could match it, the page only with `:has()`.
+      A row appended to 20,000: 40 → 0 ms of styles.
+- [x] Layout of plain blocks: a block without a formatting context of its own is memoized when no float is around it
+      and none comes out of it. 20,000 paragraphs, a class on one: 148 → 8 ms of layout.
+- [x] Damage from what layout touched: each box made or laid out again carries what its element drew before; boxes
+      kept where they were are passed over with their subtree (a flex or grid item shifted after its memo hit counts as
+      moved). The culling table is kept across layouts the same way. A change on one of 20,000 rows: 87 → 15 ms of
+      update.
 
 ### Fixed on the way
 
 - [x] Damage of a grown shadow, scroll offsets kept in range, scrollbars of resized scrollers, coverage of clipped
       shapes (all found by the oracle).
 - [x] The image cache could drop the image it was handing out.
+- [x] The page's scrollbar was not repainted when a light path changed the content's height.
+- [x] A kept box laid out again started from its old geometry (inline boxes with no text were shifted twice).
+- [x] Changes recorded for an element that was freed without being taken out of the document first (a menu, a
+      cut-off subtree) were read afterwards.
 
 ## Next
 
 ### Performance
 
-- [ ] **Structural changes without a full restyle.** Inserting or removing an element still restyles the whole page
-      (43 ms). Restyle the new subtree, its following siblings when a sibling or `:nth-*` rule could see the change, and
-      the ancestors when `:has()` or `:empty` could.
-- [ ] **Layout of plain blocks.** Boxes without a formatting context of their own (a paragraph in a block) are kept but
-      still laid out. Cache them when no float reaches them and their top margin does not collapse through.
-- [ ] **Walk only what is dirty.** The 7 ms left per change come from visiting 20,000 clean children in the build,
-      the layout and the damage snapshots. A "something under it changed" bit lets the walks stop at clean subtrees.
+- [ ] **Structural changes paint only what changed.** A row appended or removed still repaints the whole window (29 ms
+      of paint); the damage walk could take boxes that came and went, not only boxes that changed.
+- [ ] **The last 7 ms per change.** Building and laying out still visit every child of a list whose one child changed
+      (20,000 cheap checks), and so do the damage walk and the hit areas. Splice the old children vector in place, and
+      find the dirty children through the change stamps instead of visiting them all.
+- [ ] **`:has()` without a full restyle.** Pages with `:has()` still restyle everything on a structural change; walk
+      up to the ancestors whose `:has()` could see it (as Blink's invalidation does).
 - [ ] **Moved boxes without a relayout.** A change above the rows still lays out every row below (68 ms). Fixed-point
       layout units (as browsers' 1/64 px) would make shifting exact; or lay out at the same relative place and offset.
 - [ ] **Painting long lists.** Culling still tests every row; in normal flow, find the first and last visible child by

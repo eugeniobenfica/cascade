@@ -13,6 +13,20 @@
 static uint64_t rs;
 static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return (uint32_t)(rs >> 20); }
 
+/* The page in three versions, by what its rules see of the tree (seeds take them in turn): with :has(), which makes any
+ * change of the tree restyle the page; with rules on places among siblings (+ ~ :nth-child :first-child), which make it
+ * restyle the parent's children; and with neither, where a new element is styled alone. */
+static const char kRulesHas[] = ".card:has(.on) { border: 2px solid #8b5cf6; }";
+static const char kRulesPlaces[] =
+    ".cell:nth-child(2n) { background: #ffe8e8; }"
+    ".on + .cell { outline: 2px solid #f80; }"
+    ".wide ~ p { letter-spacing: 1px; }"
+    "[data-state=warn] + .cell, [data-state=ok] ~ p { border-left: 3px solid #08f; }"
+    ":not(.on) > .cell:first-child { background: #dfd; }"
+    "p:last-child { margin-bottom: 12px; }"
+    "[hidden] + .cell, [hidden] ~ p { text-decoration: underline; padding-top: 3px; }";
+/* (in every version: an element emptied or filled restyles itself) */
+static const char kRulesEmpty[] = ".cell:empty, p:empty { min-height: 14px; background: #fee; }";
 static const char kPage[] =
     "<style>"
     "body { margin: 0; font: 14px sans-serif; background: #fafafa; }"
@@ -26,7 +40,6 @@ static const char kPage[] =
     ".card:hover .hint { color: #8b5cf6; }"
     ".grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }"
     ".cell { padding: 4px; background: #e8e8ff; }"
-    ".cell:nth-child(2n) { background: #ffe8e8; }"
     ".on { background: #8b5cf6; color: white; }"
     ".wide { width: 160px; }"
     ".scroll { height: 70px; overflow: auto; border: 1px solid #ccc; margin: 6px; }"
@@ -37,15 +50,14 @@ static const char kPage[] =
     "#count { display: inline-block; min-width: 40px; }"
     /* what a class or an attribute reaches beyond its element: descendants, following siblings, :has() */
     ".on .hint, .on b { color: #0a0; }"
-    ".on + .cell { outline: 2px solid #f80; }"
-    ".wide ~ p { letter-spacing: 1px; }"
     "[data-state=warn] { color: #c00; }"
     "[data-state] .cell, [data-state] p { padding-left: 9px; }"
-    "[data-state=warn] + .cell, [data-state=ok] ~ p { border-left: 3px solid #08f; }"
     "#c1.fade .turn { font-weight: 700; }"
     ":is(.grow) .hint { text-decoration: underline; }"
-    ":not(.on) > .cell:first-child { background: #dfd; }"
-    ".card:has(.on) { border: 2px solid #8b5cf6; }"
+    "[hidden] { display: none; }"
+    ".fl { float: left; width: 50px; height: 24px; background: #cfc; margin: 2px; }"
+    ".plain p { margin: 6px 0; } .plain div { margin-top: 4px; }"
+    ".cell[title] { font-style: italic; }"
     "</style>"
     "<div class=bar><button id=b1>One</button><button id=b2 class=grow>Two</button><button id=b3>Three</button>"
     "<span id=count>0</span><progress id=pr value=20 max=100></progress></div>"
@@ -54,11 +66,13 @@ static const char kPage[] =
     "<div class=grid id=g><div class=cell>a</div><div class=cell>b</div><div class=cell>c</div>"
     "<div class=cell>d</div><div class=cell id=e5>e</div><div class=cell>f</div></div>"
     "<div class=scroll id=sc><div class=sticky>head</div><p id=s1>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p></div>"
-    "<div class=card id=c2><span class=turn id=tr>turned</span> <span class=fade id=fd>faded</span></div>";
+    "<div class=card id=c2><span class=turn id=tr>turned</span> <span class=fade id=fd>faded</span></div>"
+    "<div class=plain id=pl><p>first plain</p><div><p>nested plain</p><p>and another one, longer, that wraps by the float</p></div>"
+    "<p>last plain</p></div>";
 
 static const char* const kTexts[] = {"0", "12", "345", "6789", "short", "a longer piece of text that wraps", "\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D", ""};
 static const char* const kIds[] = {"#count", "#h1", "#t1", "#e5", "#s1", "#tr", "#fd", "#b3", "#h2"};
-static const char* const kClasses[] = {"on", "wide", "fade", "grow"};
+static const char* const kClasses[] = {"on", "wide", "fade", "grow", "fl"};
 static const char* const kStates[] = {"warn", "ok", ""};
 
 static CscdElement* any(CscdView* v) {
@@ -111,12 +125,31 @@ static void change(CscdView* v, char* log, size_t logSize) {
             else cscdElementRemoveAttribute(e, CSCD_SV("data-state"));
         }
         break;
-    case 13: /* an element more, or one less */
+    case 13: /* an element more (at the end, or before another), one less, one hidden or shown */
         e = any(v);
-        if (e && rnd() % 2) {
+        if (!e) break;
+        switch (rnd() % 4) {
+        case 0: {
             CscdElement* i = cscdElementAppendElement(e, CSCD_SV("i"));
             if (i) cscdElementSetText(i, CSCD_SV("new"));
-        } else if (e && e->node.parent && cscdNodeIsElement(e->node.parent) && !cscdElementIs(e, "body")) cscdElementRemove(e);
+            break;
+        }
+        case 1:
+            if (e->node.parent && cscdNodeIsElement(e->node.parent)) {
+                CscdElement* c = cscdElementNew(rnd() % 2 ? CSCD_SV("div") : CSCD_SV("p"));
+                cscdElementSetAttribute(c, CSCD_SV("class"), CSCD_SV("cell"));
+                cscdElementSetText(c, CSCD_SV("in"));
+                if (!cscdNodeInsertBefore(e->node.parent, &c->node, &e->node)) cscdNodeDestroy(&c->node);
+            }
+            break;
+        case 2:
+            if (e->node.parent && cscdNodeIsElement(e->node.parent) && !cscdElementIs(e, "body")) cscdElementRemove(e);
+            break;
+        default:
+            if (cscdElementHasAttributeC(e, "hidden")) cscdElementRemoveAttribute(e, CSCD_SV("hidden"));
+            else cscdElementSetAttribute(e, CSCD_SV("hidden"), CSCD_SV(""));
+            break;
+        }
         break;
     case 14: /* a painter's element */
         e = any(v);
@@ -140,7 +173,16 @@ static void run(uint64_t seed, int rounds, float dpr) {
     cscdViewSetFeature(v, CSCD_FEATURE_SMOOTH_SCROLL, false);
     cscdViewSetFeature(v, CSCD_FEATURE_TOOLTIPS, false);
     cscdViewSetViewport(v, 400, 300, dpr);
-    cscdViewLoadHTML(v, (CscdSv){kPage, sizeof kPage - 1}, CSCD_SV("."));
+    CscdStr page = {0};
+    const int version = (int)(seed % 3);
+    cscdStrAppendC(&page, "<style>");
+    if (version == 0) cscdStrAppendC(&page, kRulesHas);
+    if (version <= 1) cscdStrAppendC(&page, kRulesPlaces);
+    cscdStrAppendC(&page, kRulesEmpty);
+    cscdStrAppendC(&page, "</style>");
+    cscdStrAppend(&page, (CscdSv){kPage, sizeof kPage - 1});
+    cscdViewLoadHTML(v, cscdStrSv(&page), CSCD_SV("."));
+    cscdStrFree(&page);
     CscdImage frame;
     memset(&frame, 0, sizeof frame);
     char log[4096] = "";
@@ -191,7 +233,7 @@ static void run(uint64_t seed, int rounds, float dpr) {
 int main(int argc, char** argv) {
     const int first = argc > 1 ? atoi(argv[1]) : 1, seeds = argc > 2 ? atoi(argv[2]) : 6, rounds = argc > 3 ? atoi(argv[3]) : 200;
     cscdSetPaintThreads(1);
-    for (int s = first; s < first + seeds; ++s) run((uint64_t)s, rounds, s % 3 == 2 ? 1.5f : 1.f);
+    for (int s = first; s < first + seeds; ++s) run((uint64_t)s, rounds, s % 4 == 3 ? 1.5f : 1.f);
     printf("%d seeds of %d rounds, %d failed\n", seeds, rounds, failures);
     return failures ? 1 : 0;
 }
