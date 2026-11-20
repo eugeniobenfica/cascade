@@ -43,6 +43,22 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       moved). The culling table is kept across layouts the same way. A change on one of 20,000 rows: 87 → 15 ms of
       update.
 
+- [x] Painting long lists: the children that can show are found by two binary searches over their inks; whether a
+      subtree holds layers is remembered on its boxes (`layersAt`), and layout no longer clamps the scrolling of the
+      boxes it kept. Full paint of 20,000 rows 11.5 → 1.2 ms, hit areas 7.8 → 0.02 ms; a class on one row: update
+      14 → 6 ms, paint 4 → 0.1 ms.
+- [x] Structural changes paint only what changed: the boxes that came (`newIn`) and went (the old tree's boxes neither
+      taken nor followed, `followedIn`) are damaged where they are or were. A row appended off screen paints nothing.
+- [x] `:has()` without a full restyle: the compounds holding a `:has()` of descendants or children are kept
+      (`cscdStyleEngineHasReach`); a change walks up to the ancestors that match one. With a `:has()` rule on 20,000
+      rows: a class on one 61 → 6 ms, a row appended 51 → 5.5 ms. (`:has()` of siblings or inside `:is()`: all.)
+- [x] SIMD: translucent fills and layers drawn back with SSE2 / NEON, the blur of four channels at once; bit-exact
+      with the scalar code (`cscdPaintSimdSelfCheck`, in the tests). Solid runs were already stored whole.
+- [x] Scrolling the page moves the last frame and paints what comes into view and the scrollbar (whole device pixels,
+      nothing fixed, sticky or with a backdrop filter): 6–16% of the window instead of all of it.
+- [x] Moved boxes without a relayout, when exact: a kept box at another place is shifted when every place along the
+      shift is on the 1/64 px grid under 2^17 px (`shiftsExactly`); else laid out again.
+
 ### Fixed on the way
 
 - [x] Damage of a grown shadow, scroll offsets kept in range, scrollbars of resized scrollers, coverage of clipped
@@ -52,25 +68,26 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] A kept box laid out again started from its old geometry (inline boxes with no text were shifted twice).
 - [x] Changes recorded for an element that was freed without being taken out of the document first (a menu, a
       cut-off subtree) were read afterwards.
+- [x] A flex or grid item kept from the last layout and measured elsewhere recorded what it drew before at the place it
+      was measured: its old place was not repainted.
+- [x] A progress bar's value set in the same frame as an insert was not repainted.
+- [x] A menu laying out the page in the middle of a click remade the hit areas under the event.
 
 ## Next
 
 ### Performance
 
-- [ ] **Structural changes paint only what changed.** A row appended or removed still repaints the whole window (29 ms
-      of paint); the damage walk could take boxes that came and went, not only boxes that changed.
-- [ ] **The last 7 ms per change.** Building and laying out still visit every child of a list whose one child changed
-      (20,000 cheap checks), and so do the damage walk and the hit areas. Splice the old children vector in place, and
-      find the dirty children through the change stamps instead of visiting them all.
-- [ ] **`:has()` without a full restyle.** Pages with `:has()` still restyle everything on a structural change; walk
-      up to the ancestors whose `:has()` could see it (as Blink's invalidation does).
-- [ ] **Moved boxes without a relayout.** A change above the rows still lays out every row below (68 ms). Fixed-point
-      layout units (as browsers' 1/64 px) would make shifting exact; or lay out at the same relative place and offset.
-- [ ] **Painting long lists.** Culling still tests every row; in normal flow, find the first and last visible child by
-      their position.
-- [ ] **Retained tiles.** Scrolling and transform/opacity animations repaint their area on the CPU each frame; keep
-      painted tiles and translate them (CPU blit first, an integer GPU compositor later).
-- [ ] **SIMD in the rasterizer** (integer SSE2/NEON, bit-exact with the scalar code) and solid-span fast paths.
+- [ ] **Fixed-point layout units.** Moved boxes are shifted only when nothing rounds; text baselines are rarely on the
+      1/64 px grid and long pages pass 2^17 px, so a change above 20,000 rows still lays out every row below (75 ms)
+      and repaints the window. Layout in 1/64 px integers (as browsers' LayoutUnit) makes every shift exact; it changes
+      the pixel references.
+- [ ] **The last 6 ms per change.** Building and laying out still visit every child of a list whose one child changed
+      (20,000 cheap checks: 1.5 + 2 ms), and so does the damage walk. Splice the old children vector in place, and find
+      the dirty children through the change stamps.
+- [ ] **`:has()` of siblings** (`:has(+ .x)`) and inside `:is()`/`:not()`: still a full restyle.
+- [ ] **Retained tiles for scrollers and animations.** The page scrolls by moving the last frame; scrollable boxes and
+      transform/opacity animations still repaint their area each frame (tiles, then an integer GPU compositor).
+- [ ] **More SIMD**: glyph and image blending (per-pixel lookups), the shadow blur, gradients.
 
 ### Correctness and robustness
 

@@ -333,8 +333,34 @@ typedef struct Damage {
     bool all;
 } Damage;
 
+static void viewHitsMoved(CscdView* v);
+
+static void damageArea(Damage* D, const CscdLayoutBox* b, CscdRect r, CscdPoint d) {
+    if (drawnElsewhere(b) || ++D->count > 32) {
+        D->all = true;
+        return;
+    }
+    const CscdPoint at = b->style && b->style->position == CSCD_POS_FIXED ? cscdPoint(0, 0) : d;
+    cscdVecPush(D->areas, cscdRect(r.x + at.x - 2, r.y + at.y - 2, r.w + 4, r.h + 4));
+}
+
+/* in a box made new: the boxes kept that it holds, shifted (where they were) */
+static void damageKeptIn(Damage* D, const CscdLayoutBox* b) {
+    for (size_t i = 0; i < b->children.len && !D->all; ++i) {
+        const CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c->keptIn == D->epoch) {
+            if (c->x != c->keptX || c->y != c->keptY) D->all = true; /* (rare: its old scrolling is not known here) */
+        } else damageKeptIn(D, c);
+    }
+}
+
 static void damageWalk(Damage* D, const CscdLayoutBox* b, CscdPoint d) {
     if (D->all) return;
+    if (!b->hasPrev && b->newIn == D->epoch && cscdBoxIsElements(b)) { /* (came in: all it draws, where it is) */
+        damageArea(D, b, textInk(b), d);
+        damageKeptIn(D, b);
+        return;
+    }
     if (b->keptIn == D->epoch) {
         if (b->x == b->keptX && b->y == b->keptY) return; /* (as it was, where it was) */
         /* as it was, shifted (a flex or grid parent places its items after laying them out): where it was and is */
@@ -376,6 +402,35 @@ static void damageWalk(Damage* D, const CscdLayoutBox* b, CscdPoint d) {
 
 static void relayoutAroundWhole(CscdView* v, const CscdPtrVec* blocks);
 
+/* (in the middle of an event, as a menu opening lays the page out to place itself: the areas the event was found by
+ * stay until it is done, and are made again before the next hit test or paint) */
+static void viewHitsMoved(CscdView* v) {
+    if (v->layingOutNow) v->hitsStale = true;
+    else viewRecordHits(v);
+}
+
+/* The old tree, before what was not taken from it is freed: the boxes of elements that went (removed, or not shown now)
+ * are neither taken nor followed by a new box. What they drew, in viewport px. */
+static void goneWalk(CscdView* v, const CscdLayoutBox* b, CscdPoint d, uint64_t epoch) {
+    if (v->goneAll || b->taken || b->kind == CSCD_BOX_TEXT || b->pseudo.len) return; /* (texts, pseudo elements: their element's own) */
+    if (cscdBoxIsElements(b) && !b->anonymous && b->followedIn != epoch) {
+        if (drawnElsewhere(b) || v->goneAreas.len >= 32) {
+            v->goneAll = true;
+            return;
+        }
+        const CscdPoint at = b->style && b->style->position == CSCD_POS_FIXED ? cscdPoint(0, 0) : d;
+        const CscdRect r = textInk(b);
+        cscdVecPush(&v->goneAreas, cscdRect(r.x + at.x - 2, r.y + at.y - 2, r.w + 4, r.h + 4));
+        return; /* (its element may be freed: not looked at) */
+    }
+    CscdPoint inner = d;
+    if (b->style && cscdStyleClipsOverflow(b->style) && b->element && b->parent && !b->anonymous) {
+        inner.x -= b->element->scrollLeft;
+        inner.y -= b->element->scrollTop;
+    }
+    for (size_t i = 0; i < b->children.len; ++i) goneWalk(v, cscdBoxChild(b, i), inner, epoch);
+}
+
 /* Lays out; repaints only what changed: the elements whose own boxes look otherwise than before (a text that changed,
  * a box that moved, a class that only changed colors), found from what the layout touched; many of them, or most of
  * the page: all of it. */
@@ -389,7 +444,8 @@ static void relayoutAround(CscdView* v, const CscdPtrVec* blocks) {
     bool all = v->layoutBoxesChanged || v->scrollX != scrollXWas || v->scrollY != scrollYWas || !v->root;
     CscdRectVec areas = {0};
     if (!all) {
-        Damage D = {v, v->doc->layoutEpoch - 1, &areas, 0, false};
+        Damage D = {v, v->doc->layoutEpoch - 1, &areas, (int)v->goneAreas.len, v->goneAll};
+        for (size_t i = 0; i < v->goneAreas.len; ++i) cscdVecPush(&areas, v->goneAreas.items[i]);
         damageWalk(&D, v->root, cscdPoint(-v->scrollX, -v->scrollY));
         all = D.all;
     }
@@ -405,7 +461,7 @@ static void relayoutAround(CscdView* v, const CscdPtrVec* blocks) {
     } else {
         for (size_t i = 0; i < areas.len; ++i) viewAddDamage(v, areas.items[i]);
         v->dirty = true;
-        viewRecordHits(v); /* the old ones point into the layout that went */
+        viewHitsMoved(v); /* the old ones point into the layout that went */
     }
     cscdVecFree(&areas);
 }
@@ -460,7 +516,7 @@ static void relayoutAroundWhole(CscdView* v, const CscdPtrVec* blocks) {
     } else {
         for (size_t i = 0; i < areas.len; ++i) viewAddDamage(v, areas.items[i]);
         v->dirty = true;
-        viewRecordHits(v); /* the old ones point into the layout that went */
+        viewHitsMoved(v); /* the old ones point into the layout that went */
     }
     cscdVecFree(&areas);
     cscdVecFree(&moved);
@@ -571,6 +627,19 @@ static void addRoot(CscdPtrVec* roots, CscdElement* e, bool* all) {
     else if (!viewContainsPtr(roots, e)) cscdVecPush(roots, e);
 }
 
+/* A change at or under `from` (a node that came in, went or changed, an attribute a :has() argument tests): the
+ * ancestors from it up whose :has() could see it, styled again with what their rule reaches from them (as Blink's
+ * :has() invalidation walks up to the anchors) */
+static void addHasRoots(const CscdView* v, CscdNode* from, CscdPtrVec* roots, bool* all) {
+    for (CscdNode* n = from; n && !*all; n = n->parent) {
+        CscdElement* e = cscdNodeAsElement(n);
+        if (!e) continue;
+        const unsigned bits = cscdStyleEngineHasReach(v->styles, e);
+        if (bits & CSCD_REACH_ALL) *all = true;
+        else if (bits) addRoot(roots, bits & CSCD_REACH_SIBLINGS ? parentEl(e) : e, all);
+    }
+}
+
 /* the highest ones (those under another are styled with it) */
 static void keepHighest(CscdPtrVec* roots) {
     size_t w = 0;
@@ -600,6 +669,7 @@ bool viewRestyleStructure(CscdView* v) {
         if (!connected(c->node, d)) continue;
         CscdElement* e = cscdNodeAsElement(c->node);
         CscdElement* parent = c->node->parent && cscdNodeIsElement(c->node->parent) ? (CscdElement*)c->node->parent : NULL;
+        if (reach & CSCD_REACH_HAS) addHasRoots(v, c->kind == CSCD_CHANGE_CHILDREN ? c->node : c->node->parent, &roots, &all);
         if (c->kind == CSCD_CHANGE_INSERTED) {
             addRoot(&roots, siblings ? parent : e, &all); /* (a text: nothing, its parent's style stands) */
             if (parent && cscdStyleEngineEmptyMatters(v->styles, parent)) addRoot(&roots, parent, &all); /* (:empty no more) */
@@ -611,8 +681,9 @@ bool viewRestyleStructure(CscdView* v) {
         const CscdAttrChange* c = &d->attrChanges.items[i];
         if (!connected(&c->element->node, d)) continue;
         const unsigned bits = changeReach(v, c);
+        if (bits & CSCD_REACH_HAS) addHasRoots(v, c->element->node.parent, &roots, &all);
         if (bits & CSCD_REACH_ALL) all = true;
-        else if (bits) addRoot(&roots, bits & CSCD_REACH_SIBLINGS ? parentEl(c->element) : c->element, &all);
+        else if (bits & ~CSCD_REACH_HAS) addRoot(&roots, bits & CSCD_REACH_SIBLINGS ? parentEl(c->element) : c->element, &all);
     }
     if (all) {
         cscdVecFree(&roots);
@@ -626,13 +697,21 @@ bool viewRestyleStructure(CscdView* v) {
     v->styledVersion = d->version;
     viewA11yStructure(v);
     d->textChanged.len = 0;
-    d->paintChanged.len = 0;
+    CscdPtrVec painted = d->paintChanged; /* (a progress bar's value: nothing in its boxes' look shows it) */
+    d->paintChanged = (CscdPtrVec){0};
     cscdDocumentClearAttrChanges(d);
     cscdDocumentClearNodeChanges(d);
     d->structural = false;
     v->stateChanged.len = 0;
     v->styleDirty = false;
     v->layoutDirty = true;
+    const CscdPtrVec none = {0};
+    relayoutAround(v, &none); /* (what came, went or moved, painted again) */
+    for (size_t i = 0; i < painted.len; ++i) {
+        CscdElement* e = (CscdElement*)painted.items[i];
+        if (e->layout && connected(&e->node, d)) cscdViewInvalidateElement(v, e);
+    }
+    cscdVecFree(&painted);
     return true;
 }
 
@@ -650,7 +729,8 @@ bool viewRestyleAttributes(CscdView* v) {
     for (size_t i = 0; i < d->attrChanges.len && !all; ++i) {
         const struct CscdAttrChange* c = &d->attrChanges.items[i];
         const unsigned bits = changeReach(v, c);
-        if (!bits) continue;
+        if (bits & CSCD_REACH_HAS) addHasRoots(v, c->element->node.parent, &roots, &all);
+        if (!(bits & ~CSCD_REACH_HAS)) continue;
         CscdElement* root = c->element;
         if (bits & CSCD_REACH_ALL) all = true;
         else if (bits & CSCD_REACH_SIBLINGS) root = parentEl(c->element);
@@ -901,6 +981,7 @@ static void containerSizes(const CscdLayoutBox* b, CscdU64Map* sizes) {
 /* the boxes that scroll kept in range when what they hold shrank: past the end, the content showed a gap and the
  * thumb was drawn below the box, where nothing painted over it again */
 static void clampScrolls(CscdView* v, CscdLayoutBox* b) {
+    if (b->keptIn && b->keptIn + 1 == v->doc->layoutEpoch) return; /* (as it was: what it holds and its scrolling too) */
     CscdElement* e = b->element;
     if (e && !b->anonymous && !b->pseudo.len && (e->scrollTop != 0 || e->scrollLeft != 0) && b->parent) {
         float maxX, maxY;
@@ -927,6 +1008,8 @@ static void layoutFrom(CscdView* v, bool reuse) {
     bool changed = true;
     v->root = cscdLayoutDocumentFrom(v->doc, v->styles, vp, viewImageLoader, v, reuse ? old : NULL, &changed);
     v->layoutBoxesChanged = v->layoutBoxesChanged || changed;
+    if (reuse && old && v->root) goneWalk(v, old, cscdPoint(-v->scrollX, -v->scrollY), v->doc->layoutEpoch - 1);
+    else v->goneAll = true;
     if (reuse) cscdLayoutBoxFreeReplaced(old);
     else cscdLayoutBoxFree(old);
     v->layoutDpr = v->dpr;
@@ -935,6 +1018,8 @@ static void layoutFrom(CscdView* v, bool reuse) {
 void viewRelayout(CscdView* v) {
     const double t0 = cscdNowSeconds();
     v->layoutBoxesChanged = false;
+    v->goneAreas.len = 0;
+    v->goneAll = false;
     layoutFrom(v, true);
     /* container queries: styles that ask about a container's size are worked out again with the size
      * this layout gave it (containment keeps that size from depending on them) */
@@ -986,6 +1071,9 @@ bool viewCheckIncremental(CscdView* v, CscdImage* frame, CscdStr* why) {
         const CscdRect b = full.rects.items[s->val.u];
         const CscdRect a = l ? light.rects.items[l->u] : cscdRect(NAN, NAN, NAN, NAN);
         if (l && fabsf(a.x - b.x) <= 0.01f && fabsf(a.y - b.y) <= 0.01f && fabsf(a.w - b.w) <= 0.01f && fabsf(a.h - b.h) <= 0.01f) continue;
+        /* (a box with no size, an inline one or an empty one: layout gives it no place of its own, only the shifts of
+         * what holds it, which a box moved whole as it was does not replay; it draws nothing and is found by its pieces) */
+        if (l && a.w == 0 && a.h == 0 && b.w == 0 && b.h == 0) continue;
         if (same) {
             describeElement(why, (const CscdElement*)(uintptr_t)s->key);
             cscdStrAppendf(why, " at %g,%g %gx%g, from scratch %g,%g %gx%g; ", a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h);
@@ -1014,8 +1102,10 @@ bool viewCheckIncremental(CscdView* v, CscdImage* frame, CscdStr* why) {
 }
 
 void viewLayoutNow(CscdView* v) {
+    v->layingOutNow = true;
     if (v->doc->version != v->styledVersion && !viewRepaintAttributes(v) && !viewRelayoutText(v) && !viewRestyleAttributes(v) && !viewRestyleStructure(v))
         v->styleDirty = true;
+    v->layingOutNow = false;
     if (!v->styleDirty) viewRestyleStates(v);
     if (v->styleDirty) viewRestyle(v, NULL);
     if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; }

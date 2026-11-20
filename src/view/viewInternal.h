@@ -134,8 +134,11 @@ struct CscdView {
     bool recordHits;         /* false while painting part of the page (the hits stay) */
     CscdPtrVec stateChanged;   /* elements whose :hover / :active changed since the last restyle */
     bool hitsStale;          /* the layout changed under the hit areas (a scroll) */
+    bool layingOutNow;       /* (viewLayoutNow, in the middle of an event) */
     float layoutDpr;         /* (the scale the boxes were laid out at: another, and none are taken) */
     bool layoutBoxesChanged; /* (the last relayout gave an element a box it had not, or took one away) */
+    CscdRectVec goneAreas;   /* (what the boxes the last relayout dropped drew, in viewport px; goneAll: too many) */
+    bool goneAll;
     /* What each box and everything in it draws (layout coordinates), for painting to pass over what is out of sight:
      * box -> index in inks, for the boxes of inkRoot. Made again when inkValid is false (a new layout, styles changed
      * in place: a hover, an animation). */
@@ -144,6 +147,11 @@ struct CscdView {
     const CscdLayoutBox* inkRoot;
     bool inkValid;
     uint64_t inkEpoch;   /* (the layout the table was made for: the next one may keep what it kept) */
+    uint64_t inkVersion; /* (moves on whenever an ink in the table changes) */
+    uint64_t layersStamp; /* (CscdLayoutBox.layersAt: moves on when styles may have changed in place anywhere) */
+    int shiftX, shiftY;   /* (device px the last frame is to be moved by before the next paint: the page scrolled) */
+    bool shiftPending;
+    CscdU64Map inkRuns;  /* box -> its children's inks in order (paint.c), for long lists */
     size_t inkBoxes;     /* (boxes in the table when it was last made whole) */
     CSCD_VEC(SmoothScroll) smooth; /* wheel scrolls still on their way */
     double smoothTime;
@@ -402,5 +410,8 @@ size_t nextWord(CscdSv s, size_t i);
 void paintRoot(CscdView* v, CscdCanvas* c, CscdLayoutBox* root);
 /* b's style changed in place (a hover): its ink worked out again, and its ancestors' grown to hold it */
 void paintInkChanged(CscdView* v, CscdLayoutBox* b);
+void paintFreeRuns(CscdView* v);
+/* Whether the page, scrolled, is what it was moved by as much (nothing in it fixed, sticky or reading what is behind it). */
+bool paintPageMovesWhole(CscdView* v);
 
 #endif

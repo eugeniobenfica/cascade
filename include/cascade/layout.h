@@ -96,6 +96,16 @@ struct CscdLayoutBox {
      * and prevLook: what its element's own boxes drew, and how, before this layout made it again or laid it out again
      * (hasPrev: there was one), for the damage */
     uint64_t keptIn;
+    /* (across layouts) newIn: the layout that made it for an element that had none; followedIn: the layout that made
+     * a box again for its element in place of this one (an old box neither taken nor followed: its element went) */
+    uint64_t newIn, followedIn;
+    /* (painting) layersAt: the view's stamp when layersNone was found: nothing in it (not crossing a positioned box or
+     * a stacking context) is positioned or a stacking context, so painting need not look for layers in it */
+    uint64_t layersAt;
+    bool layersNone;
+    /* (painting) the same for what does not move with the page as it scrolls: a fixed or sticky box, a backdrop */
+    uint64_t stillAt;
+    bool stillNone;
     float keptX, keptY; /* (where it was when the layout took it: a flex or grid parent may shift it afterwards) */
     CscdRect prevInk;
     uint64_t prevLook;

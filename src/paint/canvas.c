@@ -35,6 +35,72 @@ static inline uint64_t mulPixel2(uint64_t c, uint64_t k) {
     return rb | ag;
 }
 
+/* ---- four pixels at once: mulPixel and over, lane by lane (the same integer steps, so the same bits) ---- */
+#if defined(CSCD_SSE2)
+typedef __m128i Px4;
+static inline Px4 px4Load(const uint32_t* p) { return _mm_loadu_si128((const __m128i*)(const void*)p); }
+static inline void px4Store(uint32_t* p, Px4 v) { _mm_storeu_si128((__m128i*)(void*)p, v); }
+static inline Px4 px4Splat(uint32_t v) { return _mm_set1_epi32((int)v); }
+/* each channel of c times k (its pixel's lanes of klo for pixels 0-1, khi for 2-3, 16 bits each), /255 rounded */
+static inline Px4 px4Mul(Px4 c, __m128i klo, __m128i khi) {
+    const __m128i z = _mm_setzero_si128(), half = _mm_set1_epi16(128);
+    __m128i lo = _mm_add_epi16(_mm_mullo_epi16(_mm_unpacklo_epi8(c, z), klo), half);
+    __m128i hi = _mm_add_epi16(_mm_mullo_epi16(_mm_unpackhi_epi8(c, z), khi), half);
+    lo = _mm_srli_epi16(_mm_add_epi16(lo, _mm_srli_epi16(lo, 8)), 8);
+    hi = _mm_srli_epi16(_mm_add_epi16(hi, _mm_srli_epi16(hi, 8)), 8);
+    return _mm_packus_epi16(lo, hi);
+}
+static inline Px4 px4MulK(Px4 c, uint32_t k) {
+    const __m128i kk = _mm_set1_epi16((short)k);
+    return px4Mul(c, kk, kk);
+}
+/* s over d: s + d * (255 - s's alpha), as over() (a 32-bit add, as it) */
+static inline Px4 px4Over(Px4 d, Px4 s) {
+    const __m128i ia = _mm_sub_epi32(_mm_set1_epi32(255), _mm_srli_epi32(s, 24));
+    const __m128i two = _mm_or_si128(ia, _mm_slli_epi32(ia, 16)); /* (each pixel's in both 16-bit halves) */
+    return _mm_add_epi32(s, px4Mul(d, _mm_unpacklo_epi32(two, two), _mm_unpackhi_epi32(two, two)));
+}
+#define CSCD_PX4 1
+#elif defined(CSCD_NEON)
+typedef uint32x4_t Px4;
+static inline Px4 px4Load(const uint32_t* p) { return vld1q_u32(p); }
+static inline void px4Store(uint32_t* p, Px4 v) { vst1q_u32(p, v); }
+static inline Px4 px4Splat(uint32_t v) { return vdupq_n_u32(v); }
+static inline Px4 px4Mul(Px4 c, uint16x8_t klo, uint16x8_t khi) {
+    const uint8x16_t b = vreinterpretq_u8_u32(c);
+    const uint16x8_t half = vdupq_n_u16(128);
+    uint16x8_t lo = vaddq_u16(vmulq_u16(vmovl_u8(vget_low_u8(b)), klo), half);
+    uint16x8_t hi = vaddq_u16(vmulq_u16(vmovl_u8(vget_high_u8(b)), khi), half);
+    lo = vshrq_n_u16(vaddq_u16(lo, vshrq_n_u16(lo, 8)), 8);
+    hi = vshrq_n_u16(vaddq_u16(hi, vshrq_n_u16(hi, 8)), 8);
+    return vreinterpretq_u32_u8(vcombine_u8(vmovn_u16(lo), vmovn_u16(hi)));
+}
+static inline Px4 px4MulK(Px4 c, uint32_t k) {
+    const uint16x8_t kk = vdupq_n_u16((uint16_t)k);
+    return px4Mul(c, kk, kk);
+}
+static inline Px4 px4Over(Px4 d, Px4 s) {
+    const uint32x4_t ia = vsubq_u32(vdupq_n_u32(255), vshrq_n_u32(s, 24));
+    const uint32x4_t two = vorrq_u32(ia, vshlq_n_u32(ia, 16));
+    const uint32x4x2_t z = vzipq_u32(two, two);
+    return vaddq_u32(s, px4Mul(d, vreinterpretq_u16_u32(z.val[0]), vreinterpretq_u16_u32(z.val[1])));
+}
+#define CSCD_PX4 1
+#endif
+
+/* d[i] = over(d[i], k < 255 ? mulPixel(s[i], k) : s[i]) for n pixels (a layer drawn back with its opacity) */
+static void overSpan(uint32_t* d, const uint32_t* s, int n, uint32_t k) {
+    int i = 0;
+#if defined(CSCD_PX4)
+    for (; i + 4 <= n; i += 4) {
+        Px4 p = px4Load(s + i);
+        if (k < 255) p = px4MulK(p, k);
+        px4Store(d + i, px4Over(px4Load(d + i), p));
+    }
+#endif
+    for (; i < n; ++i) d[i] = over(d[i], k < 255 ? mulPixel(s[i], k) : s[i]);
+}
+
 /* n pixels of d set to col, or col drawn over them with its alpha (a premultiplied color) */
 static void fillPixels(uint32_t* d, int n, uint32_t col) {
     const uint64_t two = (uint64_t)col << 32 | col;
@@ -42,6 +108,10 @@ static void fillPixels(uint32_t* d, int n, uint32_t col) {
     if ((col >> 24) == 255) {
         for (; k + 2 <= n; k += 2) memcpy(d + k, &two, 8);
     } else {
+#if defined(CSCD_PX4)
+        const Px4 c4 = px4Splat(col);
+        for (; k + 4 <= n; k += 4) px4Store(d + k, px4Over(px4Load(d + k), c4));
+#endif
         const uint64_t ia = 255 - (col >> 24);
         for (; k + 2 <= n; k += 2) {
             uint64_t p;
@@ -1091,7 +1161,29 @@ static void markDirty(CscdCanvas* c, int x0, int y0, int x1, int y1) {
 }
 
 /* Blurs the four channels of w x h pixels of rows (stride apart) in place. */
+/* (the four channels blurred together, each as it would be alone) */
 static void blurPixels(uint32_t* px, size_t stride, int w, int h, float sigma) {
+    CscdFloatVec ch = {0};
+    cscdVecResize(&ch, (size_t)w * h * 4);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const uint32_t p = px[(size_t)y * stride + x];
+            float* f = ch.items + ((size_t)y * w + x) * 4;
+            for (int k = 0; k < 4; ++k) f[k] = (float)((p >> (8 * k)) & 255);
+        }
+    cscdGaussianBlur4(&ch, w, h, sigma);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const float* f = ch.items + ((size_t)y * w + x) * 4;
+            uint32_t p = 0;
+            for (int k = 0; k < 4; ++k) p |= clampByte(f[k]) << (8 * k);
+            px[(size_t)y * stride + x] = p;
+        }
+    cscdVecFree(&ch);
+}
+
+/* the scalar blur of each channel alone (what blurPixels gave before it took them together) */
+static void blurPixelsOneByOne(uint32_t* px, size_t stride, int w, int h, float sigma) {
     CscdFloatVec ch[4] = {{0}};
     for (int k = 0; k < 4; ++k) {
         cscdVecResize(&ch[k], (size_t)w * h);
@@ -1106,6 +1198,50 @@ static void blurPixels(uint32_t* px, size_t stride, int w, int h, float sigma) {
             px[(size_t)y * stride + x] = p;
         }
     for (int k = 0; k < 4; ++k) cscdVecFree(&ch[k]);
+}
+
+static uint32_t simdRandom(uint32_t* seed) {
+    *seed = *seed * 1664525u + 1013904223u;
+    return *seed >> 8;
+}
+
+static uint32_t simdRandomPixel(uint32_t* seed) {
+    const uint32_t v = simdRandom(seed);
+    return premul(cscdRgba((uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(simdRandom(seed) >> 4)), 1);
+}
+
+int cscdPaintSimdSelfCheck(void) {
+    int bad = 0;
+    uint32_t seed = 12345;
+    #define RND() simdRandom(&seed)
+    for (int round = 0; round < 200; ++round) {
+        uint32_t a[37], b[37], s[37];
+        const uint32_t col = simdRandomPixel(&seed);
+        for (int i = 0; i < 37; ++i) {
+            a[i] = b[i] = simdRandomPixel(&seed);
+            s[i] = RND() % 5 == 0 ? 0 : simdRandomPixel(&seed);
+        }
+        fillPixels(a, 37, col);
+        for (int i = 0; i < 37; ++i) bad += a[i] != over(b[i], col);
+        for (int i = 0; i < 37; ++i) a[i] = b[i];
+        const uint32_t k = round % 3 == 0 ? 255 : RND() & 255;
+        overSpan(a, s, 37, k);
+        for (int i = 0; i < 37; ++i) bad += a[i] != over(b[i], k < 255 ? mulPixel(s[i], k) : s[i]);
+    }
+    for (int round = 0; round < 6; ++round) {
+        const int w = 7 + (int)(RND() % 40), h = 5 + (int)(RND() % 30);
+        const float sigma = 0.5f + (float)(RND() % 100) / 10;
+        uint32_t* p = (uint32_t*)cscdMalloc(sizeof(uint32_t) * (size_t)w * h);
+        uint32_t* q = (uint32_t*)cscdMalloc(sizeof(uint32_t) * (size_t)w * h);
+        for (int i = 0; i < w * h; ++i) p[i] = q[i] = simdRandomPixel(&seed);
+        blurPixels(p, (size_t)w, w, h, sigma);
+        blurPixelsOneByOne(q, (size_t)w, w, h, sigma);
+        for (int i = 0; i < w * h; ++i) bad += p[i] != q[i];
+        cscdFree(p);
+        cscdFree(q);
+    }
+    #undef RND
+    return bad;
 }
 
 void cscdCanvasFilterBackdrop(CscdCanvas* c, const CscdRRect* shapeIn, const CscdFilter* f) {
@@ -1205,7 +1341,10 @@ void cscdCanvasPopLayer(CscdCanvas* c) {
     }
     bool colors = f->brightness != 1 || f->grayscale > 0 || f->saturate != 1 || f->invert > 0;
     uint32_t k = (uint32_t)cscdClampi((int)lroundf(L.opacity * 255), 0, 255);
-    for (int y = d.y; y < d.y + d.h; ++y) {
+    const bool plain = !colors && L.blend == CSCD_BLEND_SRC_OVER; /* (the usual layer: an opacity, a shadow's) */
+    if (plain)
+        for (int y = d.y; y < d.y + d.h; ++y) overSpan(cscdImageRow(dst, y) + d.x, cscdImageRow(src, y) + d.x, d.w, k);
+    for (int y = plain ? d.y + d.h : d.y; y < d.y + d.h; ++y) {
         uint32_t* s = cscdImageRow(src, y);
         uint32_t* t = cscdImageRow(dst, y);
         for (int x = d.x; x < d.x + d.w; ++x) {

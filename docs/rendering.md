@@ -32,8 +32,9 @@ A window keeps its last frame and paints again only what changed, when that is k
 | `:hover` / `:active` changes that only repaint (colors, backgrounds, shadows, outlines) | the styles of those elements and their descendants; no layout | those elements |
 | `:hover` / `:active` changes that change sizes | the styles of those elements and their descendants, and the layout | those elements, and the few boxes that moved |
 | A box scrolled | nothing | that box |
-| `class`, `style`, `id`, `data-*`, `aria-*`, `role`, `title` | the styles the rules say it reaches (that element and its subtree, its parent's for a `+` or `~` rule, the page for `:has()`; nothing when no rule names it), and the layout of what changed | the elements that look different now, and the few boxes that moved |
-| New or removed elements, other attributes | the new subtree; the parent's children when a rule sees places among siblings (`+`, `~`, `:nth-*`, `:first-child`...); the parent when an `:empty` rule could match it; everything with `:has()` | the whole window |
+| The page scrolled by whole device pixels, nothing in it fixed, sticky or with a backdrop filter | nothing | what comes into view and the scrollbar (the last frame is moved) |
+| `class`, `style`, `id`, `data-*`, `aria-*`, `role`, `title` | the styles the rules say it reaches (that element and its subtree, its parent's for a `+` or `~` rule, the ancestors whose `:has()` could see it; nothing when no rule names it), and the layout of what changed | the elements that look different now, and the few boxes that moved |
+| New or removed elements, other attributes | the new subtree; the parent's children when a rule sees places among siblings (`+`, `~`, `:nth-*`, `:first-child`...); the parent when an `:empty` rule could match it; the ancestors whose `:has()` could see it (everything for a `:has()` of siblings, or one inside `:is()`, `:not()`...) | the boxes that came and went, and the few boxes that moved |
 
 When more than a handful of boxes move, or the areas cover most of the window, the whole window
 is painted: that is quicker than many small areas.
@@ -52,10 +53,14 @@ Most of a page is the same from one frame to the next, so cascade keeps what it 
   last one, and one with its own formatting context, given the same room at the same place, is not
   laid out again; a plain block (no formatting context of its own) is too, when no float is around
   it. What is painted again is found from what the layout touched, not by comparing every element
-  before and after. A class on one row of twenty thousand: the whole update takes 15 ms (styles and
-  layout alone took over 200 before they were incremental). Moved, a
-  box is laid out again (shifted, its floats would round otherwise than laid out there); what counts
-  in document order (counters, quotes, list numbers) is always made again.
+  before and after. A class on one row of twenty thousand: the whole update takes 6 ms (styles and
+  layout alone took over 200 before they were incremental). Moved, a box is shifted only when no
+  float rounds in doing it (every place along the shift, and the shift, on the 1/64 px grid, under
+  2^17 px); else it is laid out again. What counts in document order (counters, quotes, list
+  numbers) is always made again.
+- **Painting visits what shows.** The children of a box with many are found between two binary
+  searches over their inks; whether a subtree holds a positioned box or a stacking context is
+  remembered on its boxes, which layout keeps. A full paint of twenty thousand rows: 1.2 ms.
 - **Resizing only lays out again**, unless the new size changes which `@media` rules (or
   `<style media>` / `<link media>` sheets) apply, or a style used viewport units.
 - **Values are parsed once.** A declaration's value is tokenized, and a shorthand expanded into

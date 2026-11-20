@@ -259,6 +259,8 @@ void cscdViewFree(CscdView* v) {
     cscdLayoutBoxFree(v->root);
     cscdU64MapFree(&v->inkAt);
     cscdVecFree(&v->inks);
+    cscdVecFree(&v->goneAreas);
+    paintFreeRuns(v);
     cscdStyleEngineFree(v->styles);
     for (size_t i = 0; i < v->authorSheets.len; ++i) cscdRelease(v->authorSheets.items[i]);
     cscdVecFree(&v->authorSheets);
@@ -564,7 +566,20 @@ void cscdViewPaint(CscdView* v, CscdImage* target, bool incremental) {
         if (!cscdRectEmpty(a)) cscdVecPush(&areas, a);
     }
     if ((!viewOn(v, CSCD_FEATURE_PARTIAL_REPAINT) || v->inspecting) && incremental && v->dirty) v->fullPaint = true;
-    const bool partial = incremental && v->incrementalValid && !v->fullPaint && areas.len;
+    /* (the page scrolled: the last frame is moved by as much, before what came into view is painted; on another
+     * target, all is painted) */
+    const bool sameSize = target->width == cscdIntOf(ceilf(v->vw * v->dpr)) && target->height == cscdIntOf(ceilf(v->vh * v->dpr));
+    const bool partial = incremental && v->incrementalValid && !v->fullPaint && areas.len && (!v->shiftPending || sameSize);
+    const bool shifted = partial && v->shiftPending;
+    if (shifted) {
+        const int sx = v->shiftX, sy = v->shiftY, w = target->width, h = target->height;
+        const int n = w - abs(sx);
+        if (sy <= 0)
+            for (int y = 0; y < h + sy; ++y) memmove(cscdImageRow(target, y) + (sx > 0 ? sx : 0), cscdImageRow(target, y - sy) + (sx < 0 ? -sx : 0), (size_t)n * 4);
+        else
+            for (int y = h - 1; y >= sy; --y) memmove(cscdImageRow(target, y) + (sx > 0 ? sx : 0), cscdImageRow(target, y - sy) + (sx < 0 ? -sx : 0), (size_t)n * 4);
+    }
+    v->shiftPending = false;
     /* A frame with enough to paint is recorded, then drawn by bands of rows on several threads (the
      * same pixels as drawn at once). Painters and hit areas run once, while recording. */
     float painted = v->vw * v->vh;
@@ -598,9 +613,11 @@ void cscdViewPaint(CscdView* v, CscdImage* target, bool incremental) {
         }
         v->recordHits = true;
         v->dirty = false;
-        v->paintDamageAll = false;
+        v->paintDamageAll = shifted; /* (every pixel moved) */
     } else if (incremental && v->incrementalValid && !v->fullPaint) {
         v->dirty = false; /* nothing that shows changed (or only outside the viewport) */
+        if (v->hitsStale) viewRecordHits(v);
+        v->hitsStale = false;
         painted = 0;
         v->paintDamageAll = false;
     } else {

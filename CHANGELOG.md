@@ -7,6 +7,26 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Long lists paint what shows.** The children of a box with many are found between two binary searches over their
+  inks, and whether a subtree holds a positioned box or a stacking context is remembered on its boxes (kept with them
+  across layouts): a full paint of 20,000 rows 11.5 ms → 1.2, its hit areas 7.8 → 0.02. Layout no longer clamps the
+  scrolling of the boxes it kept. A class on one row: update 14 ms → 6, paint 4 → 0.1.
+- **Inserts and removals paint only what came and went** (`CscdLayoutBox.newIn`, `followedIn`), not the whole window.
+- **`:has()` without a full restyle**: a change restyles the ancestors that match a compound holding a `:has()` of
+  descendants or children (`cscdStyleEngineHasReach`, `CSCD_REACH_HAS`). With a `:has()` rule on 20,000 rows, a class
+  on one: 61 ms → 6. A `:has()` of siblings, or inside `:is()`/`:not()`, still restyles everything.
+- **SSE2 / NEON** for translucent fills and layers drawn back; the blur filter blurs the four channels at once. The
+  same bits as the scalar code (`cscdPaintSimdSelfCheck`, run by the tests).
+- **The page scrolls by moving the last frame** and painting what comes into view and the scrollbar, when it moved by
+  whole device pixels and nothing in it is fixed, sticky or reads what is behind it.
+- **Moved boxes are shifted when that is exact**: a box kept from the last layout at another place, when every place
+  along the shift is on the 1/64 px grid (`shiftsExactly`); otherwise laid out again as before.
+- Fixed: a flex or grid item kept and measured elsewhere recorded what it drew at the wrong place (its old place was not
+  repainted); a progress value set in the same frame as an insert was not repainted; a menu laying out the page in the
+  middle of a click remade the hit areas under it.
+- The oracle: `:has()` rules reached by inserts and attributes, an anchor that is not the subject, an opacity hover, and
+  half its pages without the sticky header (so that scrolling moves the frame). Planted bugs in each new path fail it.
+
 - **Structural changes restyle only what the rules see.** Inserts, removals and an element's own changes (an attribute
   layout reads, a value, a check) are recorded node by node (`CscdDocument.nodeChanges`): the new subtree is styled,
   the parent's children only when a rule sees places among siblings (`+ ~ :nth-* :first-child`), the parent alone when

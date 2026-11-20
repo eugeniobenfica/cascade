@@ -1748,7 +1748,95 @@ static CscdRect inkOfTreeFrom(CscdView* v, const CscdLayoutBox* b, uint64_t kept
     return r;
 }
 
+/* ---- long lists ----------------------------------------------------------------------------------------------------
+ * The children of a box with many, in their order: the lowest bottom of an ink so far (it only grows), and the highest
+ * top from there on (it only grows too). The children that can reach a band of rows are then between two binary
+ * searches, however the children are placed (overlapping ones only narrow it less): a list of twenty thousand rows paints
+ * the forty that show without testing the others one by one. */
+
+enum { kRunFrom = 64 }; /* (children: fewer are tested one by one) */
+
+typedef struct ChildRun {
+    uint64_t version; /* (the ink table's) */
+    size_t n;
+    float* maxBottom;
+    float* minTop;
+} ChildRun;
+
+static void runFree(ChildRun* r) {
+    cscdFree(r->maxBottom);
+    cscdFree(r->minTop);
+    cscdFree(r);
+}
+
+void paintFreeRuns(CscdView* v) {
+    for (CscdU64MapSlot* s = NULL; (s = cscdU64MapNext(&v->inkRuns, s));) runFree((ChildRun*)s->val.p);
+    cscdU64MapFree(&v->inkRuns);
+}
+
+static const ChildRun* childRun(CscdView* v, const CscdLayoutBox* b) {
+    bool inserted = false;
+    if (v->inkRuns.len > 4096) paintFreeRuns(v); /* (those of boxes gone) */
+    CscdMapVal* at = cscdU64MapPut(&v->inkRuns, CSCD_PKEY(b), &inserted);
+    ChildRun* r = (ChildRun*)at->p;
+    if (r && r->version == v->inkVersion && r->n == b->children.len) return r;
+    if (!r) at->p = r = CSCD_NEW(ChildRun);
+    const size_t n = b->children.len;
+    if (r->n != n || !r->maxBottom) {
+        cscdFree(r->maxBottom);
+        cscdFree(r->minTop);
+        r->maxBottom = (float*)cscdMalloc(sizeof(float) * (n ? n : 1));
+        r->minTop = (float*)cscdMalloc(sizeof(float) * (n ? n : 1));
+    }
+    r->n = n;
+    r->version = v->inkVersion;
+    float most = -INFINITY;
+    for (size_t i = 0; i < n; ++i) {
+        const CscdMapVal* ink = cscdU64MapGet(&v->inkAt, CSCD_PKEY(cscdBoxChild(b, i)));
+        const float bottom = ink ? cscdRectBottom(v->inks.items[ink->u]) : INFINITY; /* (not known: always tested) */
+        most = cscdMaxf(most, bottom);
+        r->maxBottom[i] = most;
+    }
+    float least = INFINITY;
+    for (size_t i = n; i-- > 0;) {
+        const CscdMapVal* ink = cscdU64MapGet(&v->inkAt, CSCD_PKEY(cscdBoxChild(b, i)));
+        const float top = ink ? v->inks.items[ink->u].y : -INFINITY;
+        least = cscdMinf(least, top);
+        r->minTop[i] = least;
+    }
+    return r;
+}
+
+/* the children of b that may draw in the canvas's clip: from *lo to *hi */
+static void childrenInSight(Painter* P, const CscdLayoutBox* b, size_t* lo, size_t* hi) {
+    *lo = 0;
+    *hi = b->children.len;
+    CscdView* v = P->view;
+    if (P->projection || b->children.len < kRunFrom || !v->inkValid) return;
+    const CscdMatrix m = cscdCanvasMatrix(P->canvas);
+    if (m.b != 0 || m.c != 0 || m.d <= 0) return; /* (turned: tested one by one) */
+    const CscdRect clip = cscdCanvasDeviceClipBounds(P->canvas);
+    const float top = (clip.y - m.f) / m.d - 1, bottom = (cscdRectBottom(clip) - m.f) / m.d + 1; /* (layout coordinates) */
+    const ChildRun* r = childRun(v, b);
+    size_t a = 0, z = r->n;
+    while (a < z) { /* the first whose bottom so far reaches the band */
+        const size_t mid = a + (z - a) / 2;
+        if (r->maxBottom[mid] < top) a = mid + 1;
+        else z = mid;
+    }
+    *lo = a;
+    z = r->n;
+    while (a < z) { /* the first from which every top is below it */
+        const size_t mid = a + (z - a) / 2;
+        if (r->minTop[mid] <= bottom) a = mid + 1;
+        else z = mid;
+    }
+    *hi = a;
+}
+
 void paintInkChanged(CscdView* v, CscdLayoutBox* b) {
+    ++v->inkVersion;
+    for (CscdLayoutBox* p = b; p; p = p->parent) p->layersAt = p->stillAt = 0; /* (its style changed in place: it may be a layer now) */
     if (!v->inkValid || !cscdU64MapGet(&v->inkAt, CSCD_PKEY(b))) {
         v->inkValid = false;
         v->inkEpoch = 0;
@@ -1777,7 +1865,9 @@ static void inkPrepare(CscdView* v, const CscdLayoutBox* root) {
     if (!partial) {
         cscdU64MapFree(&v->inkAt);
         v->inks.len = 0;
+        ++v->layersStamp; /* (styles may have changed in place: an animation) */
     }
+    ++v->inkVersion;
     if (root) inkOfTreeFrom(v, root, partial ? now : 0);
     if (!partial) v->inkBoxes = v->inks.len;
     v->inkEpoch = now;
@@ -2058,7 +2148,39 @@ static void paintLayerContent(Painter* P, CscdLayoutBox* b) {
     if (layer) cscdCanvasPopLayer(canvas);
 }
 
-static void collectLayers(CscdLayoutBox* b, CscdPtrVec* neg, CscdPtrVec* zero, CscdPtrVec* pos) {
+/* whether nothing in b (not counting b) is positioned or a stacking context, down to those that are; remembered on the
+ * box, which a layout keeps when nothing in it changed (a list of 20,000 rows is not walked for each paint) */
+static bool noLayersIn(uint64_t stamp, CscdLayoutBox* b) {
+    if (b->layersAt == stamp) return b->layersNone;
+    bool none = true;
+    for (size_t i = 0; i < b->children.len && none; ++i) {
+        CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c->kind == CSCD_BOX_TEXT) continue;
+        if (isPositioned(c) || isStackingContext(c) || !noLayersIn(stamp, c)) none = false;
+    }
+    b->layersAt = stamp;
+    b->layersNone = none;
+    return none;
+}
+
+/* nothing in b (b too) stays put as the page scrolls, or reads what is behind it */
+static bool noStillIn(uint64_t stamp, CscdLayoutBox* b) {
+    if (b->stillAt == stamp) return b->stillNone;
+    const CscdComputedStyle* s = b->style;
+    bool none = !(b->kind != CSCD_BOX_TEXT && s &&
+                  (s->position == CSCD_POS_FIXED || s->position == CSCD_POS_STICKY || cscdBackdropAny(&s->backdrop)));
+    for (size_t i = 0; i < b->children.len && none; ++i) none = noStillIn(stamp, cscdBoxChild(b, i));
+    b->stillAt = stamp;
+    b->stillNone = none;
+    return none;
+}
+
+bool paintPageMovesWhole(CscdView* v) {
+    if (!v->root || !v->inkValid || v->inkRoot != v->root || !v->layersStamp) return false;
+    return noStillIn(v->layersStamp, v->root);
+}
+
+static void collectLayers(uint64_t stamp, CscdLayoutBox* b, CscdPtrVec* neg, CscdPtrVec* zero, CscdPtrVec* pos) {
     for (size_t i = 0; i < b->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(b, i);
         if (c->kind == CSCD_BOX_TEXT) continue;
@@ -2069,7 +2191,7 @@ static void collectLayers(CscdLayoutBox* b, CscdPtrVec* neg, CscdPtrVec* zero, C
             else cscdVecPush(zero, c);
             continue; /* its descendants belong to it */
         }
-        collectLayers(c, neg, zero, pos);
+        if (!noLayersIn(stamp, c)) collectLayers(stamp, c, neg, zero, pos);
     }
 }
 
@@ -2083,7 +2205,9 @@ NOINLINE static CscdShader textClipShader(const CscdBackgroundLayer* L, CscdRect
  * phase 0: block backgrounds, 1: floats, 2: inline content and replaced content. */
 static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
     if (cscdStackLow()) return; /* (deeper than the thread's stack holds: not painted, as it was not laid out) */
-    for (size_t i = 0; i < b->children.len; ++i) {
+    size_t from, to;
+    childrenInSight(P, b, &from, &to);
+    for (size_t i = from; i < to; ++i) {
         CscdLayoutBox* c = cscdBoxChild(b, i);
         if (c->kind != CSCD_BOX_TEXT && (isPositioned(c) || isStackingContext(c))) continue;
         if (c->kind == CSCD_BOX_TEXT) {
@@ -2169,7 +2293,7 @@ static void paintDescendant(Painter* P, CscdLayoutBox* b, CscdLayoutBox* d) {
 static void paintStacking(Painter* P, CscdLayoutBox* b) {
     if (cscdStackLow()) return;
     CscdPtrVec neg = {0}, zero = {0}, pos = {0};
-    collectLayers(b, &neg, &zero, &pos);
+    collectLayers(P->view->layersStamp, b, &neg, &zero, &pos);
     cscdSort(neg.items, neg.len, sizeof(void*), byZIndex, NULL);
     cscdSort(pos.items, pos.len, sizeof(void*), byZIndex, NULL);
     /* the box itself */

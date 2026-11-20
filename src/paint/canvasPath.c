@@ -558,6 +558,73 @@ void cscdGaussianBlur(CscdFloatVec* buf, int w, int h, float sigma) {
     cscdVecFree(&tmp);
 }
 
+/* four channels a pixel: a float vector each (the lanes do what boxBlurH does to each channel alone) */
+#if defined(CSCD_SSE2)
+typedef __m128 F4;
+static inline F4 f4Zero(void) { return _mm_setzero_ps(); }
+static inline F4 f4Load(const float* p) { return _mm_loadu_ps(p); }
+static inline void f4Store(float* p, F4 v) { _mm_storeu_ps(p, v); }
+static inline F4 f4Add(F4 a, F4 b) { return _mm_add_ps(a, b); }
+static inline F4 f4Sub(F4 a, F4 b) { return _mm_sub_ps(a, b); }
+static inline F4 f4Mul(F4 a, F4 b) { return _mm_mul_ps(a, b); }
+static inline F4 f4Splat(float v) { return _mm_set1_ps(v); }
+#elif defined(CSCD_NEON)
+typedef float32x4_t F4;
+static inline F4 f4Zero(void) { return vdupq_n_f32(0); }
+static inline F4 f4Load(const float* p) { return vld1q_f32(p); }
+static inline void f4Store(float* p, F4 v) { vst1q_f32(p, v); }
+static inline F4 f4Add(F4 a, F4 b) { return vaddq_f32(a, b); }
+static inline F4 f4Sub(F4 a, F4 b) { return vsubq_f32(a, b); }
+static inline F4 f4Mul(F4 a, F4 b) { return vmulq_f32(a, b); }
+static inline F4 f4Splat(float v) { return vdupq_n_f32(v); }
+#else
+typedef struct F4 { float v[4]; } F4;
+static inline F4 f4Zero(void) { F4 r = {{0, 0, 0, 0}}; return r; }
+static inline F4 f4Load(const float* p) { F4 r; memcpy(r.v, p, sizeof r.v); return r; }
+static inline void f4Store(float* p, F4 v) { memcpy(p, v.v, sizeof v.v); }
+static inline F4 f4Add(F4 a, F4 b) { for (int i = 0; i < 4; ++i) a.v[i] += b.v[i]; return a; }
+static inline F4 f4Sub(F4 a, F4 b) { for (int i = 0; i < 4; ++i) a.v[i] -= b.v[i]; return a; }
+static inline F4 f4Mul(F4 a, F4 b) { for (int i = 0; i < 4; ++i) a.v[i] *= b.v[i]; return a; }
+static inline F4 f4Splat(float v) { F4 r = {{v, v, v, v}}; return r; }
+#endif
+
+static void boxBlurH4(const float* src, float* dst, int w, int h, int r) {
+    if (r <= 0) { memcpy(dst, src, sizeof(float) * 4 * (size_t)w * h); return; }
+    const F4 inv = f4Splat(1.f / (2 * r + 1));
+    for (int y = 0; y < h; ++y) {
+        const float* s = src + (size_t)y * w * 4;
+        float* d = dst + (size_t)y * w * 4;
+        F4 acc = f4Zero();
+        for (int x = 0, end = r < w - 1 ? r : w - 1; x <= end; ++x) acc = f4Add(acc, f4Load(s + 4 * x));
+        for (int x = 0; x < w; ++x) {
+            f4Store(d + 4 * x, f4Mul(acc, inv));
+            const int add = x + r + 1, sub = x - r;
+            if (add < w) acc = f4Add(acc, f4Load(s + 4 * add));
+            if (sub >= 0) acc = f4Sub(acc, f4Load(s + 4 * sub));
+        }
+    }
+}
+
+static void transpose4(const float* src, float* dst, int w, int h) {
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) memcpy(dst + ((size_t)x * h + y) * 4, src + ((size_t)y * w + x) * 4, sizeof(float) * 4);
+}
+
+void cscdGaussianBlur4(CscdFloatVec* buf, int w, int h, float sigma) {
+    if (sigma <= 0.01f || w <= 0 || h <= 0) return;
+    int sizes[3];
+    boxBlurSizes(sigma, sizes);
+    CscdFloatVec tmp = {0};
+    cscdVecResize(&tmp, buf->len);
+    for (int i = 0; i < 3; ++i) { boxBlurH4(buf->items, tmp.items, w, h, (sizes[i] - 1) / 2); swapVec(buf, &tmp); }
+    transpose4(buf->items, tmp.items, w, h);
+    swapVec(buf, &tmp);
+    for (int i = 0; i < 3; ++i) { boxBlurH4(buf->items, tmp.items, h, w, (sizes[i] - 1) / 2); swapVec(buf, &tmp); }
+    transpose4(buf->items, tmp.items, h, w);
+    swapVec(buf, &tmp);
+    cscdVecFree(&tmp);
+}
+
 /* ---- stroker ----------------------------------------------------------------------------------- */
 
 static void orient(CscdPoint* poly, size_t n) {

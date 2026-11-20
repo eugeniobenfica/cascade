@@ -87,9 +87,37 @@ void cscdViewScrollTo(CscdView* v, float x, float y) {
     float maxX = v->root ? cscdMaxf(0.f, cscdRectRight(v->root->overflow) - v->vw) : 0;
     float nx = cscdClampf(x, 0.f, maxX), ny = cscdClampf(y, 0.f, maxY);
     if (nx == v->scrollX && ny == v->scrollY) return;
+    /* Moved by whole device pixels, a page that moves whole: the last frame is moved, and only what comes into view
+     * (and the scrollbars) is painted */
+    const float dpr = v->dpr, ox = v->scrollX * dpr, oy = v->scrollY * dpr, px = nx * dpr, py = ny * dpr;
+    const int sx = (int)lroundf(ox - px), sy = (int)lroundf(oy - py);
+    const bool whole = ox == roundf(ox) && oy == roundf(oy) && px == roundf(px) && py == roundf(py);
+    const bool blit = whole && viewOn(v, CSCD_FEATURE_PARTIAL_REPAINT) && v->incrementalValid && !v->fullPaint && !v->shiftPending &&
+                      !v->damage.len && !v->dragActive && !v->inspecting && (float)abs(sy) < v->vh * dpr / 2 &&
+                      (float)abs(sx) < v->vw * dpr / 2 && paintPageMovesWhole(v);
     v->scrollX = nx;
     v->scrollY = ny;
-    cscdViewInvalidate(v);
+    if (!blit) {
+        cscdViewInvalidate(v);
+        return;
+    }
+    v->shiftX = sx;
+    v->shiftY = sy;
+    v->shiftPending = true;
+    const float mx = abs(sx) / dpr + 1, my = abs(sy) / dpr + 1; /* (a pixel more: the strips are cut on whole pixels) */
+    /* (strips that touch without overlapping: overlapping damage merges into the box around it) */
+    const float top = sy > 0 ? my : 0, bottom = sy < 0 ? my : 0;
+    const float hbar = cscdRectRight(v->root->overflow) > v->vw + 0.5f ? 12 : 0; /* (a page wider than the window) */
+    if (top > 0) viewAddDamage(v, cscdRect(0, 0, v->vw, top));
+    if (bottom > 0) viewAddDamage(v, cscdRect(0, v->vh - bottom, v->vw, bottom));
+    if (hbar > 0) viewAddDamage(v, cscdRect(0, v->vh - hbar, v->vw, hbar));
+    const float y0 = top, y1 = v->vh - cscdMaxf(bottom, hbar);
+    if (sx < 0) viewAddDamage(v, cscdRect(v->vw - mx, y0, mx, y1 - y0));
+    if (sx > 0) viewAddDamage(v, cscdRect(0, y0, mx, y1 - y0));
+    viewAddDamage(v, cscdRect(v->vw - 12, y0, 12, y1 - y0)); /* (the page's scrollbar: its thumb moved) */
+    v->hitsStale = true;
+    v->dirty = true;
+    viewNotifyInvalidate(v);
 }
 
 void cscdViewScrollIntoView(CscdView* v, CscdElement* e) {

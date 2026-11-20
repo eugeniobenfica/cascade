@@ -647,7 +647,7 @@ static void buildChildren(Layouter* L, CscdElement* e, CscdLayoutBox* parent) {
             CscdLayoutBox* was = L->reuse && ce->layout && ce->layout->builtIn != L->epoch && !ce->layout->taken ? ce->layout : NULL;
             CscdLayoutBox* b = makeBox(L, ce, (CscdComputedStyle*)cscdRetain(ce->style));
             if (was) notePrevious(b, was); /* (the old tree is whole yet: what it drew) */
-            else L->boxesChanged = true;   /* (a box it had not) */
+            else b->newIn = L->epoch;      /* (a box it had not: drawn whole, where it is) */
             ce->layout = b;
             b->parent = parent;
             if (b->kind != CSCD_BOX_REPLACED && b->kind != CSCD_BOX_LINE_BREAK && !cscdElementIs(ce, "input")) buildChildren(L, ce, b);
@@ -849,6 +849,18 @@ static uint64_t mixLookF(uint64_t h, float f) {
     return mixLook(h, bits);
 }
 
+/* a box that paints nothing of itself (no background, border, shadow or outline; nothing it clips or transforms): its
+ * size and place alone change no pixel (a list that grows by a row at its end: what is in it says what changed) */
+static bool drawsNothingItself(const CscdLayoutBox* b) {
+    const CscdComputedStyle* s = b->style;
+    if (!s || !b->parent || !b->parent->parent || (b->element && cscdElementIs(b->element, "body"))) return false; /* (the root's and body's paint the canvas) */
+    if (b->kind != CSCD_BOX_BLOCK && b->kind != CSCD_BOX_FLEX && b->kind != CSCD_BOX_GRID) return false;
+    if (s->backgroundColor.a || s->backgrounds.len || s->boxShadow.len || s->outlineStyle != CSCD_BORDER_NONE) return false;
+    for (int i = 0; i < 4; ++i)
+        if (cscdBorderVisible(&s->border[i])) return false;
+    return !cscdStyleClipsOverflow(s) && !cscdStyleCreatesStackingContext(s);
+}
+
 static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* look) {
     if (!top && cscdBoxIsElements(b)) return; /* (another element's: its own) */
     uint64_t h = *look;
@@ -862,7 +874,7 @@ static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* l
     } else {
         *ink = cscdRectUnite(*ink, inkOfOne(b));
         h = mixLook(h, (uint64_t)(uintptr_t)b->style);
-        h = mixLookF(mixLookF(mixLookF(mixLookF(h, b->x), b->y), b->w), b->h);
+        if (!top || !drawsNothingItself(b)) h = mixLookF(mixLookF(mixLookF(mixLookF(h, b->x), b->y), b->w), b->h);
     }
     h = mixLook(h, (uint64_t)(uintptr_t)b->image);
     for (size_t i = 0; i < b->text.len; ++i) h = mixLook(h, (uint8_t)b->text.ptr[i]); /* (another text as wide) */
@@ -902,13 +914,23 @@ static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was) {
     to->prevInk = ink;
     to->prevLook = look;
     to->hasPrev = true;
+    if (to != was) ((CscdLayoutBox*)was)->followedIn = to->builtIn;
 }
 
 /* A box kept from the layout before, laid out again (it moved, or its input is not the same): every box in it back to
  * what a new one is before its layout, what the build made kept. (Laid out over its old places, an inline box with no
  * text was shifted from where it was, not from nothing.) */
-static void forgetKeptLayout(CscdLayoutBox* b) {
-    if (cscdBoxIsElements(b)) notePrevious(b, b); /* (before its own boxes, and its texts', are wiped) */
+static void forgetKeptLayoutBy(CscdLayoutBox* b, float dx, float dy);
+
+/* (memo hits since it was taken only moved it, a flex or grid parent measuring it where it is not: what it drew was
+ * where it was taken) */
+static void forgetKeptLayout(CscdLayoutBox* b) { forgetKeptLayoutBy(b, b->keptX - b->x, b->keptY - b->y); }
+
+static void forgetKeptLayoutBy(CscdLayoutBox* b, float dx, float dy) {
+    if (cscdBoxIsElements(b)) {
+        notePrevious(b, b); /* (before its own boxes, and its texts', are wiped) */
+        b->prevInk = cscdRectTranslated(b->prevInk, dx, dy);
+    }
     b->inlineOwner = b->inlineSlot = 0;
     cscdVecClear(&b->shape);
     b->logicalDX = b->logicalDY = 0;
@@ -926,22 +948,19 @@ static void forgetKeptLayout(CscdLayoutBox* b) {
     b->minContent = b->maxContent = -1;
     b->memoPass = b->sensPass = 0;
     b->heightSensitive = false;
-    for (size_t i = 0; i < b->children.len; ++i) forgetKeptLayout(cscdBoxChild(b, i));
+    for (size_t i = 0; i < b->children.len; ++i) forgetKeptLayoutBy(cscdBoxChild(b, i), dx, dy);
 }
 
 /* After a build that took boxes: an element whose box is not in the new tree (not shown now, under one not shown) forgets
  * the old one, which goes with the old tree. The boxes taken hold their elements' boxes as they were. */
-static void forgetOldBoxes(Layouter* L, CscdNode* root, uint64_t epoch) {
+static void forgetOldBoxes(CscdNode* root, uint64_t epoch) {
     CscdPtrVec todo = {0}; /* (a list, not a recursion: every element must be reached, however deep) */
     cscdVecPush(&todo, root);
     while (todo.len) {
         CscdNode* n = (CscdNode*)todo.items[--todo.len];
         CscdElement* e = cscdNodeAsElement(n);
         if (e && e->layout) {
-            if (e->layout->builtIn != epoch) {
-                e->layout = NULL;
-                L->boxesChanged = true; /* (a box it had, and has not now) */
-            }
+            if (e->layout->builtIn != epoch) e->layout = NULL; /* (a box it had, and has not now: the old tree tells) */
             else if (e->layout->taken && e->layout->element == e) continue;
         }
         for (size_t i = 0; i < n->children.len; ++i) cscdVecPush(&todo, cscdNodeChild(n, i));
@@ -984,7 +1003,7 @@ CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc) {
     layApplyCounters(L, html->style, NULL);
     buildChildren(L, html, root);
     layFixupChildren(L, root);
-    if (L->reuse) forgetOldBoxes(L, &doc->node, L->epoch);
+    if (L->reuse) forgetOldBoxes(&doc->node, L->epoch);
     return root;
 }
 
@@ -2765,13 +2784,63 @@ static void forgetLayout(CscdLayoutBox* b) {
     for (; b; b = b->parent) b->memoPass = 0;
 }
 
+/* (a place on the grid of 1/64 px that floats hold exactly, far enough from the limit that a shift keeps it there) */
+static bool onGrid(float v) {
+    const float s = v * 64;
+    return fabsf(v) < 131072 && s == floorf(s);
+}
+
+/* Whether b and all in it, shifted by (dx, dy), land exactly where laying them out there would put them: every place in
+ * them, and the shift, on the 1/64 px grid (font metrics, whole pixels and halves are): the sums that make places then
+ * round nowhere, here or there. (A sticky box is placed by what scrolls, a shape is not shifted: laid out again.) */
+static bool shiftsExactlyIn(const CscdLayoutBox* b, float dx, float dy);
+
+/* (a place on the grid of 1/64 px that floats hold exactly, its shift too: an axis not shifted is not looked at) */
+#define GX(v) (dx == 0 || (onGrid(v) && onGrid((v) + dx)))
+#define GY(v) (dy == 0 || (onGrid(v) && onGrid((v) + dy)))
+
+/* Whether b and all in it, shifted by (dx, dy), land exactly where laying them out there would put them: every place in
+ * them along a shifted axis, and the shift, on the 1/64 px grid (font metrics, whole pixels and halves are): the sums
+ * that make those places then round nowhere, here or there. (A sticky box is placed by what scrolls, a shape is not
+ * shifted: laid out again.) */
+static bool shiftsExactly(const CscdLayoutBox* b, float dx, float dy) {
+    if ((dx != 0 && !onGrid(dx)) || (dy != 0 && !onGrid(dy))) return false;
+    return shiftsExactlyIn(b, dx, dy);
+}
+
+static bool shiftsExactlyIn(const CscdLayoutBox* b, float dx, float dy) {
+    if (cscdStackLow() || b->shape.len || (b->style && b->style->position == CSCD_POS_STICKY)) return false;
+    if (!GX(b->x) || !GY(b->y) || !GX(b->overflow.x) || !GY(b->overflow.y)) return false;
+    if (b->hasBaseline && (!GY(b->baseline) || !GY(b->lastBaseline))) return false;
+    if (b->hasStaticPos && (!GX(b->staticX) || !GY(b->staticY))) return false;
+    for (size_t i = 0; i < b->textFrags.len; ++i) {
+        const CscdTextFrag* f = &b->textFrags.items[i];
+        if (!GX(f->x) || !GY(f->baseline) || !GY(f->top)) return false;
+    }
+    for (size_t i = 0; i < b->inlineFrags.len; ++i)
+        if (!GX(b->inlineFrags.items[i].rect.x) || !GY(b->inlineFrags.items[i].rect.y)) return false;
+    for (size_t i = 0; i < b->lines.len; ++i) {
+        const CscdLineInfo* l = &b->lines.items[i];
+        if (!GY(l->top) || !GY(l->baseline) || !GX(l->left)) return false;
+    }
+    for (size_t i = 0; i < b->children.len; ++i)
+        if (!shiftsExactlyIn(cscdBoxChild(b, i), dx, dy)) return false;
+    return true;
+}
+
+#undef GX
+#undef GY
+
 static bool memoMatches(Layouter* L, CscdLayoutBox* b, const float key[8], const BlockInput* in) {
     if (!L->pass || (b->memoPass != L->pass && b->memoPass != MEMO_KEPT)) return false;
-    /* A box kept from the layout before is taken as it was only where it was: moved, its boxes would be shifted by the
-     * difference, which floats round otherwise than laying them out there, and a glyph or an edge would come out a level
-     * off from the same page laid out from nothing. Moved, it is laid out again (within a layout, every pass shifts as
-     * the one from nothing does). */
-    if (b->memoPass == MEMO_KEPT && (in->x != b->memoInX || in->y != b->memoInY)) return false;
+    /* A box kept from the layout before is taken as it was where it was. Moved, its boxes would be shifted by the
+     * difference, which floats may round otherwise than laying them out there (a glyph or an edge a level off from the
+     * same page laid out from nothing): it is shifted only when nothing rounds (shiftsExactly), else laid out again.
+     * (Within a layout, every pass shifts as the one from nothing does.) */
+    if (b->memoPass == MEMO_KEPT && (in->x != b->memoInX || in->y != b->memoInY)) {
+        const float x = b->memoX + in->x - b->memoInX, y = b->memoY + in->y - b->memoInY;
+        if (!shiftsExactly(b, x - b->x, y - b->y)) return false;
+    }
     /* (one without a formatting context of its own: only with no floats around it now either) */
     if (in->floats && in->floats->floats.len && !establishesBFC(b, in)) return false;
     for (int i = 0; i < 8; ++i)

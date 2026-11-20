@@ -16,7 +16,10 @@ static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; retur
 /* The page in three versions, by what its rules see of the tree (seeds take them in turn): with :has(), which makes any
  * change of the tree restyle the page; with rules on places among siblings (+ ~ :nth-child :first-child), which make it
  * restyle the parent's children; and with neither, where a new element is styled alone. */
-static const char kRulesHas[] = ".card:has(.on) { border: 2px solid #8b5cf6; }";
+static const char kRulesHas[] = ".card:has(.on) { border: 2px solid #8b5cf6; }"
+                                ".grid:has(i) { gap: 9px; }"                       /* an element coming in under it */
+                                "#pl:has([hidden]) p { color: #06c; }"             /* an attribute, the anchor not the subject */
+                                ".card:has(> p:empty) { background: #ffe; }";
 static const char kRulesPlaces[] =
     ".cell:nth-child(2n) { background: #ffe8e8; }"
     ".on + .cell { outline: 2px solid #f80; }"
@@ -40,6 +43,7 @@ static const char kPage[] =
     ".card:hover .hint { color: #8b5cf6; }"
     ".grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }"
     ".cell { padding: 4px; background: #e8e8ff; }"
+    ".cell:hover { opacity: .85; }"                              /* hover that makes a layer, in place */
     ".on { background: #8b5cf6; color: white; }"
     ".wide { width: 160px; }"
     ".scroll { height: 70px; overflow: auto; border: 1px solid #ccc; margin: 6px; }"
@@ -181,6 +185,8 @@ static void run(uint64_t seed, int rounds, float dpr) {
     cscdStrAppendC(&page, kRulesEmpty);
     cscdStrAppendC(&page, "</style>");
     cscdStrAppend(&page, (CscdSv){kPage, sizeof kPage - 1});
+    /* (half the seeds: nothing stays put as the page scrolls, which then moves the last frame instead of painting it) */
+    if ((seed / 3) % 2) cscdStrAppendC(&page, "<style>.sticky { position: static; }</style>");
     cscdViewLoadHTML(v, cscdStrSv(&page), CSCD_SV("."));
     cscdStrFree(&page);
     CscdImage frame;

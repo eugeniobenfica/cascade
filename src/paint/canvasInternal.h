@@ -24,6 +24,21 @@ void cscdApplyDash(const CscdPoint* poly, size_t n, bool closed, const float* da
 
 /* Three box blurs approximate a gaussian (W3C filter effects recommend this). */
 void cscdGaussianBlur(CscdFloatVec* buf, int w, int h, float sigma);
+/* The same on four channels at once: buf holds 4 floats per pixel (w*h*4), each channel blurred exactly as
+ * cscdGaussianBlur blurs it alone (the same operations in the same order, lane by lane). */
+void cscdGaussianBlur4(CscdFloatVec* buf, int w, int h, float sigma);
+/* Compares the vector paths of the painter (SSE2, NEON) with the scalar ones on random data: the count of
+ * differences (0 where there is no vector path). For the tests. */
+int cscdPaintSimdSelfCheck(void);
+
+/* (vector paths: integer SSE2 on x86-64, NEON on ARM; the same bits as the scalar code) */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#define CSCD_SSE2 1
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#define CSCD_NEON 1
+#endif
 
 /* Outer shadows blurred as nine patches (on), or whole (off: what the tests compare them with). */
 extern bool cscdShadowNinePatch;

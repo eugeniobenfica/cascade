@@ -362,6 +362,12 @@ typedef struct Cache {
 
 typedef struct PseudoSet { CscdComputedStyle* s[6]; } PseudoSet;
 
+typedef struct HasAnchor {
+    const CscdCompound* compound;
+    unsigned bits;
+} HasAnchor;
+typedef CSCD_VEC(HasAnchor) HasAnchorVec;
+
 struct CscdStyleEngine {
     Cache cache;
     CscdStr key; /* (scratch) */
@@ -384,6 +390,8 @@ struct CscdStyleEngine {
     bool stateNested;          /* one is inside :is(), :not(), :has()...: every element's change matters */
     bool structSiblings;       /* a rule sees an element's place among its siblings: + ~ :nth-* :first-child :empty... */
     bool structHas;            /* a rule has :has(): a change anywhere may restyle its ancestors */
+    HasAnchorVec hasAnchors;   /* the compounds holding a :has() of descendants or children, and what they reach */
+    bool hasComplex;           /* a :has() of siblings, or inside :is(), :not(), :has()...: a change may reach anything */
     CscdPtrVec emptyCompounds; /* const CscdCompound*: those with :empty (an element whose children come or go) */
     bool emptyNested;          /* one inside :is(), :not()...: every element's children matter */
     CscdStrMap reachClass, reachId, reachAttr; /* name -> CSCD_REACH_* bits */
@@ -497,6 +505,7 @@ void cscdStyleEngineFree(CscdStyleEngine* se) {
     cscdStrMapFree(&se->selectedAttrs);
     cscdVecFree(&se->stateCompounds);
     cscdVecFree(&se->emptyCompounds);
+    cscdVecFree(&se->hasAnchors);
     cscdStrMapFree(&se->reachClass);
     cscdStrMapFree(&se->reachId);
     cscdStrMapFree(&se->reachAttr);
@@ -596,11 +605,11 @@ static void reachAdd(CscdStrMap* m, CscdSv name, unsigned bits, bool lower) {
     cscdStrFree(&low);
 }
 
-static void noteReach(CscdStyleEngine* se, const CscdSelector* s, unsigned subject, unsigned outer, bool all) {
+static void noteReach(CscdStyleEngine* se, const CscdSelector* s, unsigned subject, unsigned outer, unsigned forced) {
     for (size_t i = 0; i < s->compounds.len; ++i) {
         const CscdCompound* c = &s->compounds.items[i];
         unsigned bits;
-        if (all) bits = CSCD_REACH_ALL;
+        if (forced) bits = forced;
         else if (i + 1 == s->compounds.len) bits = subject;
         else {
             const CscdCombinator next = s->compounds.items[i + 1].combinator;
@@ -613,9 +622,21 @@ static void noteReach(CscdStyleEngine* se, const CscdSelector* s, unsigned subje
             else if (p->kind == CSCD_SEL_ATTRIBUTE) reachAdd(&se->reachAttr, cscdStrSv(&p->name), bits, true);
             const bool has = p->kind == CSCD_SEL_PSEUDO_CLASS && cscdStrEqC(&p->name, "has");
             for (size_t a = 0; a < p->args.len; ++a)
-                noteReach(se, &p->args.items[a], bits, bits | CSCD_REACH_DESCENDANTS | CSCD_REACH_SIBLINGS, all || has);
+                noteReach(se, &p->args.items[a], bits, bits | CSCD_REACH_DESCENDANTS | CSCD_REACH_SIBLINGS, forced ? forced : has ? CSCD_REACH_HAS : 0);
         }
     }
+}
+
+/* whether a selector (a :has() argument) looks at siblings anywhere in it */
+static bool seesSiblings(const CscdSelector* s) {
+    for (size_t i = 0; i < s->compounds.len; ++i) {
+        const CscdCompound* c = &s->compounds.items[i];
+        if (c->combinator == CSCD_COMB_ADJACENT || c->combinator == CSCD_COMB_SIBLING) return true;
+        for (size_t k = 0; k < c->parts.len; ++k)
+            for (size_t a = 0; a < c->parts.items[k].args.len; ++a)
+                if (seesSiblings(&c->parts.items[k].args.items[a])) return true;
+    }
+    return false;
 }
 
 static void noteStructure(CscdStyleEngine* se, const CscdSelector* s, bool nested) {
@@ -627,7 +648,21 @@ static void noteStructure(CscdStyleEngine* se, const CscdSelector* s, bool neste
         for (size_t k = 0; k < c->parts.len; ++k) {
             const CscdSimpleSelector* p = &c->parts.items[k];
             if (p->kind == CSCD_SEL_PSEUDO_CLASS) {
-                if (cscdStrEqC(&p->name, "has")) se->structHas = true;
+                if (cscdStrEqC(&p->name, "has")) {
+                    se->structHas = true;
+                    bool siblings = nested;
+                    for (size_t a = 0; a < p->args.len && !siblings; ++a) siblings = seesSiblings(&p->args.items[a]);
+                    if (siblings) se->hasComplex = true; /* (its anchors are not only ancestors) */
+                    else {
+                        unsigned bits = CSCD_REACH_SELF;
+                        if (i + 1 < s->compounds.len) {
+                            const CscdCombinator next = s->compounds.items[i + 1].combinator;
+                            bits = next == CSCD_COMB_ADJACENT || next == CSCD_COMB_SIBLING ? CSCD_REACH_SIBLINGS : CSCD_REACH_DESCENDANTS;
+                        }
+                        const HasAnchor anchor = {c, bits};
+                        cscdVecPush(&se->hasAnchors, anchor);
+                    }
+                }
                 if (cscdStrEqC(&p->name, "empty")) {
                     if (nested) se->emptyNested = true;
                     else cscdVecPush(&se->emptyCompounds, (void*)c);
@@ -647,8 +682,18 @@ bool cscdStyleEngineEmptyMatters(const CscdStyleEngine* se, const CscdElement* e
 }
 
 unsigned cscdStyleEngineStructureReach(const CscdStyleEngine* se) {
-    if (!se->indexValid || se->structHas) return CSCD_REACH_ALL;
-    return se->structSiblings ? CSCD_REACH_SIBLINGS : CSCD_REACH_SELF;
+    if (!se->indexValid || (se->structHas && se->hasComplex)) return CSCD_REACH_ALL;
+    return (se->structSiblings ? CSCD_REACH_SIBLINGS : CSCD_REACH_SELF) | (se->structHas ? CSCD_REACH_HAS : 0);
+}
+
+unsigned cscdStyleEngineHasReach(const CscdStyleEngine* se, const CscdElement* e) {
+    if (!se->indexValid || se->hasComplex) return CSCD_REACH_ALL;
+    unsigned bits = 0;
+    for (size_t i = 0; i < se->hasAnchors.len; ++i) {
+        const HasAnchor* a = &se->hasAnchors.items[i];
+        if ((bits | a->bits) != bits && cscdCompoundMatchesIgnoring(a->compound, e, CSCD_SV("has"))) bits |= a->bits;
+    }
+    return bits;
 }
 
 static void noteStates(CscdStyleEngine* se, const CscdSelector* s) {
@@ -681,7 +726,8 @@ unsigned cscdStyleEngineReach(const CscdStyleEngine* se, CscdReachKind kind, Csc
     const CscdStrMap* m = kind == CSCD_REACH_CLASS ? &se->reachClass : kind == CSCD_REACH_ID ? &se->reachId : &se->reachAttr;
     const CscdMapVal* v = cscdStrMapGet(m, name);
     cscdStrFree(&low);
-    return v ? (unsigned)v->u : 0;
+    const unsigned bits = v ? (unsigned)v->u : 0;
+    return (bits & CSCD_REACH_HAS) && se->hasComplex ? bits | CSCD_REACH_ALL : bits;
 }
 
 /* the attribute names a selector tests, in it and in its :is(), :not(), :has()... */
@@ -725,7 +771,8 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
     cscdStrMapClear(&se->selectedAttrs);
     cscdVecClear(&se->stateCompounds);
     se->stateNested = false;
-    se->structSiblings = se->structHas = false;
+    se->structSiblings = se->structHas = se->hasComplex = false;
+    se->hasAnchors.len = 0;
     cscdVecClear(&se->emptyCompounds);
     se->emptyNested = false;
     cscdStrMapClear(&se->reachClass);
@@ -745,7 +792,7 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
                 noteAttributes(se, sel);
                 noteStates(se, sel);
                 noteStructure(se, sel, false);
-                noteReach(se, sel, CSCD_REACH_SELF, 0, false);
+                noteReach(se, sel, CSCD_REACH_SELF, 0, 0);
                 Indexed ix = {rule, sel, si, sheet->origin};
                 const CscdCompound* last = &cscdVecLast(&sel->compounds);
                 const CscdSimpleSelector* key = NULL;

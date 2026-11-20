@@ -384,6 +384,13 @@ static void forgetChanges(CscdDocument* d, const CscdNode* n) {
         }
     }
     d->attrChanges.len = w;
+    CscdPtrVec* lists[2] = {&d->paintChanged, &d->textChanged};
+    for (int k = 0; k < 2; ++k) {
+        w = 0;
+        for (size_t i = 0; i < lists[k]->len; ++i)
+            if (!holds(n, &((CscdElement*)lists[k]->items[i])->node)) lists[k]->items[w++] = lists[k]->items[i];
+        lists[k]->len = w;
+    }
     w = 0;
     for (size_t i = 0; i < d->attrChanged.len; ++i)
         if (!holds(n, &((CscdElement*)d->attrChanged.items[i])->node)) d->attrChanged.items[w++] = d->attrChanged.items[i];

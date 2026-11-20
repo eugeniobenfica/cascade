@@ -3156,6 +3156,8 @@ static void testSvg(void) {
 }
 
 static void testBlur(void) {
+    /* the vector paths of the painter (blending, the blur of four channels at once): the bits of the scalar ones */
+    CHECK(cscdPaintSimdSelfCheck() == 0);
     /* a blurred path: dark in the middle, fading over its edge, nothing far from it */
     CscdImage img;
     cscdImageInit(&img, 100, 100);
