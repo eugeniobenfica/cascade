@@ -104,6 +104,7 @@ bounded, as browsers bound them:
 | Element nesting from HTML | 512 levels | deeper elements go side by side at the last level |
 | Element nesting from code (`CSCD_MAX_TREE_DEPTH`) | 1024 levels | `cscdNodeAppendChild` refuses (NULL), as it refuses a loop |
 | Nested style rules and at-rules | 64 levels | dropped |
+| A nested selector, once each `&` holds its parent | 64 KiB | the rule is dropped, with what it nests |
 | `:is()`, `:not()`, `:where()`, `:has()` inside each other | 32 levels | the selector is invalid |
 | Functions and brackets inside a value (`calc(calc(…))`) | 32 levels | the value is invalid |
 | A value after `var()` substitution | 512 KiB | invalid at computed-value time |

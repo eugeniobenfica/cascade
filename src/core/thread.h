@@ -109,6 +109,13 @@ CSCD_INLINE void cscdAtomicStoreZ(volatile size_t* p, size_t v) { __atomic_store
 /* A monotonic clock, in seconds. */
 double cscdNowSeconds(void);
 
+/* Whether the calling thread's stack is nearly used up (less than CSCD_STACK_RESERVE left). The walks that recurse
+ * once per level of a page (layout, painting) stop going deeper there instead of overflowing: a thread's stack is 1 MB
+ * on Windows, 512 KB on a macOS or iOS thread other than the main one, and a level of nested flex boxes takes about
+ * 1.6 KB. False where the system does not say how large the stack is. */
+#define CSCD_STACK_RESERVE (128u << 10)
+bool cscdStackLow(void);
+
 /* Files by UTF-8 paths, the paths the library takes everywhere (files.c): on Windows through the
  * UTF-16 calls, so that names outside the system's code page open too. */
 #include <stdio.h>

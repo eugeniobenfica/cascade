@@ -1546,7 +1546,13 @@ static void splitSelectorTop(CscdSv s, CscdSvVec* v) {
     cscdVecPush(v, cscdSvTrim(cscdSvFrom(s, start)));
 }
 
-/* Resolves a nested selector against its parent: "&:hover" -> "a:hover", ".x" -> "a .x". */
+/* How long a nested selector may grow once its parents are written into it: each & copies the parent's whole list, so
+ * a few of them per level made it double at every level (7 KB of CSS asked for gigabytes). Longer: the rule is dropped
+ * with what it nests, as an invalid one is. */
+#define kMaxNestedSelector (64 << 10)
+
+/* Resolves a nested selector against its parent: "&:hover" -> "a:hover", ".x" -> "a .x". Empty when it would be
+ * longer than kMaxNestedSelector. */
 static CscdStr nestSelector(CscdSv parent, CscdSv child) {
     CscdSvVec parents = {0}, children = {0};
     splitSelectorTop(parent, &parents);
@@ -1557,7 +1563,7 @@ static CscdStr nestSelector(CscdSv parent, CscdSv child) {
             CscdSv p = parents.items[pi], c = children.items[ci];
             if (res.len) cscdStrAppendC(&res, ", ");
             if (cscdSvFindChar(c, '&', 0) != CSCD_NPOS) {
-                for (size_t k = 0; k < c.len; ++k) {
+                for (size_t k = 0; k < c.len && res.len <= kMaxNestedSelector; ++k) {
                     if (c.ptr[k] == '&') { cscdStrAppendC(&res, ":is("); cscdStrAppend(&res, p); cscdStrAppendChar(&res, ')'); }
                     else cscdStrAppendChar(&res, c.ptr[k]);
                 }
@@ -1565,6 +1571,11 @@ static CscdStr nestSelector(CscdSv parent, CscdSv child) {
                 cscdStrAppend(&res, p);
                 cscdStrAppendChar(&res, ' ');
                 cscdStrAppend(&res, c);
+            }
+            if (res.len > kMaxNestedSelector) { /* (checked as it grows: never more than a parent past the limit) */
+                cscdStrFree(&res);
+                pi = parents.len;
+                break;
             }
         }
     }
@@ -1823,7 +1834,7 @@ static void buildRules(SheetBuilder* b, const RawRuleVec* rs, CscdSv media, Cscd
         if (!parentSel.len) buildStyle(b, cscdStrSv(&r->prelude), cscdStrSv(&r->block), media);
         else {
             CscdStr sel = nestSelector(parentSel, cscdStrSv(&r->prelude));
-            buildStyle(b, cscdStrSv(&sel), cscdStrSv(&r->block), media);
+            if (sel.len) buildStyle(b, cscdStrSv(&sel), cscdStrSv(&r->block), media); /* (empty: too long, dropped) */
             cscdStrFree(&sel);
         }
     }

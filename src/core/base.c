@@ -20,6 +20,50 @@
 #include <unistd.h>
 #endif
 
+/* ---- the stack ------------------------------------------------------------------------------- */
+
+/* the lowest address the calling thread's stack may reach (stacks grow down on every platform cascade runs on); 0:
+ * unknown */
+static uintptr_t stackLowest(void) {
+#if defined(_WIN32)
+    typedef void(WINAPI * LimitsFn)(PULONG_PTR, PULONG_PTR); /* (Windows 8: looked up, not linked) */
+    static LimitsFn limits;
+    static volatile int looked;
+    if (!looked) {
+        HMODULE k = GetModuleHandleW(L"kernel32.dll");
+        limits = k ? (LimitsFn)(void (*)(void))GetProcAddress(k, "GetCurrentThreadStackLimits") : NULL;
+        looked = 1;
+    }
+    ULONG_PTR low = 0, high = 0;
+    if (limits) limits(&low, &high);
+    return (uintptr_t)low;
+#elif defined(__APPLE__)
+    pthread_t self = pthread_self();
+    return (uintptr_t)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self);
+#elif defined(__linux__)
+    pthread_attr_t a;
+    void* addr = NULL;
+    size_t size = 0;
+    if (pthread_getattr_np(pthread_self(), &a) != 0) return 0;
+    pthread_attr_getstack(&a, &addr, &size);
+    pthread_attr_destroy(&a);
+    return (uintptr_t)addr;
+#else
+    return 0;
+#endif
+}
+
+static CSCD_THREAD_LOCAL uintptr_t stackFloor; /* (the lowest address plus the reserve; 1: unknown) */
+
+bool cscdStackLow(void) {
+    if (!stackFloor) {
+        const uintptr_t low = stackLowest();
+        stackFloor = low ? low + CSCD_STACK_RESERVE : 1;
+    }
+    char here;
+    return (uintptr_t)&here < stackFloor;
+}
+
 /* ---- memory ---------------------------------------------------------------------------------- */
 
 /* The program's allocator (cscdSetAllocator), or the C library's. Set once, before the first block: a block is freed by

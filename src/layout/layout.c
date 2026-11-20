@@ -1005,6 +1005,7 @@ static float verticalIntrinsicWidth(Layouter* L, CscdLayoutBox* b) {
 }
 
 static float intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) {
+    if (cscdStackLow()) return 0; /* (as layBlock: too deep for the thread's stack) */
     float v = 0;
     const CscdComputedStyle* s = b->style;
     layResolveEdges(b, 0);
@@ -2623,6 +2624,13 @@ static MarginSet layVertical(Layouter* L, CscdLayoutBox* b, const BlockInput* in
 }
 
 MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
+    if (cscdStackLow()) { /* (a page deeper than the thread's stack holds: what is further in is not laid out) */
+        b->x = in->x;
+        b->y = in->y;
+        b->w = b->h = 0;
+        const MarginSet none = {0, 0};
+        return none;
+    }
     float key[8];
     memoKey(b, in, key);
     if (memoMatches(L, b, key, in)) {

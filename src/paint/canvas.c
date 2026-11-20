@@ -2039,7 +2039,10 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
      * and cutY), and its middle column and row are drawn along the rest. A large dialog's shadow costs what a small
      * one does, and boxes of every size with the same corners share one. */
     int dX = 0, dY = 0, cutX = 0, cutY = 0;
-    if (!inset && sigma > 0 && cscdShadowNinePatch) {
+    /* (within a few million pixels, where floats still place every pixel: past that, the cut worked out from the
+     * shape's floats fell outside the shorter shape blurred from the integers) */
+    const bool placed = fabsf(shape.rect.x) < 4e6f && fabsf(shape.rect.y) < 4e6f && shape.rect.w < 4e6f && shape.rect.h < 4e6f;
+    if (!inset && sigma > 0 && cscdShadowNinePatch && placed) {
         const float kx = cscdMaxf(cscdMaxf(shape.rx[0], shape.rx[1]), cscdMaxf(shape.rx[2], shape.rx[3])) + pad + 2;
         const float ky = cscdMaxf(cscdMaxf(shape.ry[0], shape.ry[1]), cscdMaxf(shape.ry[2], shape.ry[3])) + pad + 2;
         if (shape.rect.w > 2 * kx + 34) {
@@ -2051,6 +2054,9 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
             cutY = cscdIntOf(ceilf(shape.rect.y - by0 + ky));
         }
     }
+    /* the middle column and row are inside what is blurred, with its corners on each side */
+    if (dX < 0 || cutX < 1 || cutX + 2 > w - dX) dX = cutX = 0;
+    if (dY < 0 || cutY < 1 || cutY + 2 > h - dY) dY = cutY = 0;
     CscdRRect small = shape;
     small.rect.w -= (float)dX;
     small.rect.h -= (float)dY;
@@ -2110,11 +2116,11 @@ static void drawBoxShadowImpl(CscdCanvas* c, const CscdRRect* box, float dx, flo
     int* cols = (int*)cscdMalloc(sizeof(int) * (size_t)(x1 - x0));
     for (int x = x0; x < x1; ++x) {
         const int at = x - bx0;
-        cols[x - x0] = !dX || at < cutX ? at : at < cutX + dX ? cutX : at - dX;
+        cols[x - x0] = cscdClampi(!dX || at < cutX ? at : at < cutX + dX ? cutX : at - dX, 0, sw - 1);
     }
     for (int y = y0; y < y1; ++y) {
         uint32_t* row = cscdImageRow(t, y);
-        const int ay = y - by0, sy = !dY || ay < cutY ? ay : ay < cutY + dY ? cutY : ay - dY;
+        const int ay = y - by0, sy = cscdClampi(!dY || ay < cutY ? ay : ay < cutY + dY ? cutY : ay - dY, 0, sh - 1);
         const float* src = buf->items + (size_t)sy * sw;
         const uint8_t* srcA = alpha->items + (size_t)sy * sw;
         const bool boxRow = y >= bt && y < bb;
@@ -2351,11 +2357,13 @@ void cscdCanvasDrawGlyphs(CscdCanvas* c, const CscdGlyph* glyphs, size_t n, cons
         const CscdGlyph* g = &glyphs[i];
         if (!g->font->face) continue;
         CscdPoint p = cscdMatMap(m, cscdPoint(g->x, g->y));
+        /* (a glyph nowhere, or as far as floats go: a field's text scrolled by a NaN, a page 1e30 px wide) */
+        if (!(fabsf(p.x) < 1e8f) || !(fabsf(p.y) < 1e8f)) continue;
         float size = g->font->size * m.a;
         float fx = floorf(p.x);
         int sub = cscdIntOf(floorf((p.x - fx) * 4 + 0.5f));
         if (sub == 4) { sub = 0; fx += 1; }
-        int ix = (int)fx, iy = cscdIntOf(floorf(p.y + 0.5f));
+        int ix = cscdIntOf(fx), iy = cscdIntOf(floorf(p.y + 0.5f));
         const bool colorFace = cscdFontFaceHasColor(g->font->face);
         CscdColor fg = s->color;
         fg.a = 255;

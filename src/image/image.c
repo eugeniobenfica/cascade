@@ -668,8 +668,20 @@ static CscdImage* jpegToImage(Jpeg* j) {
     return img;
 }
 
+/* Whether the bytes left could hold the image the frame declares: every block takes at least a bit (its DC difference),
+ * so far fewer bits than blocks is a file a few hundred bytes long that claims a hundred million pixels (decoded, from
+ * zeros past its end, it took 650 MB and seconds). One cut short still decodes: only a 64th of the bits is asked. */
+static bool jpegPlausible(const Jpeg* j) {
+    const size_t mcuw = 8 * (size_t)j->hmax, mcuh = 8 * (size_t)j->vmax;
+    const size_t mx = ((size_t)j->width + mcuw - 1) / mcuw, my = ((size_t)j->height + mcuh - 1) / mcuh;
+    size_t blocks = 0;
+    for (int c = 0; c < j->ncomp; ++c) blocks += mx * my * (size_t)j->comps[c].h * (size_t)j->comps[c].v;
+    const size_t bits = (j->n > j->i ? j->n - j->i : 0) * 8;
+    return blocks / 64 <= bits + 64;
+}
+
 static CscdImage* jpegScan(Jpeg* j) {
-    if (!j->width || !j->height) return NULL;
+    if (!j->width || !j->height || !jpegPlausible(j)) return NULL;
     int mcuw = 8 * j->hmax, mcuh = 8 * j->vmax;
     int mx = (j->width + mcuw - 1) / mcuw, my = (j->height + mcuh - 1) / mcuh;
     for (int c = 0; c < j->ncomp; ++c) {
@@ -795,7 +807,10 @@ static void restartIfDue(Jpeg* j, int units, const int* in, int nin) {
 
 static bool progressiveScan(Jpeg* j, const int* in, int nin, int ss, int se, int ah, int al) {
     if (!j->width || !j->height || nin == 0 || ss > se || se > 63) return false;
-    if (j->comps[0].coef.len == 0) setupBlocks(j);
+    if (j->comps[0].coef.len == 0) {
+        if (!jpegPlausible(j)) return false; /* (the first scan: what follows holds all the scans) */
+        setupBlocks(j);
+    }
     jreset(j);
     j->eobrun = 0;
     for (int k = 0; k < nin; ++k) j->comps[in[k]].pred = 0;

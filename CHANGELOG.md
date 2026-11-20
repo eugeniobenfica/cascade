@@ -7,6 +7,17 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- Layout and painting stop going deeper when the thread's stack is nearly used up, instead of overflowing it: a page of
+  nested flex boxes took about 1.6 KB of stack a level, and 1024 of them (`CSCD_MAX_TREE_DEPTH`) crashed a 1 MB stack
+  (MSVC's main thread, a macOS secondary thread has 512 KB). What lies deeper is not laid out or painted. The painter's
+  helpers are kept out of its recursive walk, which took 1136 bytes a level and takes 432.
+- Found by the nightly fuzzer: nested CSS rules whose `&` copied the parent selector more than once doubled it at
+  every level (7.9 KB of CSS took 51 s and 14 GB): a nested selector longer than 64 KiB is dropped with what it nests.
+  A JPEG of a few hundred bytes that declared a hundred million pixels was decoded from zeros past its end (650 MB,
+  3 s): one whose bytes cannot hold a 64th of its blocks is refused. A shadow on a box larger than floats count in
+  pixels read past its blurred patches. A glyph at a position that is not a number (a text field's text) is skipped
+  instead of converted to an int. The inputs are in `tests/corpus`.
+
 - **Repainting what changed.** A class, an inline style or a `data-`, `aria-`, `id`, `role` or `title` attribute
   changed: the window paints again the elements that look different and the boxes that moved, not all of it (styles
   and layout are still worked out for the whole page). A list's highlighted row costs that row.

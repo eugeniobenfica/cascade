@@ -3716,6 +3716,31 @@ static void testImageCache(void) {
     remove("cascade-test-c.png");
 }
 
+/* What the nightly fuzzer found: nested rules whose & doubles the selector at every level (7 KB of CSS asked for 14 GB),
+ * and a shadow at a size beyond what floats place (read past its blurred patches). */
+static void testFuzzFindings(void) {
+    CscdStr css = {0};
+    cscdStrAppendC(&css, "<style>p{color:rgb(1,2,3); & b{color:rgb(4,5,6)}} .x, .y {");
+    for (int i = 0; i < 60; ++i) cscdStrAppendC(&css, "& & .z, & {");
+    cscdStrAppendC(&css, "color:red;");
+    for (int i = 0; i < 60; ++i) cscdStrAppendC(&css, "}");
+    cscdStrAppendC(&css, "}</style><p id=p>a <b id=b>b</b></p><div class=x><span class=z id=z>z</span></div>");
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    const double t0 = cscdNowSeconds();
+    cscdViewLoadHTML(v, cscdStrSv(&css), CSCD_SV("."));
+    cscdViewSetViewport(v, 320, 240, 1);
+    cscdViewUpdate(v);
+    CHECK(cscdNowSeconds() - t0 < 2);
+    CHECK(byId(v, "b")->style->color.r == 4 && byId(v, "p")->style->color.r == 1); /* (the shallow ones still apply) */
+    cscdStrFree(&css);
+    /* a shadow on a box larger than floats count in pixels, and one far away */
+    cscdViewLoadHTML(v, CSCD_SV("<div style='width:9e30px;height:40px;box-shadow:0 30px 80px #000'></div>"
+                                "<div style='position:absolute;left:-3e7px;width:6e7px;height:50px;box-shadow:0 0 40px red'></div>"), CSCD_SV("."));
+    paintOnce(v);
+    cscdViewFree(v);
+}
+
 /* :nth-child and its kin over a long list of mixed elements (their places are worked out once for all the siblings,
  * and again when the list changes): the same answers as counting. */
 static void testNthInLongLists(void) {
@@ -3989,6 +4014,7 @@ int main(void) {
     testShadowPatches();
     testNthInLongLists();
     testImageCache();
+    testFuzzFindings();
     for (int i = 0; i < 16; ++i) cscdStrFree(&kept[i]);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

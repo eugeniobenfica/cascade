@@ -16,6 +16,14 @@
  * pixels map to the device's (for the hit areas), and the device clip. */
 typedef struct Projection { float h[9]; CscdRect clip; } Projection;
 
+/* Kept out of the walk that recurses once per level of the page (paintStacking, paintFlow, paintLayer...): inlined
+ * there, their locals made each level of a deep page cost a kilobyte of stack more. */
+#if defined(_MSC_VER) && !defined(__clang__)
+#define NOINLINE __declspec(noinline)
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
+
 typedef struct Painter {
     CscdView* view;
     CscdCanvas* canvas;
@@ -143,7 +151,7 @@ static void record(Painter* P, CscdElement* e, CscdRect r, bool text, CscdLayout
 
 /* ---- backgrounds --------------------------------------------------------------------------------- */
 
-static CscdShader gradientShader(const CscdBackgroundLayer* L, CscdRect tile) {
+NOINLINE static CscdShader gradientShader(const CscdBackgroundLayer* L, CscdRect tile) {
     CscdShader sh = cscdShaderSolid(cscdRgba(0, 0, 0, 0));
     float first = 0, last = 1;
     CscdGradientStopVec stops = {0};
@@ -247,7 +255,7 @@ static bool opaqueRing(const CscdLayoutBox* b) {
     return true;
 }
 
-static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect borderBox, CscdRRect outer, bool skipText, bool wholeBorder) {
+NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect borderBox, CscdRRect outer, bool skipText, bool wholeBorder) {
     CscdCanvas* canvas = P->canvas;
     const CscdComputedStyle* s = b->style;
     CscdRect paddingBox = cscdRectInset(borderBox, b->border[3], b->border[0], b->border[1], b->border[2]);
@@ -368,7 +376,7 @@ static void setDash(CscdStrokeStyle* ss, float a, float b) {
     cscdVecPush(&ss->dash, b);
 }
 
-static void paintBorder(Painter* P, CscdLayoutBox* b, CscdRRect outer, const CscdBorderSide sides[4], bool includeLeft, bool includeRight) {
+NOINLINE static void paintBorder(Painter* P, CscdLayoutBox* b, CscdRRect outer, const CscdBorderSide sides[4], bool includeLeft, bool includeRight) {
     CscdCanvas* canvas = P->canvas;
     float bw[4];
     CscdBorderSide sd[4];
@@ -488,7 +496,7 @@ static void paintBorder(Painter* P, CscdLayoutBox* b, CscdRRect outer, const Csc
     }
 }
 
-static void paintOutline(Painter* P, CscdLayoutBox* b, CscdRect borderBox) {
+NOINLINE static void paintOutline(Painter* P, CscdLayoutBox* b, CscdRect borderBox) {
     const CscdComputedStyle* s = b->style;
     if (s->outlineWidth <= 0 || s->outlineStyle == CSCD_BORDER_NONE || s->outlineColor.a == 0) return;
     float o = s->outlineOffset, w = s->outlineWidth;
@@ -516,7 +524,7 @@ static void paintOutline(Painter* P, CscdLayoutBox* b, CscdRect borderBox) {
     fillRingColor(P->canvas, &outer, &inner, s->outlineColor);
 }
 
-static void paintDecorations(Painter* P, CscdLayoutBox* b) {
+NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
     CscdCanvas* canvas = P->canvas;
     const CscdComputedStyle* s = b->style;
     if (s->visibility != CSCD_VIS_VISIBLE) return;
@@ -756,7 +764,7 @@ static void paintTextRun(Painter* P, CscdLayoutBox* tb, const CscdTextFrag* f, c
     cscdStrFree(&joined);
 }
 
-static void paintText(Painter* P, CscdLayoutBox* tb) {
+NOINLINE static void paintText(Painter* P, CscdLayoutBox* tb) {
     CscdCanvas* canvas = P->canvas;
     const CscdComputedStyle* s = tb->style;
     if (s->visibility != CSCD_VIS_VISIBLE) return;
@@ -841,7 +849,7 @@ static CscdRRect roundRect(CscdRect r, float radius) {
 
 static void paintTextControl(Painter* P, CscdLayoutBox* b);
 
-static void paintControl(Painter* P, CscdLayoutBox* b) {
+NOINLINE static void paintControl(Painter* P, CscdLayoutBox* b) {
     CscdCanvas* canvas = P->canvas;
     CscdElement* e = b->element;
     const CscdComputedStyle* s = b->style;
@@ -1530,7 +1538,7 @@ static void paintSvg(Painter* P, CscdLayoutBox* b) {
     cscdCanvasRestore(canvas);
 }
 
-static void paintReplaced(Painter* P, CscdLayoutBox* b) {
+NOINLINE static void paintReplaced(Painter* P, CscdLayoutBox* b) {
     CscdCanvas* canvas = P->canvas;
     if (b->style->visibility != CSCD_VIS_VISIBLE) return;
     switch (b->replaced) {
@@ -1552,7 +1560,7 @@ static void paintReplaced(Painter* P, CscdLayoutBox* b) {
 
 /* ---- scrollbars ------------------------------------------------------------------------------------ */
 
-static void paintScrollbars(Painter* P, CscdLayoutBox* b) {
+NOINLINE static void paintScrollbars(Painter* P, CscdLayoutBox* b) {
     if (!b->element) return;
     const CscdComputedStyle* s = b->style;
     CscdElement* e = b->element;
@@ -1755,7 +1763,7 @@ static bool outOfSight(Painter* P, const CscdLayoutBox* b) {
 }
 
 /* The 3D transform of b, in layout coordinates, with the perspective its parent gives it. */
-static Mat4 transform3D(CscdLayoutBox* b) {
+NOINLINE static Mat4 transform3D(CscdLayoutBox* b) {
     const CscdComputedStyle* s = b->style;
     CscdRect r = b->kind == CSCD_BOX_INLINE && b->inlineFrags.len ? b->inlineFrags.items[0].rect : cscdBoxBorderBox(b);
     const float ox = r.x + cscdLenResolve(s->originX, r.w, 0), oy = r.y + cscdLenResolve(s->originY, r.h, 0), oz = s->originZ;
@@ -1797,7 +1805,7 @@ static void paintLayerContent(Painter* P, CscdLayoutBox* b);
 
 /* A box under a perspective: painted flat into an image of its own, which the canvas draws through
  * the projection. Returns false when nothing of it can show. */
-static bool paintProjective(Painter* P, CscdLayoutBox* b, const Mat4* M) {
+NOINLINE static bool paintProjective(Painter* P, CscdLayoutBox* b, const Mat4* M) {
     CscdCanvas* canvas = P->canvas;
     /* layout coordinates -> this canvas's pixels, through the projection (by rows) */
     const CscdMatrix A = cscdCanvasMatrix(canvas);
@@ -1889,7 +1897,7 @@ static bool pushWritingMode(Painter* P, CscdLayoutBox* b) {
     return true;
 }
 
-static void paintCustom(Painter* P, CscdLayoutBox* b) {
+NOINLINE static void paintCustom(Painter* P, CscdLayoutBox* b) {
     if (!b->element || b->pseudo.len || b->anonymous) return;
     if (b->style->visibility != CSCD_VIS_VISIBLE) return; /* hidden as its background is */
     const CscdPainter* ph = cscdElementPainter(b->element);
@@ -1957,7 +1965,7 @@ static void paintLayer(Painter* P, CscdLayoutBox* b) {
 static void paintStacking(Painter* P, CscdLayoutBox* b);
 
 /* clip-path basic shapes: inset(), circle(), ellipse(), polygon() */
-static void clipPathShape(Painter* P, CscdLayoutBox* b) {
+NOINLINE static void clipPathShape(Painter* P, CscdLayoutBox* b) {
     CscdPath p = {0};
     if (cscdBasicShapePath(cscdStrSv(&b->style->clipPath), cscdBoxBorderBox(b), &p) && !cscdPathEmpty(&p))
         cscdCanvasClipPath(P->canvas, &p, CSCD_FILL_NONZERO);
@@ -2028,7 +2036,7 @@ static void collectLayers(CscdLayoutBox* b, CscdPtrVec* neg, CscdPtrVec* zero, C
 }
 
 /* the shader of background-clip: text over r (an image or a gradient) */
-static CscdShader textClipShader(const CscdBackgroundLayer* L, CscdRect imageArea, CscdRect gradientArea) {
+NOINLINE static CscdShader textClipShader(const CscdBackgroundLayer* L, CscdRect imageArea, CscdRect gradientArea) {
     if (L->kind == CSCD_LAYER_URL && L->image) return cscdShaderImage(L->image, imageArea, L->repeatX, L->repeatY);
     return gradientShader(L, gradientArea);
 }
@@ -2036,6 +2044,7 @@ static CscdShader textClipShader(const CscdBackgroundLayer* L, CscdRect imageAre
 /* Normal-flow painting of the subtree of b inside its stacking context.
  * phase 0: block backgrounds, 1: floats, 2: inline content and replaced content. */
 static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
+    if (cscdStackLow()) return; /* (deeper than the thread's stack holds: not painted, as it was not laid out) */
     for (size_t i = 0; i < b->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(b, i);
         if (c->kind != CSCD_BOX_TEXT && (isPositioned(c) || isStackingContext(c))) continue;
@@ -2120,6 +2129,7 @@ static void paintDescendant(Painter* P, CscdLayoutBox* b, CscdLayoutBox* d) {
 }
 
 static void paintStacking(Painter* P, CscdLayoutBox* b) {
+    if (cscdStackLow()) return;
     CscdPtrVec neg = {0}, zero = {0}, pos = {0};
     collectLayers(b, &neg, &zero, &pos);
     cscdSort(neg.items, neg.len, sizeof(void*), byZIndex, NULL);
