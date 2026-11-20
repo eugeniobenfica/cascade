@@ -543,13 +543,14 @@ static bool restyleInPlace(CscdView* v, const CscdPtrVec* roots, const CscdU64Ma
         /* painted again where they were drawn and where they are drawn now (a shadow may have grown) */
         CscdRectVec areas = {0};
         for (size_t i = 0; i < roots->len; ++i) cscdVecPush(&areas, drawnArea(v, ((CscdElement*)roots->items[i])->layout));
-        v->inkValid = false; /* (a shadow may have grown) */
         for (size_t i = 0; i < P.repoint.len; ++i) {
             CscdLayoutBox* b = P.repoint.items[i].b;
             cscdRelease(b->style);
             b->style = P.repoint.items[i].s;
             P.repoint.items[i].s = NULL;
         }
+        /* (what they draw now: a shadow may have grown; the rest of the page's inks stay) */
+        for (size_t i = 0; i < P.repoint.len; ++i) paintInkChanged(v, P.repoint.items[i].b);
         for (size_t i = 0; i < roots->len; ++i) areas.items[i] = cscdRectUnite(areas.items[i], drawnArea(v, ((CscdElement*)roots->items[i])->layout));
         v->layoutDirty = false;
         v->dirty = true;

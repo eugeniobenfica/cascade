@@ -1738,6 +1738,24 @@ static CscdRect inkOfTree(CscdView* v, const CscdLayoutBox* b) {
     return r;
 }
 
+void paintInkChanged(CscdView* v, CscdLayoutBox* b) {
+    if (!v->inkValid || !cscdU64MapGet(&v->inkAt, CSCD_PKEY(b))) {
+        v->inkValid = false;
+        return;
+    }
+    const CscdRect r = inkOfTree(v, b); /* (its subtree's entries too) */
+    /* (the ancestors only grow: an ink a little too large paints a little more, never less; one that clips holds what
+     * is in it within its own) */
+    for (CscdLayoutBox* p = b->parent; p && !(p->style && cscdStyleClipsOverflow(p->style) && p->parent); p = p->parent) {
+        const CscdMapVal* at = cscdU64MapGet(&v->inkAt, CSCD_PKEY(p));
+        if (!at) {
+            v->inkValid = false;
+            return;
+        }
+        v->inks.items[at->u] = cscdRectUnite(v->inks.items[at->u], r);
+    }
+}
+
 static void inkPrepare(CscdView* v, const CscdLayoutBox* root) {
     if (v->inkValid && v->inkRoot == root) return;
     cscdU64MapFree(&v->inkAt);

@@ -7,6 +7,14 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- The stack check reads where the frame really is (`__builtin_frame_address`, `_AddressOfReturnAddress`), and judges
+  only an address inside the thread's stack: under AddressSanitizer, whose use-after-return checks keep locals in a
+  "fake stack" on the heap, every box was laid out empty on Linux, and the check never stopped a deep page on Windows.
+- A hover that only changes colors keeps what painting knows of the rest of the page: on a list of 20,000 rows, moving
+  from one row to the next painted in 5.5 ms instead of 27.5 (what each box draws was worked out again for all of them).
+- `cascade-memory-tests` waits for the paint threads' own glyph caches to fill (which thread paints which rows changes
+  from frame to frame) instead of failing on them now and then: the bytes must come to rest within 40 lives.
+
 - Layout and painting stop going deeper when the thread's stack is nearly used up, instead of overflowing it: a page of
   nested flex boxes took about 1.6 KB of stack a level, and 1024 of them (`CSCD_MAX_TREE_DEPTH`) crashed a 1 MB stack
   (MSVC's main thread, a macOS secondary thread has 512 KB). What lies deeper is not laid out or painted. The painter's

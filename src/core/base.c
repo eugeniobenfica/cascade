@@ -22,9 +22,9 @@
 
 /* ---- the stack ------------------------------------------------------------------------------- */
 
-/* the lowest address the calling thread's stack may reach (stacks grow down on every platform cascade runs on); 0:
- * unknown */
-static uintptr_t stackLowest(void) {
+/* the lowest address the calling thread's stack may reach, and its top (stacks grow down on every platform cascade runs
+ * on); false: unknown */
+static bool stackRange(uintptr_t* lowest, uintptr_t* top) {
 #if defined(_WIN32)
     typedef void(WINAPI * LimitsFn)(PULONG_PTR, PULONG_PTR); /* (Windows 8: looked up, not linked) */
     static LimitsFn limits;
@@ -36,32 +36,51 @@ static uintptr_t stackLowest(void) {
     }
     ULONG_PTR low = 0, high = 0;
     if (limits) limits(&low, &high);
-    return (uintptr_t)low;
+    *lowest = (uintptr_t)low;
+    *top = (uintptr_t)high;
 #elif defined(__APPLE__)
     pthread_t self = pthread_self();
-    return (uintptr_t)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self);
+    *top = (uintptr_t)pthread_get_stackaddr_np(self);
+    *lowest = *top - pthread_get_stacksize_np(self);
 #elif defined(__linux__)
     pthread_attr_t a;
     void* addr = NULL;
     size_t size = 0;
-    if (pthread_getattr_np(pthread_self(), &a) != 0) return 0;
+    if (pthread_getattr_np(pthread_self(), &a) != 0) return false;
     pthread_attr_getstack(&a, &addr, &size);
     pthread_attr_destroy(&a);
-    return (uintptr_t)addr;
+    *lowest = (uintptr_t)addr;
+    *top = (uintptr_t)addr + size;
 #else
-    return 0;
+    *lowest = *top = 0;
 #endif
+    return *lowest && *top > *lowest + CSCD_STACK_RESERVE;
 }
 
-static CSCD_THREAD_LOCAL uintptr_t stackFloor; /* (the lowest address plus the reserve; 1: unknown) */
+/* (the lowest address plus the reserve, and the top; floor 1: unknown) */
+static CSCD_THREAD_LOCAL uintptr_t stackFloor, stackTop;
+
+/* where the calling function's frame is: the real stack, not the address of a local, which a sanitizer may keep in a
+ * "fake stack" on the heap (AddressSanitizer's use-after-return checks: every frame then looked out of room) */
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define FRAME_ADDRESS() ((uintptr_t)_AddressOfReturnAddress())
+#else
+#define FRAME_ADDRESS() ((uintptr_t)__builtin_frame_address(0))
+#endif
 
 bool cscdStackLow(void) {
     if (!stackFloor) {
-        const uintptr_t low = stackLowest();
-        stackFloor = low ? low + CSCD_STACK_RESERVE : 1;
+        uintptr_t low = 0, top = 0;
+        if (stackRange(&low, &top)) {
+            stackFloor = low + CSCD_STACK_RESERVE;
+            stackTop = top;
+        } else stackFloor = 1;
     }
-    char here;
-    return (uintptr_t)&here < stackFloor;
+    const uintptr_t here = FRAME_ADDRESS();
+    /* (an address outside the stack it should be in: a stack of another kind, a fiber, a sanitizer's; not judged) */
+    if (stackFloor == 1 || here < stackFloor - CSCD_STACK_RESERVE || here > stackTop) return false;
+    return here < stackFloor;
 }
 
 /* ---- memory ---------------------------------------------------------------------------------- */

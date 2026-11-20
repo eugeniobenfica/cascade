@@ -139,16 +139,27 @@ int main(void) {
     CHECK(!cscdSetAllocator(NULL)); /* (blocks made: too late to change it) */
 
     /* nothing that grows: the first lives fill the process's caches (fonts, glyphs, shadows); later ones leave the
-     * same bytes behind, on one thread and on several */
+     * same bytes behind, on one thread and on several. On several, each worker keeps the glyphs it drew, and which
+     * worker paints which rows changes from frame to frame: a worker may meet a glyph for the first time a few lives
+     * later. So the bytes must come to rest (the same after four lives in a row), within a bounded number of lives;
+     * a leak never does. */
     for (int threads = 1; threads <= 4; threads += 3) {
         cscdSetPaintThreads(threads);
         const uint64_t first = frame();
-        frame();
-        const long long settled = counted(&liveBytes), blocks = counted(&liveBlocks);
-        for (int i = 0; i < 3; ++i) CHECK(frame() == first);
-        CHECK(counted(&liveBytes) == settled);
-        CHECK(counted(&liveBlocks) == blocks);
-        if (counted(&liveBytes) != settled) printf("  %d threads: %lld bytes kept, then %lld\n", threads, settled, counted(&liveBytes));
+        long long last = counted(&liveBytes), lastBlocks = counted(&liveBlocks);
+        int still = 0, lives = 1;
+        bool same = true;
+        while (still < 4 && lives < 40) {
+            same = frame() == first && same;
+            ++lives;
+            const long long now = counted(&liveBytes), nowBlocks = counted(&liveBlocks);
+            still = now == last && nowBlocks == lastBlocks ? still + 1 : 0;
+            last = now;
+            lastBlocks = nowBlocks;
+        }
+        CHECK(same);
+        CHECK(still == 4);
+        if (still < 4) printf("  %d threads: still growing after %d lives (%lld bytes)\n", threads, lives, last);
     }
 
     /* a request that fails, wherever in a life it comes: the handler is told (with the size), the request is tried

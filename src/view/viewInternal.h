@@ -392,5 +392,7 @@ size_t nextWord(CscdSv s, size_t i);
 
 /* paint.c: paints the page's boxes (and records the hit areas when v->recordHits) */
 void paintRoot(CscdView* v, CscdCanvas* c, CscdLayoutBox* root);
+/* b's style changed in place (a hover): its ink worked out again, and its ancestors' grown to hold it */
+void paintInkChanged(CscdView* v, CscdLayoutBox* b);
 
 #endif
