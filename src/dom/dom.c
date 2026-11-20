@@ -327,11 +327,18 @@ void cscdNodeTextContent(const CscdNode* n, CscdStr* out) {
     }
 }
 
+void cscdNodeTouch(CscdNode* n) {
+    CscdDocument* d = n ? docOf(n) : NULL;
+    if (!d) return;
+    for (CscdNode* a = n; a && a->changedAt != d->layoutEpoch; a = a->parent) a->changedAt = d->layoutEpoch;
+}
+
 void cscdNodeMarkDirty(CscdNode* n) {
     CscdDocument* d = docOf(n);
     if (d) {
         ++d->version;
         d->structural = true;
+        cscdNodeTouch(n);
     }
 }
 
@@ -366,13 +373,20 @@ static bool styleOnlyAttribute(const CscdStr* name) {
            cscdSvStartsC(n, "data-") || cscdSvStartsC(n, "aria-");
 }
 
-/* such an attribute changed: e is noted for the view (many of them: the page is restyled and laid out as usual) */
-static void markAttributeChanged(CscdElement* e) {
+/* such an attribute changed (it had old, or none): e is noted for the view (many of them: the page is restyled and
+ * laid out as usual) */
+static void markAttributeChanged(CscdElement* e, CscdSv name, const CscdStr* old) {
     CscdDocument* d = e->node.owner;
     if (!d) return;
     ++d->version;
-    if (d->attrChanged.len >= 64) d->structural = true;
-    else if (!d->attrChanged.len || cscdVecLast(&d->attrChanged) != e) cscdVecPush(&d->attrChanged, e);
+    cscdNodeTouch(&e->node); /* (attr() in generated content reads it as the boxes are made) */
+    if (d->attrChanges.len >= 64) {
+        d->structural = true;
+        return;
+    }
+    if (!d->attrChanged.len || cscdVecLast(&d->attrChanged) != e) cscdVecPush(&d->attrChanged, e);
+    struct CscdAttrChange c = {e, cscdStrDup(name), old ? cscdStrCopy(old) : cscdStrDup(CSCD_SV("")), old != NULL};
+    cscdVecPush(&d->attrChanges, c);
 }
 
 void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value) {
@@ -384,12 +398,17 @@ void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value) {
             const bool paintOnly = paintOnlyAttribute(e, &n) && e->node.owner;
             cscdStrFree(&n);
             if (cscdSvEq(cscdStrSv(&a->value), value)) return;
+            CscdStr old = {0};
+            const bool styleOnly = !paintOnly && styleOnlyAttribute(&a->name);
+            if (styleOnly) old = cscdStrCopy(&a->value);
             cscdStrSet(&a->value, value);
             if (paintOnly) { /* (a value that changes every frame does not restyle the page each time) */
                 ++e->node.owner->version;
                 cscdVecPush(&e->node.owner->paintChanged, e);
-            } else if (styleOnlyAttribute(&a->name)) markAttributeChanged(e);
+                cscdNodeTouch(&e->node);
+            } else if (styleOnly) markAttributeChanged(e, cscdStrSv(&a->name), &old);
             else cscdNodeMarkDirty(&e->node);
+            cscdStrFree(&old);
             return;
         }
     }
@@ -398,7 +417,7 @@ void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value) {
     CscdStrPair p = {n, cscdStrDup(value)};
     cscdVecPush(&e->attributes, p);
     if (checked && cscdElementIs(e, "input")) e->state |= CSCD_STATE_CHECKED;
-    if (styleOnly) markAttributeChanged(e);
+    if (styleOnly) markAttributeChanged(e, cscdStrSv(&cscdVecLast(&e->attributes).name), NULL);
     else cscdNodeMarkDirty(&e->node);
 }
 
@@ -407,11 +426,11 @@ void cscdElementRemoveAttribute(CscdElement* e, CscdSv name) {
         if (cscdSvEq(cscdStrSv(&e->attributes.items[i].name), name)) {
             if (cscdSvEqC(name, "class")) e->classesValid_ = false;
             const bool styleOnly = styleOnlyAttribute(&e->attributes.items[i].name);
+            if (styleOnly) markAttributeChanged(e, cscdStrSv(&e->attributes.items[i].name), &e->attributes.items[i].value);
             cscdStrFree(&e->attributes.items[i].name);
             cscdStrFree(&e->attributes.items[i].value);
             cscdVecRemove(&e->attributes, i);
-            if (styleOnly) markAttributeChanged(e);
-            else cscdNodeMarkDirty(&e->node);
+            if (!styleOnly) cscdNodeMarkDirty(&e->node);
             return;
         }
     }
@@ -522,6 +541,7 @@ void cscdElementSetText(CscdElement* e, CscdSv text) {
         if (t->data.len) {
             cscdStrSet(&t->data, text);
             ++n->owner->version;
+            cscdNodeTouch(n);
             cscdVecPush(&n->owner->textChanged, e);
             return;
         }
@@ -998,6 +1018,7 @@ CscdDocument* cscdDocumentNew(void) {
     d->node.owner = d;
     d->version = 1;
     d->structural = true;
+    d->layoutEpoch = 1;
     return d;
 }
 
@@ -1008,6 +1029,17 @@ static void freeDocument(CscdDocument* d) {
     cscdVecFree(&d->textChanged);
     cscdVecFree(&d->paintChanged);
     cscdVecFree(&d->attrChanged);
+    cscdDocumentClearAttrChanges(d);
+    cscdVecFree(&d->attrChanges);
+}
+
+void cscdDocumentClearAttrChanges(CscdDocument* d) {
+    for (size_t i = 0; i < d->attrChanges.len; ++i) {
+        cscdStrFree(&d->attrChanges.items[i].name);
+        cscdStrFree(&d->attrChanges.items[i].old);
+    }
+    d->attrChanges.len = 0;
+    d->attrChanged.len = 0;
 }
 
 void cscdDocumentFree(CscdDocument* d) {

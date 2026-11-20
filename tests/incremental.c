@@ -35,18 +35,31 @@ static const char kPage[] =
     ".turn { transform: rotate(3deg); display: inline-block; }"
     ".fade { opacity: .6; }"
     "#count { display: inline-block; min-width: 40px; }"
+    /* what a class or an attribute reaches beyond its element: descendants, following siblings, :has() */
+    ".on .hint, .on b { color: #0a0; }"
+    ".on + .cell { outline: 2px solid #f80; }"
+    ".wide ~ p { letter-spacing: 1px; }"
+    "[data-state=warn] { color: #c00; }"
+    "[data-state] .cell, [data-state] p { padding-left: 9px; }"
+    "[data-state=warn] + .cell, [data-state=ok] ~ p { border-left: 3px solid #08f; }"
+    "#c1.fade .turn { font-weight: 700; }"
+    ":is(.grow) .hint { text-decoration: underline; }"
+    ":not(.on) > .cell:first-child { background: #dfd; }"
+    ".card:has(.on) { border: 2px solid #8b5cf6; }"
     "</style>"
     "<div class=bar><button id=b1>One</button><button id=b2 class=grow>Two</button><button id=b3>Three</button>"
     "<span id=count>0</span><progress id=pr value=20 max=100></progress></div>"
-    "<div class=card id=c1><b>Title</b> <span class=hint id=h1>hint</span><p id=t1>Some text in a card.</p></div>"
+    "<div class=card id=c1><b>Title</b> <span class=hint id=h1>hint</span><p id=t1>Some text in a card.</p>"
+    "<div class=inner><div><span class=hint id=h2>deep</span> <i class=tag2>tag</i></div></div></div>"
     "<div class=grid id=g><div class=cell>a</div><div class=cell>b</div><div class=cell>c</div>"
     "<div class=cell>d</div><div class=cell id=e5>e</div><div class=cell>f</div></div>"
     "<div class=scroll id=sc><div class=sticky>head</div><p id=s1>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p></div>"
     "<div class=card id=c2><span class=turn id=tr>turned</span> <span class=fade id=fd>faded</span></div>";
 
 static const char* const kTexts[] = {"0", "12", "345", "6789", "short", "a longer piece of text that wraps", "\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D", ""};
-static const char* const kIds[] = {"#count", "#h1", "#t1", "#e5", "#s1", "#tr", "#fd", "#b3"};
+static const char* const kIds[] = {"#count", "#h1", "#t1", "#e5", "#s1", "#tr", "#fd", "#b3", "#h2"};
 static const char* const kClasses[] = {"on", "wide", "fade", "grow"};
+static const char* const kStates[] = {"warn", "ok", ""};
 
 static CscdElement* any(CscdView* v) {
     CscdPtrVec all = {0};
@@ -88,10 +101,15 @@ static void change(CscdView* v, char* log, size_t logSize) {
         e = any(v);
         if (e) cscdElementToggleClass(e, cscdSv(kClasses[rnd() % CSCD_COUNT(kClasses)]));
         break;
-    case 12: /* a style */
+    case 12: /* a style, or a data- attribute */
         e = any(v);
         snprintf(num, sizeof num, "%upx", rnd() % 30);
-        if (e) cscdElementSetStyle(e, CSCD_SV("margin-left"), cscdSv(num));
+        if (e && rnd() % 2) cscdElementSetStyle(e, CSCD_SV("margin-left"), cscdSv(num));
+        else if (e) {
+            const char* st = kStates[rnd() % CSCD_COUNT(kStates)];
+            if (*st) cscdElementSetAttribute(e, CSCD_SV("data-state"), cscdSv(st));
+            else cscdElementRemoveAttribute(e, CSCD_SV("data-state"));
+        }
         break;
     case 13: /* an element more, or one less */
         e = any(v);

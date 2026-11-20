@@ -134,6 +134,7 @@ struct CscdView {
     bool recordHits;         /* false while painting part of the page (the hits stay) */
     CscdPtrVec stateChanged;   /* elements whose :hover / :active changed since the last restyle */
     bool hitsStale;          /* the layout changed under the hit areas (a scroll) */
+    float layoutDpr;         /* (the scale the boxes were laid out at: another, and none are taken) */
     /* What each box and everything in it draws (layout coordinates), for painting to pass over what is out of sight:
      * box -> index in inks, for the boxes of inkRoot. Made again when inkValid is false (a new layout, styles changed
      * in place: a hover, an animation). */
@@ -271,6 +272,9 @@ bool viewRestyleAttributes(CscdView* v);
  * frame against those the whole pipeline makes from scratch (which it then leaves, frame included). False: they differ,
  * and why says where. */
 bool viewCheckIncremental(CscdView* v, CscdImage* frame, CscdStr* why);
+/* Layouts take the boxes of what did not change from the layout before (on; off: every layout from nothing, as the
+ * oracle's own, and to compare). */
+extern bool viewLayoutReuse;
 void viewRecordHits(CscdView* v);
 void viewCenterModals(CscdView* v);
 void viewRestyleStates(CscdView* v);

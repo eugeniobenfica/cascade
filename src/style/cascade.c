@@ -380,6 +380,9 @@ struct CscdStyleEngine {
     CscdU64Map pseudo; /* element -> PseudoSet* */
     bool indexValid;
     bool statesReachSiblings;
+    CscdPtrVec stateCompounds; /* const CscdCompound*: the compounds with :hover or :active in them */
+    bool stateNested;          /* one is inside :is(), :not(), :has()...: every element's change matters */
+    CscdStrMap reachClass, reachId, reachAttr; /* name -> CSCD_REACH_* bits */
     CscdStrMap selectedAttrs; /* attribute names the selectors test (lowercase) */
     bool valuesUseAttr;       /* a declaration reads an attribute (attr()) */
     CscdMediaContext indexMedia;
@@ -488,6 +491,10 @@ void cscdStyleEngineFree(CscdStyleEngine* se) {
     freeIndexMap(&se->byClass);
     freeIndexMap(&se->byTag);
     cscdStrMapFree(&se->selectedAttrs);
+    cscdVecFree(&se->stateCompounds);
+    cscdStrMapFree(&se->reachClass);
+    cscdStrMapFree(&se->reachId);
+    cscdStrMapFree(&se->reachAttr);
     cscdStrMapFree(&se->byId);
     cscdStrMapFree(&se->byClass);
     cscdStrMapFree(&se->byTag);
@@ -567,6 +574,78 @@ bool cscdStyleEngineIsShared(const CscdStyleEngine* se, const CscdComputedStyle*
 
 bool cscdStyleEngineStatesReachSiblings(const CscdStyleEngine* se) { return se->statesReachSiblings; }
 
+/* ---- what a change reaches ----------------------------------------------------------------------------------------
+ * Gathered from the selectors as the index is built, as Blink's invalidation sets are: a class on the subject compound
+ * reaches the element itself; on a compound further left, what that compound's combinator leads to (descendants for
+ * ' ' and '>', following siblings and their subtrees for '+' and '~'); inside :has(), anything. Inside :is(), :not(),
+ * :where(), a name reaches as far as the compound holding it, and further when the argument has combinators of its
+ * own. */
+
+static void reachAdd(CscdStrMap* m, CscdSv name, unsigned bits, bool lower) {
+    CscdStr low = {0};
+    if (lower) {
+        low = cscdLower(name);
+        name = cscdStrSv(&low);
+    }
+    cscdStrMapPut(m, name, NULL)->u |= bits;
+    cscdStrFree(&low);
+}
+
+static void noteReach(CscdStyleEngine* se, const CscdSelector* s, unsigned subject, unsigned outer, bool all) {
+    for (size_t i = 0; i < s->compounds.len; ++i) {
+        const CscdCompound* c = &s->compounds.items[i];
+        unsigned bits;
+        if (all) bits = CSCD_REACH_ALL;
+        else if (i + 1 == s->compounds.len) bits = subject;
+        else {
+            const CscdCombinator next = s->compounds.items[i + 1].combinator;
+            bits = (next == CSCD_COMB_ADJACENT || next == CSCD_COMB_SIBLING ? CSCD_REACH_SIBLINGS : CSCD_REACH_DESCENDANTS) | outer;
+        }
+        for (size_t k = 0; k < c->parts.len; ++k) {
+            const CscdSimpleSelector* p = &c->parts.items[k];
+            if (p->kind == CSCD_SEL_CLASS) reachAdd(&se->reachClass, cscdStrSv(&p->name), bits, false);
+            else if (p->kind == CSCD_SEL_ID) reachAdd(&se->reachId, cscdStrSv(&p->name), bits, false);
+            else if (p->kind == CSCD_SEL_ATTRIBUTE) reachAdd(&se->reachAttr, cscdStrSv(&p->name), bits, true);
+            const bool has = p->kind == CSCD_SEL_PSEUDO_CLASS && cscdStrEqC(&p->name, "has");
+            for (size_t a = 0; a < p->args.len; ++a)
+                noteReach(se, &p->args.items[a], bits, bits | CSCD_REACH_DESCENDANTS | CSCD_REACH_SIBLINGS, all || has);
+        }
+    }
+}
+
+static void noteStates(CscdStyleEngine* se, const CscdSelector* s) {
+    for (size_t i = 0; i < s->compounds.len; ++i) {
+        const CscdCompound* c = &s->compounds.items[i];
+        bool state = false;
+        for (size_t k = 0; k < c->parts.len; ++k) {
+            const CscdSimpleSelector* p = &c->parts.items[k];
+            state = state || isState(p);
+            for (size_t a = 0; a < p->args.len; ++a) se->stateNested = se->stateNested || usesStateSel(&p->args.items[a]);
+        }
+        if (state) cscdVecPush(&se->stateCompounds, (void*)c);
+    }
+}
+
+bool cscdStyleEngineStateMatters(const CscdStyleEngine* se, const CscdElement* e) {
+    if (!se->indexValid || se->stateNested) return true;
+    for (size_t i = 0; i < se->stateCompounds.len; ++i)
+        if (cscdCompoundMatchesAssuming((const CscdCompound*)se->stateCompounds.items[i], e, CSCD_STATE_HOVER | CSCD_STATE_ACTIVE)) return true;
+    return false;
+}
+
+unsigned cscdStyleEngineReach(const CscdStyleEngine* se, CscdReachKind kind, CscdSv name) {
+    if (!se->indexValid) return CSCD_REACH_ALL;
+    CscdStr low = {0};
+    if (kind == CSCD_REACH_ATTRIBUTE) {
+        low = cscdLower(name);
+        name = cscdStrSv(&low);
+    }
+    const CscdStrMap* m = kind == CSCD_REACH_CLASS ? &se->reachClass : kind == CSCD_REACH_ID ? &se->reachId : &se->reachAttr;
+    const CscdMapVal* v = cscdStrMapGet(m, name);
+    cscdStrFree(&low);
+    return v ? (unsigned)v->u : 0;
+}
+
 /* the attribute names a selector tests, in it and in its :is(), :not(), :has()... */
 static void noteAttributes(CscdStyleEngine* se, const CscdSelector* s) {
     for (size_t i = 0; i < s->compounds.len; ++i) {
@@ -606,6 +685,11 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
     cscdVecClear(&se->universal);
     se->statesReachSiblings = false;
     cscdStrMapClear(&se->selectedAttrs);
+    cscdVecClear(&se->stateCompounds);
+    se->stateNested = false;
+    cscdStrMapClear(&se->reachClass);
+    cscdStrMapClear(&se->reachId);
+    cscdStrMapClear(&se->reachAttr);
     se->valuesUseAttr = false;
     for (uint32_t si = 0; si < se->sheets.len; ++si) {
         const CscdStyleSheet* sheet = (const CscdStyleSheet*)se->sheets.items[si];
@@ -618,6 +702,8 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
                 const CscdSelector* sel = &rule->selectors.items[k];
                 se->statesReachSiblings = se->statesReachSiblings || stateReachesSiblings(sel);
                 noteAttributes(se, sel);
+                noteStates(se, sel);
+                noteReach(se, sel, CSCD_REACH_SELF, 0, false);
                 Indexed ix = {rule, sel, si, sheet->origin};
                 const CscdCompound* last = &cscdVecLast(&sel->compounds);
                 const CscdSimpleSelector* key = NULL;
@@ -1151,6 +1237,8 @@ static void computeTree(CscdStyleEngine* se, CscdElement* e, const CscdComputedS
     for (int i = 0; i < 6; ++i) cscdVecClear(&se->matched[i]);
     matchRules(se, e, se->matched);
     CscdComputedStyle* s = styleFor(se, e, parent, env, 0, root, &se->matched[0]);
+    /* (the old style is still held by the element's box when it has one: a new one cannot come at its address) */
+    if (s != e->style) cscdNodeTouch(&e->node);
     cscdRelease(e->style);
     e->style = s;
 
@@ -1170,6 +1258,7 @@ static void computeTree(CscdStyleEngine* se, CscdElement* e, const CscdComputedS
             CscdComputedStyle* ps = styleFor(se, e, s, childEnv, p, root, &se->matched[p]);
             if (ps) {
                 PseudoSet* set = pseudoSetFor(se, e);
+                if (set->s[p] != ps) cscdNodeTouch(&e->node);
                 cscdRelease(set->s[p]);
                 set->s[p] = ps;
             }

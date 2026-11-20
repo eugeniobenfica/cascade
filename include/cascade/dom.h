@@ -105,6 +105,10 @@ struct CscdNode {
     CscdPtrVec children; /* CscdNode*, owned */
     CscdDocument* owner;
     size_t indexHint; /* where it was last seen among its parent's children (checked before it is used) */
+    /* The layout epoch (CscdDocument.layoutEpoch) in which it, or something in it, last changed in a way its layout can
+     * see: its children, text, attributes, style. Older than the document's epoch: its boxes from the last layout still
+     * stand for it (cscdNodeTouch). */
+    uint64_t changedAt;
 };
 
 typedef struct CscdText { CscdNode node; CscdStr data; } CscdText;
@@ -279,6 +283,13 @@ float cscdElementScrollHeight(const CscdElement* e);
 typedef void (*CscdNodeFn)(void* user, CscdNode* n);
 typedef void (*CscdElementFn)(void* user, CscdElement* e);
 
+/* An attribute changed on an element, with the value it had (bool had: false, it had none). */
+typedef struct CscdAttrChange {
+    CscdElement* element;
+    CscdStr name, old;
+    bool had;
+} CscdAttrChange;
+
 struct CscdDocument {
     CscdNode node;
     CscdStr baseDir;   /* where relative URLs (stylesheets, images, fonts) resolve */
@@ -308,9 +319,17 @@ struct CscdDocument {
      * (class, style, id, data-, aria-...), and nothing else did: the view computes the styles again, and when they lay
      * out as before it only paints those elements again. */
     CscdPtrVec attrChanged; /* CscdElement* */
+    /* The same changes, each with the attribute and the value it had (a class list's old classes: which ones came or
+     * went decides what the styles reach) */
+    CSCD_VEC(CscdAttrChange) attrChanges;
+    uint64_t layoutEpoch; /* (counts layouts: what changes is stamped with it, and the layout after moves it on) */
 };
 
 CscdDocument* cscdDocumentNew(void);
+void cscdDocumentClearAttrChanges(CscdDocument* d); /* (the view, once it has restyled for them) */
+/* n changed in a way its layout sees: it and its ancestors are stamped with the current layout epoch (up to the first one
+ * already stamped with it). */
+void cscdNodeTouch(CscdNode* n);
 /* Frees the document and its nodes. */
 void cscdDocumentFree(CscdDocument* d);
 CscdElement* cscdDocumentElement(const CscdDocument* d);

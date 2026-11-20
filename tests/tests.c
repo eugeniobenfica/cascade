@@ -3741,6 +3741,50 @@ static void testFuzzFindings(void) {
     cscdViewFree(v);
 }
 
+/* What a change reaches by the rules: a class only its own rows name restyles its element (and what is under it), one a
+ * sibling rule names its parent's children, one :has() names the whole page, one nothing names nothing at all; and the
+ * pointer coming onto the page restyles nothing when no rule's :hover could match the root. */
+static void testStyleReach(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewSetFeature(v, CSCD_FEATURE_ANIMATIONS, false);
+    cscdViewSetViewport(v, 400, 300, 1);
+    CscdStr html = {0};
+    cscdStrAppendC(&html, "<style>.row{height:10px} .row:hover{background:#eee} .sel{background:#8b5cf6} .sel + .row{color:red}"
+                          " .box:has(.hot){outline:1px solid} [data-x=y] b{color:blue}</style><div class=box id=list>");
+    for (int i = 0; i < 300; ++i) cscdStrAppendf(&html, "<div class=row id=r%d><b>%d</b></div>", i, i);
+    cscdStrAppendC(&html, "</div>");
+    cscdViewLoadHTML(v, cscdStrSv(&html), CSCD_SV("."));
+    cscdStrFree(&html);
+    cscdViewUpdate(v);
+    uint64_t was = cscdViewFrameStats(v).styles;
+    /* the pointer onto the page: <html> and <body> are :hover now, which no rule cares about */
+    const CscdModifiers none = {0};
+    cscdViewMouseMove(v, 390, 290, 0, none);
+    cscdViewUpdate(v);
+    CHECK(cscdViewFrameStats(v).styles == was);
+    /* a class no rule names */
+    cscdElementAddClass(byId(v, "r5"), CSCD_SV("nothing"));
+    cscdViewUpdate(v);
+    CHECK(cscdViewFrameStats(v).styles == was);
+    /* a class a sibling rule names: the list's children, not the page */
+    cscdElementAddClass(byId(v, "r5"), CSCD_SV("sel"));
+    cscdViewUpdate(v);
+    CscdFrameStats st = cscdViewFrameStats(v);
+    CHECK(st.styles == was + 1 && st.stylesComputed + st.stylesReused <= 2 * 300 + 2);
+    CHECK(byId(v, "r6")->style->color.r == 255 && byId(v, "r7")->style->color.r == 0);
+    /* an attribute a descendant rule names: that row and its <b> */
+    cscdElementSetAttribute(byId(v, "r9"), CSCD_SV("data-x"), CSCD_SV("y"));
+    cscdViewUpdate(v);
+    st = cscdViewFrameStats(v);
+    CHECK(st.stylesComputed + st.stylesReused <= 4);
+    CHECK(cscdElementQuerySelector(byId(v, "r9"), CSCD_SV("b"))->style->color.b == 255);
+    /* a class :has() names: the whole page, and the list's outline */
+    cscdElementAddClass(byId(v, "r20"), CSCD_SV("hot"));
+    cscdViewUpdate(v);
+    CHECK(byId(v, "list")->style->outlineWidth > 0);
+    cscdViewFree(v);
+}
+
 /* :nth-child and its kin over a long list of mixed elements (their places are worked out once for all the siblings,
  * and again when the list changes): the same answers as counting. */
 static void testNthInLongLists(void) {
@@ -4015,6 +4059,7 @@ int main(void) {
     testNthInLongLists();
     testImageCache();
     testFuzzFindings();
+    testStyleReach();
     for (int i = 0; i < 16; ++i) cscdStrFree(&kept[i]);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

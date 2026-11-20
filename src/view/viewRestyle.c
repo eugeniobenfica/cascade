@@ -150,7 +150,7 @@ static bool restyleImpl(CscdView* v, CscdPtrVec* roots) {
     if (v->doc->structural || v->doc->attrChanged.len) viewA11yStructure(v); /* (an aria- attribute, a role...) */
     v->doc->textChanged.len = 0;
     v->doc->paintChanged.len = 0;
-    v->doc->attrChanged.len = 0;
+    cscdDocumentClearAttrChanges(v->doc);
     v->doc->structural = false;
     v->stateChanged.len = 0;
     v->styleDirty = false;
@@ -425,12 +425,91 @@ bool viewRelayoutText(CscdView* v) {
 /* Only attributes that matter through styles changed (a class toggled, an inline style, data-state): the styles are
  * computed again and the page laid out, and what is painted again is what moved or now looks different, not the whole
  * window. */
+/* the classes in one list and not in the other (either way: a class that came, and one that went) */
+static unsigned classesReach(const CscdStyleEngine* se, CscdSv from, CscdSv to) {
+    unsigned bits = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        const CscdSv a = pass ? to : from, b = pass ? from : to;
+        for (size_t i = 0; i < a.len;) {
+            while (i < a.len && cscdIsSpace(a.ptr[i])) ++i;
+            size_t j = i;
+            while (j < a.len && !cscdIsSpace(a.ptr[j])) ++j;
+            if (j > i) {
+                const CscdSv cls = cscdSvSub(a, i, j - i);
+                bool inB = false;
+                for (size_t k = 0; k < b.len && !inB;) {
+                    while (k < b.len && cscdIsSpace(b.ptr[k])) ++k;
+                    size_t l = k;
+                    while (l < b.len && !cscdIsSpace(b.ptr[l])) ++l;
+                    inB = l > k && cscdSvEq(cscdSvSub(b, k, l - k), cls);
+                    k = l;
+                }
+                if (!inB) bits |= cscdStyleEngineReach(se, CSCD_REACH_CLASS, cls);
+            }
+            i = j;
+        }
+    }
+    return bits;
+}
+
+/* how far one change reaches (CSCD_REACH_*) */
+static unsigned changeReach(const CscdView* v, const struct CscdAttrChange* c) {
+    const CscdStyleEngine* se = v->styles;
+    const CscdSv name = cscdStrSv(&c->name), now = cscdElementAttr(c->element, name);
+    unsigned bits = cscdStyleEngineReach(se, CSCD_REACH_ATTRIBUTE, name); /* ([class~=x], [data-state=on]...) */
+    if (cscdStyleEngineSelectsAttribute(se, name)) bits |= CSCD_REACH_SELF; /* (attr() in a value: its own style) */
+    if (cscdSvEqC(name, "style")) bits |= CSCD_REACH_SELF;
+    else if (cscdSvEqC(name, "class")) bits |= classesReach(se, cscdStrSv(&c->old), now);
+    else if (cscdSvEqC(name, "id")) bits |= cscdStyleEngineReach(se, CSCD_REACH_ID, cscdStrSv(&c->old)) | cscdStyleEngineReach(se, CSCD_REACH_ID, now);
+    return bits;
+}
+
+/* Only attributes that matter through styles changed (a class toggled, an inline style, data-state). What the rules
+ * say each change reaches is styled again: the element and its subtree, or its parent's for one that reaches following
+ * siblings, or nothing at all when no rule names it; the whole page when one reaches anywhere (:has()). Then the page is
+ * laid out, and what is painted again is what moved or now looks different. */
 bool viewRestyleAttributes(CscdView* v) {
     CscdDocument* d = v->doc;
     if (!d->attrChanged.len || d->structural || d->textChanged.len || d->paintChanged.len || !v->root || v->styleDirty || v->layoutDirty ||
         v->stateChanged.len)
         return false;
-    viewRestyle(v, NULL);
+    CscdPtrVec roots = {0};
+    bool all = false;
+    for (size_t i = 0; i < d->attrChanges.len && !all; ++i) {
+        const struct CscdAttrChange* c = &d->attrChanges.items[i];
+        const unsigned bits = changeReach(v, c);
+        if (!bits) continue;
+        CscdElement* root = c->element;
+        if (bits & CSCD_REACH_ALL) all = true;
+        else if (bits & CSCD_REACH_SIBLINGS) root = parentEl(c->element);
+        if (!root || !parentEl(root)) all = true; /* (the root element: the whole document) */
+        else if (!viewContainsPtr(&roots, root)) cscdVecPush(&roots, root);
+    }
+    if (all) {
+        cscdVecFree(&roots);
+        viewRestyle(v, NULL);
+    } else {
+        /* (the highest ones: those under another are styled with it) */
+        size_t w = 0;
+        for (size_t i = 0; i < roots.len; ++i) {
+            CscdElement* e = (CscdElement*)roots.items[i];
+            bool under = false;
+            for (const CscdElement* a = parentEl(e); a && !under; a = parentEl(a)) under = viewContainsPtr(&roots, a);
+            if (!under) roots.items[w++] = e;
+        }
+        roots.len = w;
+        const bool whole = roots.len && !viewRestyle(v, &roots); /* (false: it styled the whole document after all) */
+        cscdVecFree(&roots);
+        if (!whole) {
+            /* (as a whole restyle leaves the document: styled as it now is) */
+            v->styledVersion = d->version;
+            viewA11yStructure(v); /* (an aria- attribute, a role...) */
+            cscdDocumentClearAttrChanges(d);
+            v->styleDirty = false;
+            if (!w) return true; /* (no rule names what changed: nothing to style, lay out or paint) */
+            v->layoutDirty = true;
+        }
+    }
     const CscdPtrVec none = {0};
     relayoutAround(v, &none);
     return true;
@@ -585,6 +664,15 @@ void viewRestyleStates(CscdView* v) {
     }
     CscdPtrVec changed = v->stateChanged;
     memset(&v->stateChanged, 0, sizeof v->stateChanged);
+    /* (only those a rule's :hover or :active could match: the root coming under the pointer matters to no ".row:hover") */
+    size_t kept = 0;
+    for (size_t i = 0; i < changed.len; ++i)
+        if (cscdStyleEngineStateMatters(v->styles, (const CscdElement*)changed.items[i])) changed.items[kept++] = changed.items[i];
+    changed.len = kept;
+    if (!kept) {
+        cscdVecFree(&changed);
+        return;
+    }
     /* the highest ones (their descendants are computed with them), drawn where their box is */
     CscdPtrVec roots = {0};
     bool usual = false;
@@ -656,11 +744,23 @@ static void clampScrolls(CscdView* v, CscdLayoutBox* b) {
     for (size_t i = 0; i < b->children.len; ++i) clampScrolls(v, cscdBoxChild(b, i));
 }
 
+bool viewLayoutReuse = true;
+
+/* a layout of the page: from the last one (the boxes of what did not change taken from it, then the rest of it freed),
+ * or from nothing */
+static void layoutFrom(CscdView* v, bool reuse) {
+    CscdViewport vp = {v->vw, v->vh};
+    CscdLayoutBox* old = v->root;
+    reuse = reuse && old && viewLayoutReuse && v->layoutDpr == v->dpr;
+    v->root = cscdLayoutDocumentFrom(v->doc, v->styles, vp, viewImageLoader, v, reuse ? old : NULL);
+    if (reuse) cscdLayoutBoxFreeReplaced(old);
+    else cscdLayoutBoxFree(old);
+    v->layoutDpr = v->dpr;
+}
+
 void viewRelayout(CscdView* v) {
     const double t0 = cscdNowSeconds();
-    CscdViewport vp = {v->vw, v->vh};
-    cscdLayoutBoxFree(v->root);
-    v->root = cscdLayoutDocument(v->doc, v->styles, vp, viewImageLoader, v);
+    layoutFrom(v, true);
     /* container queries: styles that ask about a container's size are worked out again with the size
      * this layout gave it (containment keeps that size from depending on them) */
     for (int pass = 0; pass < 4 && cscdStyleEngineHasContainers(v->styles); ++pass) {
@@ -668,8 +768,7 @@ void viewRelayout(CscdView* v) {
         if (v->root) containerSizes(v->root, &sizes);
         if (!cscdStyleEngineSetContainerSizes(v->styles, &sizes)) break;
         viewRestyle(v, NULL);
-        cscdLayoutBoxFree(v->root);
-        v->root = cscdLayoutDocument(v->doc, v->styles, vp, viewImageLoader, v);
+        layoutFrom(v, true);
     }
     v->layoutDirty = false;
     v->inkValid = false;
@@ -699,7 +798,10 @@ bool viewCheckIncremental(CscdView* v, CscdImage* frame, CscdStr* why) {
     if (v->root) boxRects(v->root, &light);
     v->styleDirty = true;
     viewRestyle(v, NULL);
+    const bool reuse = viewLayoutReuse;
+    viewLayoutReuse = false; /* (from scratch: nothing taken from the layout under test) */
     viewRelayout(v);
+    viewLayoutReuse = reuse;
     v->dirty = v->fullPaint = true;
     if (v->root) boxRects(v->root, &full);
     bool same = light.at.len == full.at.len;

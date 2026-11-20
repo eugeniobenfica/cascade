@@ -40,13 +40,14 @@ static bool imagePlaying(const CscdView* v, const CscdImage* img) {
     return false;
 }
 
-static void imagesMakeRoom(CscdView* v) {
+/* (keep: the entry just made, whose image is being handed out: never dropped here, though nothing holds it yet) */
+static void imagesMakeRoom(CscdView* v, const ImageEntry* keep) {
     const size_t limit = v->imageLimit ? v->imageLimit : (size_t)kImageLimitDefault;
     if (v->imageBytes <= limit) return;
     CscdPtrVec idle = {0}; /* (slots) */
     for (CscdStrMapSlot* s = NULL; (s = cscdStrMapNext(&v->images, s));) {
         const ImageEntry* e = (const ImageEntry*)s->val.p;
-        if (e->img && !e->app && !e->decoding && cscdRcRefs(e->img) == 1 && !imagePlaying(v, e->img)) cscdVecPush(&idle, s);
+        if (e != keep && e->img && !e->app && !e->decoding && cscdRcRefs(e->img) == 1 && !imagePlaying(v, e->img)) cscdVecPush(&idle, s);
     }
     /* longest unused first */
     for (size_t i = 1; i < idle.len; ++i)
@@ -76,7 +77,7 @@ static void imagesMakeRoom(CscdView* v) {
 
 void cscdViewSetImageCacheLimit(CscdView* v, size_t bytes) {
     v->imageLimit = bytes ? bytes : 1;
-    imagesMakeRoom(v);
+    imagesMakeRoom(v, NULL);
 }
 
 size_t cscdViewImageCacheBytes(const CscdView* v) { return v->imageBytes; }
@@ -176,8 +177,7 @@ bool viewTakeDecodedImages(CscdView* v) {
         cscdStrFree(&got[i].url);
     }
     cscdFree(got);
-    if (!any) return false;
-    imagesMakeRoom(v);
+    if (!any) return false; /* (room is made as the next image is asked for: these are about to be shown) */
     cscdStyleEngineInvalidateCache(v->styles);
     v->styleDirty = true;
     cscdViewInvalidate(v);
@@ -260,7 +260,7 @@ CscdImage* viewImage(CscdView* v, CscdSv url) {
     e->decoding = later;
     v->imageBytes += e->bytes;
     cscdStrMapPut(&v->images, url, NULL)->p = e;
-    if (e->bytes) imagesMakeRoom(v);
+    if (e->bytes) imagesMakeRoom(v, e);
     return img;
 }
 

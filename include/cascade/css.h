@@ -94,6 +94,8 @@ struct CscdSelector {
 bool cscdParseSelectorList(CscdSv text, CscdSelectorVec* out); /* appended */
 bool cscdMatchSelector(const CscdSelector* s, const CscdElement* e);
 bool cscdMatchSelectorList(const CscdSelectorVec* list, const CscdElement* e);
+/* One compound against e, with these states (CSCD_STATE_*) taken to be on: whether a change of them could matter to it. */
+bool cscdCompoundMatchesAssuming(const CscdCompound* c, const CscdElement* e, uint32_t states);
 void cscdSelectorVecFree(CscdSelectorVec* v);
 void cscdSelectorVecCopy(CscdSelectorVec* dst, const CscdSelectorVec* src); /* deep, appended */
 

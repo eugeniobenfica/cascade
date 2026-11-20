@@ -521,6 +521,15 @@ bool cscdStyleEngineComputeSubtree(CscdStyleEngine* se, CscdElement* e, const Cs
 /* A change of :hover / :active can reach beyond the element and its descendants (a state followed
  * by + or ~, or :has()): such a change needs the whole document computed. */
 bool cscdStyleEngineStatesReachSiblings(const CscdStyleEngine* se);
+/* Whether e's :hover or :active changing can change a style: a rule's compound with those states would match it. The
+ * root entering :hover as the pointer comes in matters to none of a page's ".row:hover". */
+bool cscdStyleEngineStateMatters(const CscdStyleEngine* se, const CscdElement* e);
+/* How far a change of an element's class, id or attribute reaches, by what the selectors say of it (bits):
+ * the element itself, its descendants, its following siblings and theirs, or the whole document (:has(), an
+ * out-of-date index). 0: no selector names it. */
+enum { CSCD_REACH_SELF = 1, CSCD_REACH_DESCENDANTS = 2, CSCD_REACH_SIBLINGS = 4, CSCD_REACH_ALL = 8 };
+typedef enum CscdReachKind { CSCD_REACH_CLASS, CSCD_REACH_ID, CSCD_REACH_ATTRIBUTE } CscdReachKind;
+unsigned cscdStyleEngineReach(const CscdStyleEngine* se, CscdReachKind kind, CscdSv name);
 /* A selector tests this attribute, or a value reads attributes (attr()): its changes need styles
  * computed again. True too while the rules' index is out of date. */
 bool cscdStyleEngineSelectsAttribute(const CscdStyleEngine* se, CscdSv name);

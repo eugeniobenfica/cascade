@@ -32,7 +32,7 @@ A window keeps its last frame and paints again only what changed, when that is k
 | `:hover` / `:active` changes that only repaint (colors, backgrounds, shadows, outlines) | the styles of those elements and their descendants; no layout | those elements |
 | `:hover` / `:active` changes that change sizes | the styles of those elements and their descendants, and the layout | those elements, and the few boxes that moved |
 | A box scrolled | nothing | that box |
-| `class`, `style`, `id`, `data-*`, `aria-*`, `role`, `title` | all styles and layout | the elements that look different now, and the few boxes that moved |
+| `class`, `style`, `id`, `data-*`, `aria-*`, `role`, `title` | the styles the rules say it reaches (that element and its subtree, its parent's for a `+` or `~` rule, the page for `:has()`; nothing when no rule names it), and the layout of what changed | the elements that look different now, and the few boxes that moved |
 | Anything else — other attributes, new or removed elements | all styles and layout | the whole window |
 
 When more than a handful of boxes move, or the areas cover most of the window, the whole window
@@ -47,6 +47,12 @@ Most of a page is the same from one frame to the next, so cascade keeps what it 
   restyle to the next: a class toggled on `<body>` recomputes only the elements whose rules
   changed, and a list of a thousand rows computes a row's style once. A style that uses `vw` or
   `vh` is computed again when the viewport size changes; the others are not.
+- **Layout keeps what did not change.** Each change stamps its element and their ancestors; the next
+  layout takes the boxes of a block, flex or grid element with nothing new in it straight from the
+  last one, and one with its own formatting context, given the same room at the same place, is not
+  laid out again. A class on one row of twenty thousand lays out in 7 ms instead of 158. Moved, a
+  box is laid out again (shifted, its floats would round otherwise than laid out there); what counts
+  in document order (counters, quotes, list numbers) is always made again.
 - **Resizing only lays out again**, unless the new size changes which `@media` rules (or
   `<style media>` / `<link media>` sheets) apply, or a style used viewport units.
 - **Values are parsed once.** A declaration's value is tokenized, and a shorthand expanded into

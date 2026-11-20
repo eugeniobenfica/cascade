@@ -7,6 +7,24 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Incremental layout.** Each change stamps its element and their ancestors with the layout epoch
+  (`CscdNode.changedAt`, `cscdNodeTouch`), and a style that is not the one it had stamps its element too. The next
+  layout (`cscdLayoutDocumentFrom`) takes from the last one the boxes of the block, flex and grid elements with nothing
+  new in them, and the memo of one with its own formatting context, given the same room at the same place, skips its
+  layout. On a list of 20,000 rows: a class on one row lays out in 7.4 ms instead of 158, a row's text in 7.6 instead
+  of 156, a row appended in 7.2 instead of 159.
+- **Styles restyled as far as the rules reach.** Class, id and attribute names are gathered from the selectors as the
+  index is built, with how far a change of each reaches (the element, its descendants, its following siblings, or the
+  whole page for `:has()`); a change restyles that and no more, and nothing when no rule names it. A class on one of
+  80,000 elements: 0.1 ms of styles instead of 39 (`cscdStyleEngineReach`).
+- **The pointer coming onto the page** no longer restyles and lays out everything: a `:hover` change matters only to an
+  element some rule's `:hover` compound could match (`cscdStyleEngineStateMatters`), and the root's never does for a
+  page's `.row:hover`. From about 235 ms to 3.4 on that list.
+- The oracle of the light paths (`cascade-incremental-tests`) has rules that reach descendants, siblings and `:has()`, and
+  data- attributes; four kinds of under-invalidation planted in the reach were each caught.
+- Fixed: the image cache could drop the image it was handing out when over its limit and the last layout still held the
+  others; building the boxes now stops, as layout does, where the thread's stack runs low.
+
 - The stack check reads where the frame really is (`__builtin_frame_address`, `_AddressOfReturnAddress`), and judges
   only an address inside the thread's stack: under AddressSanitizer, whose use-after-return checks keep locals in a
   "fake stack" on the heap, every box was laid out empty on Linux, and the check never stopped a deep page on Windows.

@@ -71,6 +71,10 @@ typedef struct Layouter {
     const CscdElement* lastListItem;
     int lastListOrdinal;
     uint32_t pass; /* this layout pass (0: none, nothing is remembered; CscdLayoutBox.memoPass) */
+    /* boxes of the last layout taken for elements unchanged since (cscdLayoutDocumentFrom): epoch, the document's layout
+     * epoch now (an element stamped before it is unchanged) */
+    bool reuse;
+    uint64_t epoch;
     /* the outermost list in absStack a positioned box was handed to since the layout under way began
      * (-1: a fixed one; INT_MAX: none) */
     int deferredTo;

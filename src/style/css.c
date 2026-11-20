@@ -976,6 +976,16 @@ static bool matchCompound(const CscdCompound* c, const CscdElement* e) {
     return true;
 }
 
+/* (the element is the caller's and is left as it was: the states are only assumed while it is tested) */
+bool cscdCompoundMatchesAssuming(const CscdCompound* c, const CscdElement* e, uint32_t states) {
+    CscdElement* m = (CscdElement*)e;
+    const uint32_t was = m->state;
+    m->state |= states;
+    const bool r = matchCompound(c, m);
+    m->state = was;
+    return r;
+}
+
 bool cscdMatchSelector(const CscdSelector* s, const CscdElement* e) {
     if (!s->compounds.len) return false;
     return matchFrom(s, (int)s->compounds.len - 1, e) == MATCH_YES;

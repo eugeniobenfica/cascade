@@ -93,6 +93,21 @@ CscdLayoutBox* cscdLayoutBoxNew(void) {
     return b;
 }
 
+/* (a box's memo kept from the layout before, for its first use in this one: see memoMatches) */
+#define MEMO_KEPT UINT32_MAX
+
+void cscdLayoutBoxFreeReplaced(CscdLayoutBox* b) {
+    if (!b) return;
+    if (b->taken) { /* (in the new layout now) */
+        b->taken = false;
+        return;
+    }
+    /* (its element is not looked at: removed from the document since, it may be gone) */
+    for (size_t i = 0; i < b->children.len; ++i) cscdLayoutBoxFreeReplaced(cscdBoxChild(b, i));
+    b->children.len = 0;
+    cscdLayoutBoxFree(b);
+}
+
 void cscdLayoutBoxFree(CscdLayoutBox* b) {
     if (!b) return;
     for (size_t i = 0; i < b->children.len; ++i) cscdLayoutBoxFree(cscdBoxChild(b, i));
@@ -369,6 +384,9 @@ static void setReplaced(CscdLayoutBox* b, CscdReplacedKind k, bool inl) {
     b->atomicInline = inl;
 }
 
+static CscdLayoutBox* reusable(Layouter* L, CscdElement* e);
+static void noteOrdered(CscdLayoutBox* b);
+
 static void appendChild(CscdLayoutBox* parent, CscdLayoutBox* c) {
     c->parent = parent;
     cscdVecPush(&parent->children, c);
@@ -378,6 +396,7 @@ static void appendChild(CscdLayoutBox* parent, CscdLayoutBox* c) {
 static CscdLayoutBox* makeBox(Layouter* L, CscdElement* e, CscdComputedStyle* style) {
     CscdLayoutBox* b = cscdLayoutBoxNew();
     b->element = e;
+    b->builtIn = L->epoch;
     b->style = style;
     const CscdComputedStyle* s = style;
     switch (s->display) {
@@ -572,6 +591,7 @@ CscdStr layResolveContent(Layouter* L, CscdSv c, CscdElement* e) {
 }
 
 static void buildChildren(Layouter* L, CscdElement* e, CscdLayoutBox* parent) {
+    if (cscdStackLow()) return; /* (as layBlock: what is deeper than the thread's stack holds gets no boxes) */
     if (e->style && e->style->contentVisibility == 2) return; /* (content-visibility: hidden: none of its contents) */
     /* list marker */
     if (e->style && e->style->display == CSCD_DISPLAY_LIST_ITEM && e->style->listStyle != CSCD_LIST_NONE && !cscdElementIs(e, "summary")) {
@@ -616,11 +636,18 @@ static void buildChildren(Layouter* L, CscdElement* e, CscdLayoutBox* parent) {
                 buildChildren(L, ce, parent);
                 continue;
             }
+            CscdLayoutBox* kept = reusable(L, ce);
+            if (kept) { /* (as it was, with all it holds) */
+                kept->parent = parent;
+                cscdVecPush(&parent->children, kept);
+                continue;
+            }
             CscdLayoutBox* b = makeBox(L, ce, (CscdComputedStyle*)cscdRetain(ce->style));
             ce->layout = b;
             b->parent = parent;
             if (b->kind != CSCD_BOX_REPLACED && b->kind != CSCD_BOX_LINE_BREAK && !cscdElementIs(ce, "input")) buildChildren(L, ce, b);
             layFixupChildren(L, b);
+            noteOrdered(b);
             cscdVecPush(&parent->children, b);
         } else if (cscdNodeIsText(cn)) {
             CscdText* tn = (CscdText*)cn;
@@ -742,6 +769,61 @@ void layFixupChildren(Layouter* L, CscdLayoutBox* b) {
     for (size_t i = 0; i < ch->len; ++i) cscdBoxChild(b, i)->parent = b;
 }
 
+/* Whether a box makes counters, quotes or list numbers count (which run in document order). */
+static bool styleOrdered(const CscdComputedStyle* s) {
+    if (!s) return false;
+    if (s->counterReset.len || s->counterSet.len || s->counterIncrement.len || s->display == CSCD_DISPLAY_LIST_ITEM) return true;
+    return s->hasContent && (cscdSvContains(cscdStrSv(&s->content), "counter") || cscdSvContains(cscdStrSv(&s->content), "quote"));
+}
+
+/* b's own, and what is in it (through the anonymous boxes the fixups made, which have none of their own yet) */
+static bool orderedIn(const CscdLayoutBox* b) {
+    if (b->ordered || styleOrdered(b->style) || b->isMarker) return true;
+    if (!b->anonymous && b->kind != CSCD_BOX_TEXT) return false; /* (an element's box: its flag says it all) */
+    for (size_t i = 0; i < b->children.len; ++i)
+        if (orderedIn(cscdBoxChild(b, i))) return true;
+    return false;
+}
+
+static void noteOrdered(CscdLayoutBox* b) {
+    bool o = styleOrdered(b->style);
+    for (size_t i = 0; i < b->children.len && !o; ++i) o = orderedIn(cscdBoxChild(b, i));
+    b->ordered = o;
+}
+
+/* The box the element had in the last layout, when it can stand for it in this one as it is: nothing in it changed
+ * since, it is a block of its own in the flow (an inline box's text and a table's parts take their places from what is
+ * around them), and nothing in it counts in document order. */
+static CscdLayoutBox* reusable(Layouter* L, CscdElement* e) {
+    CscdLayoutBox* b = e->layout;
+    if (!L->reuse || !b || b->taken || b->element != e || b->anonymous || b->pseudo.len || b->style != e->style) return NULL;
+    if (e->node.changedAt >= L->epoch || b->ordered || b->atomicInline) return NULL;
+    if (b->kind != CSCD_BOX_BLOCK && b->kind != CSCD_BOX_FLEX && b->kind != CSCD_BOX_GRID) return NULL;
+    const CscdDisplay d = e->style->display;
+    if (d != CSCD_DISPLAY_BLOCK && d != CSCD_DISPLAY_FLEX && d != CSCD_DISPLAY_GRID && d != CSCD_DISPLAY_FLOW_ROOT) return NULL;
+    b->taken = true;
+    b->builtIn = L->epoch;
+    if (b->memoPass) b->memoPass = MEMO_KEPT; /* (its last layout: as good as one of this pass, for the same input) */
+    return b;
+}
+
+/* After a build that took boxes: an element whose box is not in the new tree (not shown now, under one not shown) forgets
+ * the old one, which goes with the old tree. The boxes taken hold their elements' boxes as they were. */
+static void forgetOldBoxes(CscdNode* root, uint64_t epoch) {
+    CscdPtrVec todo = {0}; /* (a list, not a recursion: every element must be reached, however deep) */
+    cscdVecPush(&todo, root);
+    while (todo.len) {
+        CscdNode* n = (CscdNode*)todo.items[--todo.len];
+        CscdElement* e = cscdNodeAsElement(n);
+        if (e && e->layout) {
+            if (e->layout->builtIn != epoch) e->layout = NULL;
+            else if (e->layout->taken && e->layout->element == e) continue;
+        }
+        for (size_t i = 0; i < n->children.len; ++i) cscdVecPush(&todo, cscdNodeChild(n, i));
+    }
+    cscdVecFree(&todo);
+}
+
 static void clearLayoutPointers(CscdNode* n) {
     CscdElement* e = cscdNodeAsElement(n);
     if (e) e->layout = NULL;
@@ -759,9 +841,12 @@ static void clearCounters(Layouter* L) {
 }
 
 CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc) {
-    clearLayoutPointers(&doc->node);
+    if (!L->reuse) clearLayoutPointers(&doc->node); /* (taking boxes: the old ones are found through them) */
     CscdElement* html = cscdDocumentElement(doc);
-    if (!html || !html->style || html->style->display == CSCD_DISPLAY_NONE) return NULL;
+    if (!html || !html->style || html->style->display == CSCD_DISPLAY_NONE) {
+        if (L->reuse) clearLayoutPointers(&doc->node); /* (nothing shown: no element keeps an old box) */
+        return NULL;
+    }
     CscdLayoutBox* root = makeBox(L, html, (CscdComputedStyle*)cscdRetain(html->style));
     root->atomicInline = false;
     if (root->kind == CSCD_BOX_INLINE) root->kind = CSCD_BOX_BLOCK;
@@ -771,6 +856,7 @@ CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc) {
     layApplyCounters(L, html->style, NULL);
     buildChildren(L, html, root);
     layFixupChildren(L, root);
+    if (L->reuse) forgetOldBoxes(&doc->node, L->epoch);
     return root;
 }
 
@@ -2552,7 +2638,12 @@ static void forgetLayout(CscdLayoutBox* b) {
 }
 
 static bool memoMatches(Layouter* L, CscdLayoutBox* b, const float key[8], const BlockInput* in) {
-    if (!L->pass || b->memoPass != L->pass) return false;
+    if (!L->pass || (b->memoPass != L->pass && b->memoPass != MEMO_KEPT)) return false;
+    /* A box kept from the layout before is taken as it was only where it was: moved, its boxes would be shifted by the
+     * difference, which floats round otherwise than laying them out there, and a glyph or an edge would come out a level
+     * off from the same page laid out from nothing. Moved, it is laid out again (within a layout, every pass shifts as
+     * the one from nothing does). */
+    if (b->memoPass == MEMO_KEPT && (in->x != b->memoInX || in->y != b->memoInY)) return false;
     for (int i = 0; i < 8; ++i)
         if (i != 3 && key[i] != b->memoIn[i]) return false;
     if (key[3] == b->memoIn[3]) return true;
@@ -2932,8 +3023,16 @@ static void freeLayouter(Layouter* L) {
 }
 
 CscdLayoutBox* cscdLayoutDocument(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser) {
+    return cscdLayoutDocumentFrom(doc, styles, vp, images, imagesUser, NULL);
+}
+
+CscdLayoutBox* cscdLayoutDocumentFrom(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser,
+                                      CscdLayoutBox* previous) {
     Layouter L;
     memset(&L, 0, sizeof L);
+    L.reuse = previous != NULL;
+    L.epoch = doc->layoutEpoch;
+    ++doc->layoutEpoch; /* (what changes from now on is newer than this layout) */
     L.styles = styles;
     L.vp = vp;
     L.images = images;

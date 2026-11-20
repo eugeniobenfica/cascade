@@ -87,6 +87,11 @@ struct CscdLayoutBox {
      * input reuses, only moving the box; see layBlock in layout.c) */
     uint32_t memoPass, sensPass;
     bool memoBfc, heightSensitive;
+    /* (across layouts) ordered: it or something in it uses or moves counters, quotes or list numbers, which run in
+     * document order: never taken into the next layout as it is. taken: it was, into the tree being built (the tree
+     * it leaves frees what is left without it) */
+    bool ordered, taken;
+    uint64_t builtIn; /* (the layout epoch of the layout that made it, or took it) */
     float memoIn[8];
     float memoInX, memoInY, memoX, memoY, memoH, memoOut[2];
 };
@@ -122,6 +127,15 @@ typedef struct CscdViewport { float width, height; } CscdViewport;
 /* Builds the box tree from the styled DOM and lays it out in the viewport (the caller owns it;
  * NULL when nothing is shown). images gives the image of a URL (a reference, or NULL). */
 CscdLayoutBox* cscdLayoutDocument(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser);
+/* The same, taking from previous (the document's last layout, at the same scale) the boxes of what has not changed
+ * since (CscdNode.changedAt): they are not made again, and with the same input not laid out again either, only moved.
+ * Free previous with cscdLayoutBoxFreeReplaced once this returns (not before: elements still point into it). The
+ * document's layout epoch moves on. */
+CscdLayoutBox* cscdLayoutDocumentFrom(CscdDocument* doc, const CscdStyleEngine* styles, CscdViewport vp, CscdImageLoaderFn images, void* imagesUser,
+                                      CscdLayoutBox* previous);
+/* Frees what is left of a layout cscdLayoutDocumentFrom took boxes from (not those), and forgets it in the elements
+ * whose boxes go. */
+void cscdLayoutBoxFreeReplaced(CscdLayoutBox* b);
 
 CscdFont cscdFontForStyle(const CscdComputedStyle* s);
 
