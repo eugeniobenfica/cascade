@@ -103,7 +103,7 @@ FIXTURES = {
     "grid_percent_tracks": box("display:grid;grid-template-columns:25% 75%;width:400px;grid-template-rows:30px", box(), box()),
 }
 
-PAGE = ('<!doctype html><html><head><style>body{margin:0}</style></head><body><div style="width:800px;height:600px">%s</div>'
+PAGE = ('<!doctype html><html><head><style>body{margin:0;font-size:0}</style></head><body><div style="width:800px;height:600px">%s</div>'
         '</body></html>')
 PROBE = ('<script>document.body.setAttribute("data-r", JSON.stringify([...document.body.querySelectorAll("*")]'
          '.filter(e => e.tagName != "SCRIPT").map(e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; })));'
