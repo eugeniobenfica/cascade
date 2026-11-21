@@ -14,7 +14,8 @@
 #define COBJMACROS
 #include <windows.h>
 #include <ole2.h>
-#include <uiautomation.h>
+#include <uiautomationcore.h> /* (the providers' side only: MSVC's uiautomation.h defines the ids, as the library does) */
+#define TEXT_PATTERN_ID 10014 /* (UIA_TextPatternId) */
 #endif
 
 static int failures = 0;
@@ -298,7 +299,7 @@ static ITextProvider* textOf(CscdWindow* w, CscdElement* e) {
     IRawElementProviderSimple* p = (IRawElementProviderSimple*)winA11yProvider(w, e);
     IUnknown* pattern = NULL;
     ITextProvider* text = NULL;
-    if (p && SUCCEEDED(p->lpVtbl->GetPatternProvider(p, UIA_TextPatternId, &pattern)) && pattern) {
+    if (p && SUCCEEDED(p->lpVtbl->GetPatternProvider(p, TEXT_PATTERN_ID, &pattern)) && pattern) {
         pattern->lpVtbl->QueryInterface(pattern, &IID_ITextProvider, (void**)&text);
         pattern->lpVtbl->Release(pattern);
     }
@@ -313,6 +314,13 @@ static void testTextPattern(void) {
     cscdViewLoadHTML(v, CSCD_SV("<input id=f value='hello world'><textarea id=t>one two\nthree</textarea><button id=b>b</button>"), CSCD_SV(""));
     CHECK(waitFor(w, &h, 1));
     CscdElement *f = cscdViewGetElementById(v, CSCD_SV("f")), *t = cscdViewGetElementById(v, CSCD_SV("t"));
+    IUnknown* any = (IUnknown*)winA11yProvider(w, f);
+    if (!any) { /* (a build without the screen readers' bridges) */
+        puts("text pattern: no UI Automation in this build");
+        cscdWindowFree(w);
+        return;
+    }
+    any->lpVtbl->Release(any);
     CHECK(!textOf(w, cscdViewGetElementById(v, CSCD_SV("b")))); /* (a button has none) */
     ITextProvider* text = textOf(w, f);
     CHECK(text != NULL);

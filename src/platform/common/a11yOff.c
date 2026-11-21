@@ -10,6 +10,7 @@ bool winA11yGetObject(CscdWindow* w, uintptr_t wp, intptr_t lp, intptr_t* out) {
     return false;
 }
 void winA11yDetach(CscdWindow* w) { (void)w; }
+void* winA11yProvider(CscdWindow* w, CscdElement* e) { (void)w; (void)e; return NULL; }
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
 void uikitA11yAttach(CscdWindow* w) { (void)w; }
 void uikitA11yDetach(CscdWindow* w) { (void)w; }
