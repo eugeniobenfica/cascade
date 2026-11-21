@@ -36,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libx11-dev xvfb x11-apps imagemagick libgl1 libgl1-mesa-dri libvulkan1 \
-            mesa-vulkan-drivers libxcursor1
+            mesa-vulkan-drivers libxcursor1 python3-fonttools
       - name: Build
         run: cmake -S . -B build -G Ninja -DCASCADE_WERROR=ON && cmake --build build
       - name: Unicode's conformance files for line breaks and grapheme clusters (the version src/text/*Data.inc were made from)
@@ -48,6 +48,12 @@ jobs:
         env:
           CASCADE_LINEBREAK_TEST: ${{ runner.temp }}/LineBreakTest.txt
           CASCADE_GRAPHEME_TEST: ${{ runner.temp }}/GraphemeBreakTest.txt
+      - name: Unicode's text rendering tests (each case's glyphs and places; the failures tests/textRenderingTests.known lists, and no others)
+        run: |
+          trt=26cfb96d094befc3c8b08228577bf400b04b83a1
+          curl -sSfL -o "$RUNNER_TEMP/trt.zip" https://github.com/unicode-org/text-rendering-tests/archive/$trt.zip
+          unzip -q "$RUNNER_TEMP/trt.zip" -d "$RUNNER_TEMP"
+          python3 tools/textRenderingTests.py build/cascade-shape "$RUNNER_TEMP/text-rendering-tests-$trt" --known tests/textRenderingTests.known
       - name: Minimal build (software only, no screen readers)
         run: |
           cmake -S . -B build-min -G Ninja -DCASCADE_WERROR=ON -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF

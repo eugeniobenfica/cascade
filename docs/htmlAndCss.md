@@ -54,7 +54,9 @@ Event handling, the forms and the rest of the interface are in [The interface](i
   when the font has none, `-numeric`, `-ligatures`, `-position`, `-east-asian`), `font-kerning` and
   `font-synthesis`. Arabic joins; **Indic scripts** (Devanagari, Bengali, Gurmukhi, Gujarati, Oriya,
   Tamil, Telugu, Kannada, Malayalam) are reordered by syllable as the OpenType Indic model asks
-  (pre-base matras, the reph, half and below-base forms, two-part vowels); right-to-left text is
+  (pre-base matras, the reph, half and below-base forms, two-part vowels); Thai and Lao, Hangul
+  jamo, Khmer and Myanmar by their own models, and Tibetan, Javanese, Balinese, Tai Tham, Sinhala
+  and the other Brahmic scripts by the Universal Shaping Engine's; right-to-left text is
   shaped in its reading order. **Color emoji** (COLR layers, CBDT and sbix pictures) with ZWJ
   sequences, skin tones, keycaps and flags (where the system's emoji font has them).
 - **Values**: every length unit (including `rem`, `vw`, `vh`, `ch` and the container units

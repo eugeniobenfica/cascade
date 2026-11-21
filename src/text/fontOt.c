@@ -253,7 +253,9 @@ static bool matchLookahead(const Ctx* c, size_t last, int count, const uint8_t* 
 #define WORK_PER_GLYPH 65536
 #define MIN_WORK (1u << 22)
 
-/* The lookups a matched context calls, each at its glyph of the input. */
+/* The lookups a matched context calls, each at its glyph of the input. A lookup that makes the text longer or shorter
+ * (a multiple substitution, a ligature) changes the input as the later ones see it, as HarfBuzz has it: the glyphs it
+ * added are in it after the one it was applied to (a later record's index may name them), the ones it took away out. */
 static void applyRecords(Ctx* c, size_t* positions, int count, const uint8_t* records, int nrec, size_t* next) {
     size_t end = positions[count - 1] + 1;
     for (int r = 0; r < nrec; ++r) {
@@ -266,11 +268,22 @@ static void applyRecords(Ctx* c, size_t* positions, int count, const uint8_t* re
         ++c->depth;
         applyAt(c, li, positions[seq], &ignore);
         *c = saved;
-        const ptrdiff_t delta = (ptrdiff_t)c->buf->len - (ptrdiff_t)before;
-        if (delta) {
-            for (int k = seq + 1; k < count; ++k) positions[k] = (size_t)((ptrdiff_t)positions[k] + delta);
-            end = (size_t)((ptrdiff_t)end + delta);
+        ptrdiff_t delta = (ptrdiff_t)c->buf->len - (ptrdiff_t)before;
+        if (!delta) continue;
+        end = (size_t)((ptrdiff_t)end + delta);
+        if (end <= positions[seq]) end = positions[seq] + 1; /* (what it took away reached past the input's end) */
+        int after = seq + 1;
+        if (delta > 0) {
+            if (delta + count > MAX_CONTEXT) break;
+        } else {
+            if (delta < after - count) delta = after - count;
+            after -= (int)delta;
         }
+        memmove(positions + after + delta, positions + after, (size_t)(count - after) * sizeof *positions);
+        after += (int)delta;
+        count += (int)delta;
+        for (int k = seq + 1; k < after; ++k) positions[k] = positions[k - 1] + 1;
+        for (; after < count; ++after) positions[after] = (size_t)((ptrdiff_t)positions[after] + delta);
     }
     *next = end > positions[0] ? end : positions[0] + 1;
 }
@@ -414,6 +427,7 @@ static bool applyChain(Ctx* c, uint32_t st, size_t pos, size_t* next) {
 
 static void setGlyph(Ctx* c, size_t i, uint16_t glyph) {
     c->buf->items[i].glyph = glyph;
+    c->buf->items[i].substituted = true;
     refreshClass(c, &c->buf->items[i]);
 }
 
@@ -445,6 +459,7 @@ static bool gsubMultiple(Ctx* c, uint32_t st, size_t pos, size_t* next) {
     for (uint16_t k = 1; k < n; ++k) {
         CscdOtGlyph g = proto;
         g.glyph = u16(c->b + seq + 2 + 2 * k);
+        g.substituted = true;
         refreshClass(c, &g);
         cscdVecInsert(c->buf, pos + k, g);
     }

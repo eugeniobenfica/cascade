@@ -131,8 +131,18 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       (`Joining_Type` of every code point, `tools/genArabicJoining.py`; `src/text/fontArabic.c`); a font without them
       gets the presentation forms it has. The test font has Arabic glyphs and features, and a second one only
       presentation forms.
-- [ ] Shapers for Thai, Khmer, Myanmar, Tibetan, Hangul jamo and the Universal Shaping Engine; run
-      unicode-org/text-rendering-tests.
+- [x] Shapers for Thai and Lao (SARA AM), Hangul jamo (composed into the font's syllables), Khmer, Myanmar and the
+      Universal Shaping Engine (`src/text/fontScripts.c`, `fontUse.c`; its categories, decompositions and combining
+      classes from the Unicode Indic properties by `tools/genUse.py`): Tibetan, Javanese, Balinese, Tai Tham, Sinhala,
+      New Tai Lue and the other Brahmic scripts. `tools/compareShaping.py` shapes random syllables of nine scripts with
+      Windows' fonts by cascade and HarfBuzz: 1,373 of 1,376 the same (Lao: a mark on a mark, 3). Unicode's
+      text-rendering-tests run in CI (`tools/textRenderingTests.py`): every Balinese and Tai Tham case as HarfBuzz
+      shapes it; the failures listed in `tests/textRenderingTests.known`, and no others.
+- [ ] GPOS cursive attachment (lookup type 3): Nasta'liq's letters on their heights (SHARAN-1).
+- [ ] cmap formats 13 and 14 (variation sequences) and the Macintosh platform's cmaps (CMAP-1..4); CFF fonts' glyphs
+      past the BMP (CFF-1, CFF-2).
+- [ ] Kannada as HarfBuzz shapes it (SHKNDA-1..3: the Indic shaper's below-base and post-base forms).
+- [ ] Lao: a tone mark over another mark, positioned as HarfBuzz does (its mark-to-mark).
 - [ ] WOFF2.
 
 ### Platform and API

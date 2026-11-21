@@ -68,10 +68,12 @@ static inline int otClassAt(const CscdFontFaceImpl* m, uint32_t off, uint16_t gl
 typedef struct CscdOtGlyph {
     uint16_t glyph;
     uint32_t cluster;    /* the first character it stands for (index in the run) */
+    uint32_t ch;         /* the character it was made from (a substitution keeps it; a ligature, its first one's) */
     uint32_t mask;       /* the features that may apply to it (bits of the plan's features) */
     uint8_t gclass;      /* GDEF class: 1 base, 2 ligature, 3 mark, 4 component (0: unknown) */
     uint8_t ligComponents;
     bool ignorable;      /* a default ignorable character (a variation selector...): matching passes over it */
+    bool substituted;    /* a substitution has made it (set by the substitutions; a shaper may clear it) */
     int32_t xAdvance, xOffset, yOffset;
     int32_t attach;      /* a mark attached to another glyph: how far back it is (0: none) */
 } CscdOtGlyph;
@@ -96,6 +98,18 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
 bool cscdArabicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, size_t ncps, const CscdOtFeature* features,
                      size_t n);
 void cscdArabicPresentationForms(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, size_t ncps);
+/* (fontScripts.c) What Thai, Lao, Hangul and Khmer ask of the characters before the font sees them: SARA AM split, Hangul
+ * jamo composed into the font's syllables, Khmer two-part vowels split. cps and clusters change together. */
+void cscdScriptsPrepare(const CscdFontFace* face, CscdU32Vec* cps, CscdU32Vec* clusters);
+/* Khmer syllables reordered and their features in stages (fontScripts.c); false for another script. */
+bool cscdKhmerShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, size_t ncps, const CscdOtFeature* features,
+                    size_t n);
+bool cscdMyanmarShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, size_t ncps, const CscdOtFeature* features,
+                      size_t n);
+/* The Universal Shaping Engine's scripts (fontUse.c): clusters by its grammar, the features in its stages, repha and
+ * pre-base glyphs reordered; false (nothing done) for another script. */
+bool cscdUseScript(uint32_t script);
+bool cscdUseShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n);
 /* The GDEF class of a glyph (0 when the font says nothing). */
 int cscdOtGlyphClass(const CscdFontFace* face, uint16_t glyph);
 bool cscdOtHasPositioning(const CscdFontFace* face);

@@ -2099,10 +2099,25 @@ static uint32_t scriptOf(uint32_t cp) {
         {0xA80, 0xAFF, "gjr2"}, {0xB00, 0xB7F, "ory2"}, {0xB80, 0xBFF, "tml2"}, {0xC00, 0xC7F, "tel2"}, {0xC80, 0xCFF, "knd2"},
         {0xD00, 0xD7F, "mlm2"}, {0xD80, 0xDFF, "sinh"}, {0xE00, 0xE7F, "thai"}, {0xE80, 0xEFF, "lao "}, {0xF00, 0xFFF, "tibt"},
         {0x1000, 0x109F, "mym2"}, {0x10A0, 0x10FF, "geor"}, {0x1100, 0x11FF, "hang"}, {0x1200, 0x139F, "ethi"},
-        {0x1780, 0x17FF, "khmr"}, {0x1800, 0x18AF, "mong"}, {0x1E00, 0x1EFF, "latn"}, {0x1F00, 0x1FFF, "grek"},
+        {0x1700, 0x171F, "tglg"}, {0x1720, 0x173F, "hano"}, {0x1740, 0x175F, "buhd"}, {0x1760, 0x177F, "tagb"},
+        {0x1780, 0x17FF, "khmr"}, {0x1800, 0x18AF, "mong"}, {0x1900, 0x194F, "limb"}, {0x1950, 0x197F, "tale"},
+        {0x1980, 0x19DF, "talu"}, {0x1A00, 0x1A1F, "bugi"}, {0x1A20, 0x1AAF, "lana"}, {0x1B00, 0x1B7F, "bali"},
+        {0x1B80, 0x1BBF, "sund"}, {0x1BC0, 0x1BFF, "batk"}, {0x1C00, 0x1C4F, "lepc"}, {0x1CC0, 0x1CCF, "sund"},
+        {0x1E00, 0x1EFF, "latn"}, {0x1F00, 0x1FFF, "grek"},
         {0x3040, 0x30FF, "kana"}, {0x3130, 0x318F, "hang"}, {0x3400, 0x4DBF, "hani"}, {0x4E00, 0x9FFF, "hani"},
-        {0xAC00, 0xD7AF, "hang"}, {0xFB1D, 0xFB4F, "hebr"}, {0xFB50, 0xFDFF, "arab"}, {0xFE70, 0xFEFF, "arab"},
-        {0x20000, 0x2FA1F, "hani"},
+        {0xA800, 0xA82F, "sylo"}, {0xA880, 0xA8DF, "saur"}, {0xA8E0, 0xA8FF, "dev2"}, {0xA900, 0xA92F, "kali"},
+        {0xA930, 0xA95F, "rjng"}, {0xA960, 0xA97F, "hang"}, {0xA980, 0xA9DF, "java"}, {0xA9E0, 0xA9FF, "mym2"},
+        {0xAA00, 0xAA5F, "cham"}, {0xAA60, 0xAA7F, "mym2"}, {0xAA80, 0xAADF, "tavt"}, {0xAAE0, 0xAAFF, "mtei"},
+        {0xABC0, 0xABFF, "mtei"}, {0xAC00, 0xD7AF, "hang"}, {0xD7B0, 0xD7FF, "hang"},
+        {0xFB1D, 0xFB4F, "hebr"}, {0xFB50, 0xFDFF, "arab"}, {0xFE70, 0xFEFF, "arab"},
+        {0x10A00, 0x10A5F, "khar"}, {0x11000, 0x1107F, "brah"}, {0x11080, 0x110CF, "kthi"}, {0x11100, 0x1114F, "cakm"},
+        {0x11150, 0x1117F, "mahj"}, {0x11180, 0x111DF, "shrd"}, {0x111E0, 0x111FF, "sinh"}, {0x11200, 0x1124F, "khoj"},
+        {0x11280, 0x112AF, "mult"}, {0x112B0, 0x112FF, "sind"}, {0x11300, 0x1137F, "gran"}, {0x11380, 0x113FF, "tutg"},
+        {0x11400, 0x1147F, "newa"}, {0x11480, 0x114DF, "tirh"}, {0x11580, 0x115FF, "sidd"}, {0x11600, 0x1165F, "modi"},
+        {0x11680, 0x116CF, "takr"}, {0x11700, 0x1174F, "ahom"}, {0x11800, 0x1184F, "dogr"}, {0x11900, 0x1195F, "diak"},
+        {0x119A0, 0x119FF, "nand"}, {0x11A00, 0x11A4F, "zanb"}, {0x11A50, 0x11AAF, "soyo"}, {0x11C00, 0x11C6F, "bhks"},
+        {0x11C70, 0x11CBF, "marc"}, {0x11D00, 0x11D5F, "gonm"}, {0x11D60, 0x11DAF, "gong"}, {0x11EE0, 0x11EFF, "maka"},
+        {0x11F00, 0x11F5F, "kawi"}, {0x20000, 0x2FA1F, "hani"},
     };
     if (cp < 0x41) return 0;
     size_t lo = 0, hi = CSCD_COUNT(kScripts);
@@ -2130,6 +2145,7 @@ typedef CSCD_VEC(ShapeItem) ShapeItemVec;
 typedef CSCD_VEC(CscdOtFeature) OtFeatureVec;
 
 static CSCD_THREAD_LOCAL ShapeItemVec shapeItems;
+static CSCD_THREAD_LOCAL CscdU32Vec shapeInCps, shapeInClusters;
 static CSCD_THREAD_LOCAL CscdOtBuffer shapeBuf;
 static CSCD_THREAD_LOCAL CscdU32Vec shapeOut;
 static CSCD_THREAD_LOCAL OtFeatureVec shapeFeatures;
@@ -2190,6 +2206,17 @@ static void emit(CscdShapedGlyphVec* out, CscdShapedGlyph g, float pen, int base
     cscdVecPush(&shapeBases, base);
 }
 
+/* when a script's marks lose their own advances (as HarfBuzz's shapers do it) */
+enum { ZERO_NONE, ZERO_EARLY, ZERO_LATE };
+static int markZeroing(uint32_t script) {
+    static const char* const kNone[] = {"dev2", "bng2", "gur2", "gjr2", "ory2", "tml2", "tel2", "knd2", "mlm2", "khmr", "hang"};
+    static const char* const kEarly[] = {"mym2", "mymr"};
+    for (size_t i = 0; i < CSCD_COUNT(kNone); ++i) if (script == cscdFontTag(kNone[i])) return ZERO_NONE;
+    for (size_t i = 0; i < CSCD_COUNT(kEarly); ++i) if (script == cscdFontTag(kEarly[i])) return ZERO_EARLY;
+    if (cscdUseScript(script)) return ZERO_EARLY;
+    return ZERO_LATE;
+}
+
 static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdFont* font, float letterSpacing, float wordSpacing,
                      const OtFeatureVec* feats, bool handTabular, float* pen, CscdShapedGlyphVec* out) {
     CscdFontFace* face = items[from].face;
@@ -2203,6 +2230,7 @@ static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdF
         CscdOtGlyph g = {0};
         g.glyph = items[i].glyph;
         g.cluster = (uint32_t)(i - from);
+        g.ch = items[i].cp;
         g.mask = ~0u;
         g.ignorable = isIgnorable(items[i].cp) && items[i].cp != 0x200C && items[i].cp != 0x200D;
         g.xAdvance = (int32_t)lroundf(cscdFontFaceAdvance(face, g.glyph));
@@ -2214,14 +2242,27 @@ static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdF
     for (size_t i = from; i < to; ++i) cscdVecPush(cps, items[i].cp);
     /* (Indic and Arabic in their stages; a font with no Arabic forms of its own: the Unicode presentation forms) */
     if (!cscdIndicShape(face, script, buf, cps->items, feats->items, feats->len) &&
-        !cscdArabicShape(face, script, buf, cps->items, cps->len, feats->items, feats->len)) {
+        !cscdArabicShape(face, script, buf, cps->items, cps->len, feats->items, feats->len) &&
+        !cscdKhmerShape(face, script, buf, cps->items, cps->len, feats->items, feats->len) &&
+        !cscdMyanmarShape(face, script, buf, cps->items, cps->len, feats->items, feats->len) &&
+        !cscdUseShape(face, script, buf, feats->items, feats->len)) {
         cscdArabicPresentationForms(face, script, buf, cps->items, cps->len);
         cscdOtSubstitute(face, script, buf, feats->items, feats->len);
     }
     for (size_t i = 0; i < buf->len; ++i) buf->items[i].xAdvance = (int32_t)lroundf(cscdFontFaceAdvance(face, buf->items[i].glyph));
+    /* the marks' own advances (GDEF marks) come to nothing, as the shaping model for the script says: before the
+     * positioning (Myanmar, the Universal Shaping Engine's scripts: what the font adds back counts), after it (most
+     * scripts), or never (Indic, Khmer, Hangul) */
+    const int zeroMarks = markZeroing(script);
+    if (zeroMarks == ZERO_EARLY)
+        for (size_t i = 0; i < buf->len; ++i)
+            if (cscdOtGlyphClass(face, buf->items[i].glyph) == 3) buf->items[i].xAdvance = 0;
     if (cscdOtHasPositioning(face)) cscdOtPosition(face, script, buf, feats->items, feats->len);
     else if (!(font->settings && font->settings->noKerning))
         for (size_t i = 1; i < buf->len; ++i) buf->items[i - 1].xAdvance += (int32_t)lroundf(cscdFontFaceKerning(face, buf->items[i - 1].glyph, buf->items[i].glyph));
+    if (zeroMarks == ZERO_LATE)
+        for (size_t i = 0; i < buf->len; ++i)
+            if (cscdOtGlyphClass(face, buf->items[i].glyph) == 3) buf->items[i].xAdvance = 0;
     /* out: the glyphs in order, the characters the font has nothing for (and that show nothing) at
      * their places */
     CscdU32Vec* at = &shapeOut;
@@ -2240,7 +2281,10 @@ static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdF
         }
         if (g->attach && (size_t)g->attach <= k) { /* a mark, placed from the glyph it goes on */
             const CscdShapedGlyph* base = &out->items[at->items[k - g->attach]];
-            emit(out, (CscdShapedGlyph){g->glyph, face, base->x + g->xOffset * sc, base->y - g->yOffset * sc, 0, it->cluster}, *pen, (int)at->items[k - g->attach]);
+            /* (its place from the anchors; its advance, which the font may give it, still moves what follows) */
+            const float madv = g->xAdvance * sc;
+            emit(out, (CscdShapedGlyph){g->glyph, face, base->x + g->xOffset * sc, base->y - g->yOffset * sc, madv, it->cluster}, *pen, (int)at->items[k - g->attach]);
+            *pen += madv;
             continue;
         }
         if (handTabular && it->cp >= '0' && it->cp <= '9' && g->glyph) {
@@ -2277,10 +2321,19 @@ static void shapeText(CscdSv text, const CscdFont* font, float letterSpacing, fl
      * invisible characters from their base's font */
     ShapeItemVec* items = &shapeItems;
     items->len = 0;
+    /* (the characters, as some scripts ask the font to see them: cscdScriptsPrepare) */
+    CscdU32Vec* inCps = &shapeInCps;
+    CscdU32Vec* inClusters = &shapeInClusters;
+    inCps->len = inClusters->len = 0;
     for (size_t i = 0; i < text.len;) {
         const size_t start = i;
-        const uint32_t cp = cscdUtf8Next(text, &i);
-        const uint32_t cluster = map ? map[start] : (uint32_t)start;
+        cscdVecPush(inCps, cscdUtf8Next(text, &i));
+        cscdVecPush(inClusters, map ? map[start] : (uint32_t)start);
+    }
+    cscdScriptsPrepare(font->face, inCps, inClusters);
+    for (size_t in = 0; in < inCps->len; ++in) {
+        const uint32_t cp = inCps->items[in];
+        const uint32_t cluster = inClusters->items[in];
         /* (two-part vowels: their parts, the first one written before the consonant) */
         static const uint32_t kSplit[][4] = {{0x9CB, 0x9C7, 0x9BE, 0}, {0x9CC, 0x9C7, 0x9D7, 0}, {0xB48, 0xB47, 0xB56, 0}, {0xB4B, 0xB47, 0xB3E, 0},
                                              {0xB4C, 0xB47, 0xB57, 0}, {0xBCA, 0xBC6, 0xBBE, 0}, {0xBCB, 0xBC7, 0xBBE, 0}, {0xBCC, 0xBC6, 0xBD7, 0},

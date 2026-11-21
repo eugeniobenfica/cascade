@@ -7,6 +7,17 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **More scripts shaped by their models**: Thai and Lao (SARA AM split, NIKHAHIT before the tone marks), Hangul jamo
+  (composed into the syllables the font has), Khmer and Myanmar (syllables reordered: pre-base vowels, Coeng Ro, Medial
+  Ra, kinzi; their features syllable by syllable), and the **Universal Shaping Engine** for Tibetan, Javanese, Balinese,
+  Tai Tham, Sinhala, New Tai Lue and the other Brahmic scripts (clusters by its grammar, a dotted circle on a broken
+  one, the repha and pre-base glyphs moved, split vowels decomposed). Marks lose their advances as HarfBuzz's shapers
+  have it (before the positioning in Myanmar and the USE scripts, never in Indic, Khmer and Hangul). 1,373 of 1,376
+  random syllables of nine scripts shape as HarfBuzz shapes them (`tools/compareShaping.py`), and Unicode's
+  text-rendering-tests run in CI (`tools/textRenderingTests.py`, the cases still failing listed with why).
+- Fixed: when a lookup a contextual one calls adds glyphs (a multiple substitution), the lookups it calls next see
+  them, by index, as HarfBuzz has it (they skipped past them, or were dropped).
+
 - **Arabic shaped by the font**: each letter takes the form Unicode's joining asks for (every Arabic letter, not 42 of
   them: Persian, Urdu, Kurdish...), made by the font's `isol`, `init`, `medi` and `fina` in their stages, then `rlig`
   (lam alef) and the rest, as the OpenType Arabic model says; marks are passed over. A font without those features

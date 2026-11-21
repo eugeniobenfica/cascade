@@ -2490,6 +2490,60 @@ static void testArabicShaping(void) {
     cscdVecFree(&out);
 }
 
+/* The other scripts' shapers: what each asks of the characters (Thai SARA AM split, Hangul jamo composed, Khmer and
+ * Sinhala vowels split), their reordering (pre-base vowels, Coeng Ro, Myanmar's E and Medial Ra, a repha), their
+ * features in stages (pref, rphf; a ccmp not applied again after blws), a broken cluster's dotted circle. */
+static void testScriptShapers(void) {
+    CscdFontFace* face = cscdFontFaceLoad(NULL, kTestFont, sizeof kTestFont, 0);
+    CHECK(face);
+    if (!face) return;
+    CscdFont font = cscdFontDefault();
+    font.face = face;
+    font.size = 1000;
+    CscdShapedGlyphVec out = {0};
+    /* (the test font: Thai KO 36, NIKHAHIT 37, MAI EK 38, SARA AA 39; Hangul jamo 40, 41, syllable 42; Khmer KA 43, E 44,
+     * OE 45, COENG 46, RO 47, COENG RO 48; Myanmar KA 49, E 50, MEDIAL RA 51; Javanese KA 52, RA 53, PANGKON 54, TALING 55,
+     * repha 56, dotted circle 57; Tibetan DA 58, subjoined HA 59, DHA 60; Sinhala KA 61, KOMBUVA 62, AELA-PILLA 63) */
+    cscdFontShape(CSCD_SV("\xE0\xB8\x81\xE0\xB9\x88\xE0\xB8\xB3"), &font, 0, 0, &out); /* (KO MAI-EK SARA-AM) */
+    const uint16_t thai[] = {36, 37, 38, 39};
+    CHECK(glyphsAre(&out, thai, 4));
+    cscdFontShape(CSCD_SV("\xE1\x84\x80\xE1\x85\xA1"), &font, 0, 0, &out); /* (KIYEOK A) */
+    const uint16_t hangul[] = {42};
+    CHECK(glyphsAre(&out, hangul, 1));
+    cscdFontShape(CSCD_SV("\xE1\x9E\x80\xE1\x9F\x81"), &font, 0, 0, &out); /* (KA E) */
+    const uint16_t khmer1[] = {44, 43};
+    CHECK(glyphsAre(&out, khmer1, 2));
+    cscdFontShape(CSCD_SV("\xE1\x9E\x80\xE1\x9E\xBE"), &font, 0, 0, &out); /* (KA OE: E, then OE) */
+    const uint16_t khmer2[] = {44, 43, 45};
+    CHECK(glyphsAre(&out, khmer2, 3));
+    cscdFontShape(CSCD_SV("\xE1\x9E\x80\xE1\x9F\x92\xE1\x9E\x9A"), &font, 0, 0, &out); /* (KA COENG RO) */
+    const uint16_t khmer3[] = {48, 43};
+    CHECK(glyphsAre(&out, khmer3, 2));
+    cscdFontShape(CSCD_SV("\xE1\x80\x80\xE1\x80\xBC\xE1\x80\xB1"), &font, 0, 0, &out); /* (KA MEDIAL-RA E) */
+    const uint16_t myanmar[] = {50, 51, 49};
+    CHECK(glyphsAre(&out, myanmar, 3));
+    cscdFontShape(CSCD_SV("\xEA\xA6\x8F\xEA\xA6\xBA"), &font, 0, 0, &out); /* (KA TALING) */
+    const uint16_t java1[] = {55, 52};
+    CHECK(glyphsAre(&out, java1, 2));
+    cscdFontShape(CSCD_SV("\xEA\xA6\xAB\xEA\xA7\x80\xEA\xA6\x8F"), &font, 0, 0, &out); /* (RA PANGKON KA: a repha, after) */
+    const uint16_t java2[] = {52, 56};
+    CHECK(glyphsAre(&out, java2, 2));
+    cscdFontShape(CSCD_SV("\xEA\xA6\xBA"), &font, 0, 0, &out); /* (TALING alone: on a dotted circle) */
+    const uint16_t java3[] = {55, 57};
+    CHECK(glyphsAre(&out, java3, 2));
+    cscdFontShape(CSCD_SV("\xE0\xBD\x92"), &font, 0, 0, &out); /* (DHA) */
+    const uint16_t tibetan[] = {60};
+    CHECK(glyphsAre(&out, tibetan, 1));
+    cscdFontShape(CSCD_SV("\xE0\xB6\x9A\xE0\xB7\x9C"), &font, 0, 0, &out); /* (KA O: KOMBUVA, KA, AELA-PILLA) */
+    const uint16_t sinhala[] = {62, 61, 63};
+    CHECK(glyphsAre(&out, sinhala, 3));
+    /* a context whose first lookup adds a glyph: the next one's index counts it (ctxX 65, ctxY 66, ctxZ 67, ctxW 68) */
+    cscdFontShape(CSCD_SV("\xEE\x80\x80\xEE\x80\x81"), &font, 0, 0, &out);
+    const uint16_t context[] = {65, 68, 67};
+    CHECK(glyphsAre(&out, context, 3));
+    cscdVecFree(&out);
+}
+
 static void testOpenType(void) {
     CscdFontFace* face = cscdFontFaceLoad(NULL, kTestFont, sizeof kTestFont, 0);
     CHECK(face != NULL);
@@ -4469,6 +4523,7 @@ int main(void) {
     testAnimatedImages();
     testOpenType();
     testArabicShaping();
+    testScriptShapers();
     testBidiFields();
     testMoreCss();
     testBinding();
