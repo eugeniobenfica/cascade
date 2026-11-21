@@ -14,7 +14,10 @@
 #define COBJMACROS
 #include <windows.h>
 #include <ole2.h>
-#include <uiautomationcore.h> /* (the providers' side only: MSVC's uiautomation.h defines the ids, as the library does) */
+/* (the providers' side only: MSVC's headers define the ids and one constant, as in the library: the constant renamed here) */
+#define UIA_ScrollPatternNoScroll windowTestsScrollPatternNoScroll
+#include <uiautomationcore.h>
+#undef UIA_ScrollPatternNoScroll
 #define TEXT_PATTERN_ID 10014 /* (UIA_TextPatternId) */
 #endif
 
