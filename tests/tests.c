@@ -3964,7 +3964,12 @@ static void treeDepthOn(void* unused) {
 static void testTreeDepth(void) {
     treeDepthOn(NULL);
     CscdThread t;
-    CHECK(cscdThreadStartSized(&t, treeDepthOn, NULL, 512u << 10));
+#ifdef CSCD_SANITIZED
+    const size_t stack = 4u << 20; /* (a sanitizer's frames: a thread of the same depth needs more) */
+#else
+    const size_t stack = 512u << 10;
+#endif
+    CHECK(cscdThreadStartSized(&t, treeDepthOn, NULL, stack));
     cscdThreadJoin(&t);
 }
 

@@ -115,7 +115,20 @@ double cscdNowSeconds(void);
  * once per level of a page (layout, painting) stop going deeper there instead of overflowing: a thread's stack is 1 MB
  * on Windows, 512 KB on a macOS or iOS thread other than the main one, and a level of nested flex boxes takes about
  * 1.6 KB. False where the system does not say how large the stack is. */
+/* (built with a sanitizer, the frames are several times larger, its locals not sharing slots: more room is kept) */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
+#define CSCD_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define CSCD_SANITIZED 1
+#endif
+#ifdef CSCD_SANITIZED
+#define CSCD_STACK_RESERVE (512u << 10)
+#else
 #define CSCD_STACK_RESERVE (128u << 10)
+#endif
 bool cscdStackLow(void);
 
 /* Files by UTF-8 paths, the paths the library takes everywhere (files.c): on Windows through the
