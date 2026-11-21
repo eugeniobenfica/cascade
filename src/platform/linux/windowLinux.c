@@ -42,6 +42,12 @@ void x11WindowSetFullscreen(CscdWindow* w, bool on) { (void)w; (void)on; }
 void x11WindowClose(CscdWindow* w) { (void)w; }
 bool x11WindowPump(CscdWindow* w, bool wait) { (void)w; (void)wait; return false; }
 void x11WindowOrigin(CscdWindow* w, int* x, int* y) { (void)w; *x = *y = 0; }
+bool x11PopupArea(CscdWindow* w, CscdIRect* area) { (void)w; (void)area; return false; }
+void* x11PopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    (void)w; (void)rect; (void)image; (void)input;
+    return popup;
+}
+void x11PopupHide(CscdWindow* w, void* popup) { (void)w; (void)popup; }
 CscdPresenter* platformGLPresenter(void* nativeWindow, int width, int height) { (void)nativeWindow; (void)width; (void)height; return NULL; }
 CscdPresenter* platformSoftwarePresenter(void* nativeWindow, int width, int height) {
     return platformWaylandSoftwarePresenter(nativeWindow, width, height);
