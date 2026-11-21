@@ -254,10 +254,19 @@ jobs:
           cmake --build build
       - name: Compare with tests/abi/cascade.abi
         run: |
-          abidw --headers-dir include/cascade --drop-private-types --no-corpus-path --out-file cascade.abi build/libcascade.so
+          # (only what the headers declare: the library's own functions are exported too, for its tests)
+          python3 tools/abiPublic.py > public.supp
+          abidw --headers-dir include/cascade --drop-private-types --suppressions public.supp --no-corpus-path             --out-file cascade.abi build/libcascade.so
+          # the check itself must see a break: the same ABI without one of its functions
+          python3 tools/abiPublic.py --without cscdEventKey cascade.abi broken.abi
+          set +e
+          abidiff --no-unreferenced-symbols cascade.abi broken.abi > /dev/null
+          r=$?
+          set -e
+          if [ $((r & 8)) -eq 0 ]; then echo "::error::abidiff did not see a function removed (it returned $r)"; exit 1; fi
           if [ ! -f tests/abi/cascade.abi ]; then echo "::warning::no tests/abi/cascade.abi yet: this run's is the artifact"; exit 0; fi
           set +e
-          abidiff --no-added-syms tests/abi/cascade.abi cascade.abi
+          abidiff --no-added-syms --no-unreferenced-symbols tests/abi/cascade.abi cascade.abi
           r=$?
           set -e
           # (1: abidiff failed; 8: a change that breaks what was built against the old; 4 alone: a compatible change)
