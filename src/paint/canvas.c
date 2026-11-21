@@ -1603,22 +1603,29 @@ void cscdCanvasSetLayerFilter(CscdCanvas* c, const CscdFilter* f) {
     endRecord(c, op);
 }
 
-void cscdCanvasDrawLayerImage(CscdCanvas* c, CscdImage* img, float opacity) {
+void cscdCanvasDrawLayerImageAt(CscdCanvas* c, CscdImage* img, int dx, int dy, float opacity) {
     Op* op = record(c, OP_LAYER_IMAGE);
-    if (op) { op->image = (CscdImage*)cscdRetain(img); op->f[0] = opacity; }
+    if (op) {
+        op->image = (CscdImage*)cscdRetain(img);
+        op->f[0] = opacity;
+        op->ix = dx;
+        op->iy = dy;
+    }
     if (skip(c) || !img) { endRecord(c, op); return; }
     CscdImage* t = cscdCanvasTarget(c);
     const CscdRect clip = st(c)->clip;
-    const int x0 = cscdMaxi(0, cscdIntOf(floorf(clip.x))), y0 = cscdMaxi(0, cscdIntOf(floorf(clip.y)));
-    const int x1 = cscdMini(cscdMini(t->width, img->width), cscdIntOf(ceilf(cscdRectRight(clip))));
-    const int y1 = cscdMini(cscdMini(t->height, img->height), cscdIntOf(ceilf(cscdRectBottom(clip))));
+    const int x0 = cscdMaxi(cscdMaxi(0, dx), cscdIntOf(floorf(clip.x))), y0 = cscdMaxi(cscdMaxi(0, dy), cscdIntOf(floorf(clip.y)));
+    const int x1 = cscdMini(cscdMini(t->width, dx + img->width), cscdIntOf(ceilf(cscdRectRight(clip))));
+    const int y1 = cscdMini(cscdMini(t->height, dy + img->height), cscdIntOf(ceilf(cscdRectBottom(clip))));
     if (x1 > x0 && y1 > y0) {
         const uint32_t k = (uint32_t)cscdClampi((int)lroundf(opacity * 255), 0, 255); /* (as cscdCanvasPopLayer) */
-        for (int y = y0; y < y1; ++y) overSpan(cscdImageRow(t, y) + x0, cscdImageRow(img, y) + x0, x1 - x0, k);
+        for (int y = y0; y < y1; ++y) overSpan(cscdImageRow(t, y) + x0, cscdImageRow(img, y - dy) + (x0 - dx), x1 - x0, k);
         if (c->layers.len) markDirty(c, x0, y0, x1, y1);
     }
     endRecord(c, op);
 }
+
+void cscdCanvasDrawLayerImage(CscdCanvas* c, CscdImage* img, float opacity) { cscdCanvasDrawLayerImageAt(c, img, 0, 0, opacity); }
 
 void cscdCanvasPopLayer(CscdCanvas* c) {
     Op* op = record(c, OP_POP_LAYER);
@@ -2959,7 +2966,7 @@ static void replayOp(const Op* op, CscdCanvas* c) {
     case OP_FILL_RRECT: cscdCanvasFillRRectShader(c, &op->rr, op->shader); break;
     case OP_FILL_RING: cscdCanvasFillRing(c, &op->rr, &op->rr2, op->shader); break;
     case OP_IMAGE_PROJECTIVE: cscdCanvasDrawImageProjective(c, op->image, op->f); break;
-    case OP_LAYER_IMAGE: cscdCanvasDrawLayerImage(c, op->image, op->f[0]); break;
+    case OP_LAYER_IMAGE: cscdCanvasDrawLayerImageAt(c, op->image, op->ix, op->iy, op->f[0]); break;
     case OP_IMAGE: replayImage((Op*)op, c); break; /* (its reduced picture is a cache) */
     case OP_BOX_SHADOW: cscdCanvasDrawBoxShadow(c, &op->rr, op->f[0], op->f[1], op->f[2], op->f[3], op->color, op->flag); break;
     case OP_BLURRED_PATH: cscdCanvasDrawBlurredPath(c, op->path, op->f[0], op->color); break;

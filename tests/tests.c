@@ -4459,8 +4459,11 @@ static void testHugeLengths(void) {
 
 /* An animation of how things look (a transform, an opacity, a color its children inherit) paints, each frame, only where
  * the animated elements were and are drawn: the same pixels as a window painted whole at the same moment. */
+static CscdView* incrementalView; /* (animationDamageOn's view painted over its damage) */
+
 static void animationDamageOn(const char* page, void (*change)(CscdView* v, int frame)) {
     CscdView* v = cscdViewNew();
+    incrementalView = v;
     CscdView* w = cscdViewNew();
     CscdImage a, b;
     cscdImageInit(&a, 300, 200);
@@ -4479,6 +4482,7 @@ static void animationDamageOn(const char* page, void (*change)(CscdView* v, int 
         if (change) { change(v, i); change(w, i); }
         cscdViewPaint(v, &a, i > 0); /* (a host that only paints: one step of the animation a frame) */
         cscdViewPaint(w, &b, false);
+        viewKeptLayersSweep(w, true); /* (w: each frame from nothing, its kept images too) */
         const CscdFrameStats st = cscdViewFrameStats(v);
         if (i >= 2 && st.partialPaint) {
             ++partial;
@@ -4502,6 +4506,28 @@ static void keptLayerChanges(CscdView* v, int frame) {
     if (frame == 28) cscdElementToggleClass(cscdViewQuerySelector(v, CSCD_SV("#k b")), CSCD_SV("deep"));
 }
 
+/* (the kept image of an element that moves: there is one, made for its transform's moves) */
+static bool keptMoving(const CscdView* v) {
+    for (size_t i = 0; i < v->keptLayers.len; ++i)
+        if (v->keptLayers.items[i].moves) return true;
+    return false;
+}
+
+static void movingLayerChanges(CscdView* v, int frame) {
+    keptLayerChanges(v, frame);
+    if (frame == 6 && v == incrementalView) CHECK(keptMoving(v));
+    if (frame == 30 && v != incrementalView) { /* (found by a click, somewhere: its hit areas recorded with its image) */
+        CscdElement* k = cscdViewQuerySelector(v, CSCD_SV("#k"));
+        bool found = false;
+        for (float y = 0; y < 200 && !found; y += 3)
+            for (float x = 0; x < 300 && !found; x += 3) {
+                const CscdElement* at = cscdViewElementAt(v, x, y);
+                found = at && (at == k || at->node.parent == &k->node);
+            }
+        CHECK(found);
+    }
+}
+
 static void testAnimationDamage(void) {
     /* (each alone, its damage not merged with another's: a box moved and turned several pixels a frame, an opacity, a
      * color the elements in it inherit) */
@@ -4523,6 +4549,14 @@ static void testAnimationDamage(void) {
                       "#k { width: 160px; padding: 4px; background: #eef; animation: pulse .6s infinite alternate; } .hot { color: #c00; }"
                       ".deep { background: #fd8; }</style><p>one</p><div id=k><b>kept</b> <span id=x>layer text</span></div><p>two</p>",
                       keptLayerChanges);
+    /* a transform that only moves it (and a fade with it), its image kept and placed where it moves to: what it holds
+     * changes while it runs, and the kept one is made again; the page from scratch draws it the same way */
+    animationDamageOn("<style>body{margin:0;font:14px sans-serif} p{margin:4px}"
+                      "@keyframes glide { from { transform: translate(0, 0); opacity: 1; } to { transform: translate(97.3px, 31.6px); opacity: .6; } }"
+                      "#k { width: 160px; padding: 4px; background: #eef; border-radius: 6px; animation: glide .6s infinite alternate; }"
+                      ".hot { color: #c00; } .deep { background: #fd8; }</style><p>one</p><div id=k><b>kept</b> <span id=x>layer text</span></div>"
+                      "<p>two</p>",
+                      movingLayerChanges);
 }
 
 static void testHostileRequests(void) {

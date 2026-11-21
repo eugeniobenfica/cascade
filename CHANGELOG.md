@@ -7,6 +7,10 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Transform animations keep their image**: an element whose transform animates by moving (and scaling) is drawn
+  through an image of its own placed on whole device pixels, in a frame and in a page painted from scratch alike;
+  a frame that only moves it places the image again. 24 cards sliding: ~3.6 → ~0.3 ms a frame at dpr 2.
+
 - **WOFF2**: `@font-face` and `cscdFontFaceLoad` read WOFF2 files (what Google Fonts and most sites serve), with a
   Brotli decoder of the library's own (RFC 7932: the static dictionary, every context mode, large windows), the
   glyf, loca and hmtx transforms and font collections.

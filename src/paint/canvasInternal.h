@@ -35,6 +35,8 @@ int cscdPaintSimdSelfCheck(void);
 /* What a layer of opacity 1 holds, kept (an image the target's size, in its pixels), drawn back with an opacity: what
  * cscdCanvasPopLayer gives for a layer that held it, within the clip (no clip mask). The image is retained while recorded. */
 void cscdCanvasDrawLayerImage(CscdCanvas* c, CscdImage* img, float opacity);
+/* The same, the image's pixel (x, y) at the target's (x + dx, y + dy) (an image smaller than the target). */
+void cscdCanvasDrawLayerImageAt(CscdCanvas* c, CscdImage* img, int dx, int dy, float opacity);
 
 /* (vector paths: integer SSE2 on x86-64, NEON on ARM; the same bits as the scalar code) */
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)

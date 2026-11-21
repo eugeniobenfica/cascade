@@ -80,8 +80,9 @@ typedef struct KeptLayer {
     const CscdLayoutBox* b;
     uint64_t epoch, look, usedIn;
     CscdMatrix m;
-    CscdIRect valid;
+    CscdIRect valid; /* (an element that moves: where its image's corner is under m, without m's translation) */
     int w, h;
+    bool moves; /* (its image is its own, of what it holds as its transform scales it: placed where it moved to) */
     CscdImage* img;
 } KeptLayer;
 
@@ -442,6 +443,9 @@ bool paintAnimatedArea(CscdView* v, CscdLayoutBox* b, CscdRect* out);
 void viewInheritAnimated(CscdView* v, CscdElement* e, bool inPlace);
 /* Whether e is animated, by its opacity alone, and nothing in it is (a kept layer stays what it holds). */
 bool viewAnimatesOpacityOnly(const CscdView* v, const CscdElement* e);
+/* Whether e's transform animates (a transition or an animation of transform, translate, scale or rotate) and nothing
+ * else does but its opacity: nothing else of it, nothing in it, nothing around it (whose values it would inherit). */
+bool viewAnimatesTransformOnly(const CscdView* v, const CscdElement* e);
 void viewKeptLayersSweep(CscdView* v, bool all);
 /* Whether the box s, scrolled, is its last frame moved inside area (viewport px, inside its padding box): its own
  * background one opaque color, nothing in it or around it fixed, sticky, blending or moving it, nothing else over area. */

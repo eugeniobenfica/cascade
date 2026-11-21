@@ -104,8 +104,17 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       opacity (the same pixels as its layer): 60 paragraphs fading, ~4.3 → ~0.4 ms a frame. Inherited values an
       animation sets (color, font size) are inherited by the elements in it every frame. The oracle animates a third
       of its seeds on a clock of its own.
-- [ ] A transform animation kept as an image too (it would be composited by sampling the image: not the pixels of the
-      page painted at that moment, which is what cascade promises), and a GPU compositor.
+- [x] A transform animation kept as an image too, without sampling it: an element whose transform animates (and
+      nothing else of it but its opacity, nothing in it or around it), as long as the transform only moves and scales
+      it, is drawn through an image of its own, what it holds as the transform scales it, placed where the transform
+      moves it to the nearest device pixel. A page painted from scratch draws it the same way (the same pixels: the
+      promise holds, the oracle says so), so a frame that only moves it places the image again; its hit areas are
+      recorded where it is. 24 cards sliding, a frame: ~3.6 → ~0.3 ms (dpr 2).
+- [ ] A GPU compositor: the layers that move put together by the GPU (the frame behind them neither painted again nor
+      uploaded). Its blending would have to give the CPU's pixels to the bit for the promise to hold (opacity 1 and
+      whole-pixel places only, an exact integer shader; OpenGL 1.1's fixed blending does not promise it), with what is
+      painted above a moving layer split into layers of its own, and checked on CI's software GPUs. What it would save
+      is now small: a frame of moving layers is a fraction of a millisecond on the CPU.
 - [x] SIMD for the one-channel shadow blur, scaled images (bilinear), radial, linear and conic gradients, bit-exact
       (self-checked against the scalar code).
 

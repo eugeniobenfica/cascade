@@ -2070,6 +2070,9 @@ NOINLINE static void paintCustom(Painter* P, CscdLayoutBox* b) {
 
 /* Paints b and its subtree as one atomic stacking layer (stacking contexts, positioned boxes, floats
  * and inline-blocks). */
+static bool movingLayer(Painter* P, CscdLayoutBox* b);
+static bool animatedInk(const CscdLayoutBox* b, bool top, CscdRect* out);
+
 static void paintLayer(Painter* P, CscdLayoutBox* b) {
     CscdCanvas* canvas = P->canvas;
     CscdView* v = P->view;
@@ -2113,6 +2116,10 @@ static void paintLayer(Painter* P, CscdLayoutBox* b) {
         }
         if (!cscdCanvasDryRun(canvas)) P->view->frameTransformed = true;
         cscdCanvasConcat(canvas, m4Affine(&m));
+        if (movingLayer(P, b)) {
+            cscdCanvasRestore(canvas);
+            return;
+        }
     }
     paintLayerContent(P, b);
     cscdCanvasRestore(canvas);
@@ -2181,7 +2188,7 @@ static bool keptLayer(Painter* P, CscdLayoutBox* b) {
     KeptLayer* k = NULL;
     for (size_t i = 0; i < v->keptLayers.len && !k; ++i)
         if (v->keptLayers.items[i].e == b->element) k = &v->keptLayers.items[i];
-    const bool same = k && k->b == b && k->epoch == v->doc->layoutEpoch && k->look == look && k->w == w && k->h == h &&
+    const bool same = k && !k->moves && k->b == b && k->epoch == v->doc->layoutEpoch && k->look == look && k->w == w && k->h == h &&
                       memcmp(&k->m, &m, sizeof m) == 0 && clip.x >= k->valid.x && clip.y >= k->valid.y &&
                       cscdRectRight(clip) <= k->valid.x + k->valid.w && cscdRectBottom(clip) <= k->valid.y + k->valid.h;
     if (!same) {
@@ -2193,9 +2200,10 @@ static bool keptLayer(Painter* P, CscdLayoutBox* b) {
             cscdVecPush(&v->keptLayers, z);
             k = &cscdVecLast(&v->keptLayers);
         }
-        if (!k->img || k->w != w || k->h != h) {
+        if (!k->img || k->moves || k->w != w || k->h != h) {
             cscdRelease(k->img);
             k->img = cscdImageNew(w, h);
+            k->moves = false;
         } else
             for (int y = k->valid.y; y < k->valid.y + k->valid.h; ++y) memset(cscdImageRow(k->img, y) + k->valid.x, 0, (size_t)k->valid.w * 4);
         if (cscdImageEmpty(k->img)) return false;
@@ -2217,6 +2225,83 @@ static bool keptLayer(Painter* P, CscdLayoutBox* b) {
     }
     k->usedIn = v->paintCount;
     cscdCanvasDrawLayerImage(canvas, k->img, s->opacity);
+    return true;
+}
+
+/* An element whose transform animates, as long as the transform only moves and scales it: drawn through an image of its
+ * own, what it holds as the transform scales it, placed where the transform moves it to the nearest device pixel. A
+ * frame that only moves it places the image kept from the frame before (no painting); a page painted from scratch
+ * draws it so too (the same pixels: the image made the same way, placed the same way), its hit areas recorded where it
+ * is. False: painted as usual. */
+static bool movingLayer(Painter* P, CscdLayoutBox* b) {
+    CscdView* v = P->view;
+    CscdCanvas* canvas = P->canvas;
+    const CscdComputedStyle* s = b->style;
+    if (P->projection || cscdCanvasDryRun(canvas) || !b->element || b->anonymous || b->pseudo.len) return false;
+    if (s->blur > 0 || s->grayscale > 0 || s->brightness != 1 || s->saturate != 1 || s->invert > 0 || s->blend != CSCD_BM_NORMAL ||
+        s->masks.len || s->clipPath.len || s->opacity <= 0)
+        return false;
+    const CscdMatrix m = cscdCanvasMatrix(canvas);
+    if (m.b != 0 || m.c != 0 || !(m.a > 0) || !(m.d > 0) || !isfinite(m.e) || !isfinite(m.f)) return false;
+    /* (no clip around it but rectangles: a rounded or shaped one would be a mask the image does not hold) */
+    for (const CscdLayoutBox* p = b->parent; p; p = p->parent)
+        if (p->style && (p->style->clipPath.len || p->style->masks.len || (cscdStyleClipsOverflow(p->style) && p->parent && cornersRound(p->style)))) return false;
+    if (!viewAnimatesTransformOnly(v, b->element)) return false;
+    uint64_t look = 14695981039346656037ull ^ v->paintedGen;
+    if (!keepable(v, b, &look)) return false;
+    CscdRect ink;
+    if (!animatedInk(b, true, &ink)) return false;
+    /* the image: what it holds under m's scale alone, a pixel around it; its corner where that puts the ink's */
+    const double x0 = floor((double)m.a * ink.x) - 1, y0 = floor((double)m.d * ink.y) - 1;
+    const double x1 = ceil((double)m.a * (ink.x + ink.w)) + 1, y1 = ceil((double)m.d * (ink.y + ink.h)) + 1;
+    if (!(x1 - x0 < 8192 && y1 - y0 < 8192 && (x1 - x0) * (y1 - y0) < 16e6) || fabs(x0) > 1e8 || fabs(y0) > 1e8) return false;
+    const int ox = (int)x0, oy = (int)y0, w = (int)(x1 - x0), h = (int)(y1 - y0);
+    const double tx = floor((double)m.e + 0.5), ty = floor((double)m.f + 0.5); /* (where it goes: m's move, to a pixel) */
+    if (fabs(tx) > 1e8 || fabs(ty) > 1e8) return false;
+    KeptLayer* k = NULL;
+    for (size_t i = 0; i < v->keptLayers.len && !k; ++i)
+        if (v->keptLayers.items[i].e == b->element) k = &v->keptLayers.items[i];
+    const bool same = k && k->moves && k->b == b && k->epoch == v->doc->layoutEpoch && k->look == look && k->m.a == m.a && k->m.d == m.d &&
+                      k->valid.x == ox && k->valid.y == oy && k->w == w && k->h == h;
+    if (!same) {
+        if (!k) {
+            if (v->keptLayers.len >= 32) return false;
+            KeptLayer z;
+            memset(&z, 0, sizeof z);
+            z.e = b->element;
+            cscdVecPush(&v->keptLayers, z);
+            k = &cscdVecLast(&v->keptLayers);
+        }
+        if (!k->img || k->img->width != w || k->img->height != h) {
+            cscdRelease(k->img);
+            k->img = cscdImageNew(w, h);
+        } else
+            memset(k->img->pixels, 0, (size_t)w * (size_t)h * 4);
+        if (cscdImageEmpty(k->img)) return false;
+        CscdCanvas* lc = cscdCanvasNew(k->img);
+        cscdCanvasSetMatrix(lc, (CscdMatrix){m.a, 0, 0, m.d, (float)-x0, (float)-y0});
+        Painter lp = painter(v, lc);
+        const bool hits = v->recordHits; /* (its hit areas: where it is, below, not in its image) */
+        v->recordHits = false;
+        paintStacking(&lp, b);
+        v->recordHits = hits;
+        cscdCanvasFree(lc);
+        k->moves = true;
+        k->b = b;
+        k->epoch = v->doc->layoutEpoch;
+        k->look = look;
+        k->m = m;
+        k->w = w;
+        k->h = h;
+        k->valid = cscdIRect(ox, oy, w, h);
+    }
+    k->usedIn = v->paintCount;
+    cscdCanvasDrawLayerImageAt(canvas, k->img, ox + (int)tx, oy + (int)ty, s->opacity);
+    if (v->recordHits) { /* (what it holds, gone over without drawing, where it is: its hit areas) */
+        cscdCanvasSetDryRun(canvas, true);
+        paintStacking(P, b);
+        cscdCanvasSetDryRun(canvas, false);
+    }
     return true;
 }
 

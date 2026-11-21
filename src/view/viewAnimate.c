@@ -318,6 +318,36 @@ bool viewAnimatesOpacityOnly(const CscdView* v, const CscdElement* e) {
     return any;
 }
 
+static bool transformProperty(CscdSv p) {
+    return cscdSvEqC(p, "transform") || cscdSvEqC(p, "translate") || cscdSvEqC(p, "scale") || cscdSvEqC(p, "rotate");
+}
+
+bool viewAnimatesTransformOnly(const CscdView* v, const CscdElement* e) {
+    bool transform = false;
+    for (size_t i = 0; i < v->transitions.len; ++i) {
+        const RunningTransition* r = &v->transitions.items[i];
+        if (r->e == e) {
+            const CscdSv p = cscdStrSv(&r->prop);
+            if (transformProperty(p)) transform = true;
+            else if (!cscdSvEqC(p, "opacity")) return false;
+        } else if (holds(e, r->e) || holds(r->e, e)) return false;
+    }
+    for (size_t i = 0; i < v->animations.len; ++i) {
+        const RunningAnimation* r = &v->animations.items[i];
+        if (r->e == e) {
+            const CscdKeyframesRule* kf = cscdStyleEngineKeyframes(v->styles, cscdStrSv(&r->a.name));
+            if (!kf) return false;
+            for (size_t k = 0; k < kf->frames.len; ++k)
+                for (size_t d = 0; d < kf->frames.items[k].declarations.len; ++d) {
+                    const CscdSv p = cscdStrSv(&kf->frames.items[k].declarations.items[d].property);
+                    if (transformProperty(p)) transform = true;
+                    else if (!cscdSvEqC(p, "opacity")) return false;
+                }
+        } else if (holds(e, r->e) || holds(r->e, e)) return false;
+    }
+    return transform;
+}
+
 void viewRemoveAnimation(CscdView* v, size_t i) {
     cscdStrFree(&v->animations.items[i].a.name);
     cscdRelease(v->animations.items[i].base);
