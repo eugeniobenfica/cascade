@@ -242,6 +242,7 @@ void viewClearSources(CscdView* v) {
 
 void cscdViewFree(CscdView* v) {
     if (!v) return;
+    viewEditableFocused(v, NULL); /* (its undo) */
     viewKeptLayersSweep(v, true);
     viewFreeLists(v);
     viewA11yFree(v);
@@ -420,7 +421,7 @@ CscdSystemPreferences cscdViewSystemPreferences(const CscdView* v) {
 
 static bool focusedIsTextField(const CscdView* v) {
     const CscdElement* f = v->doc->focused;
-    return f && (cscdElementIs(f, "input") || cscdElementIs(f, "textarea"));
+    return f && (cscdElementIs(f, "input") || cscdElementIs(f, "textarea") || viewIsEditableHost(f));
 }
 
 bool cscdViewUpdate(CscdView* v) {
@@ -495,6 +496,7 @@ static void paintPage(CscdView* v, CscdCanvas* c) {
         cscdCanvasFillRRect(c, &r, rs && rs->scrollbarThumbSet ? rs->scrollbarThumb : cscdRgba(k, k, k, 90));
         cscdCanvasRestore(c);
     }
+    viewPaintEditable(v, c); /* (the caret and the selection of a contenteditable) */
     viewPaintHandles(v, c); /* (a selection made by touch) */
     /* what is being dragged follows the pointer */
     if (v->dragActive && v->dragGhost && !cscdImageEmpty(v->dragGhost)) {

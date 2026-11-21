@@ -106,6 +106,8 @@ const char* cscdUserAgentStyleSheet(void) {
     ".cscd-menu.no-icons .cscd-menu-icon, .cscd-menu.no-checks .cscd-menu-check { display: none; }\n"
     ".cscd-menu-shortcut { margin-left: 28px; opacity: 0.6; }\n"
     ".cscd-menu-shortcut:empty { display: none; }\n"
+    /* (an editing host keeps its text as typed: its text boxes are its text nodes' text, byte for byte) */
+    "[contenteditable]:not([contenteditable=\"false\"]) { white-space: pre-wrap; overflow-wrap: break-word; }\n"
     ".cscd-menu-arrow { flex: none; width: 12px; height: 12px; margin-left: 10px; }\n"
     ".cscd-menu-separator { flex: none; height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.12); }\n"
     ".cscd-tooltip { position: fixed; z-index: 2147483001; pointer-events: none; max-width: 380px; padding: 4px 8px; box-sizing: border-box;\n"

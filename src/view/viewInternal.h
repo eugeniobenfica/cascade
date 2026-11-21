@@ -17,6 +17,10 @@ typedef struct OpenMenu {
     bool ownsItems;    /* (a submenu's items belong to the item that opened it) */
 } OpenMenu;
 
+/* (contenteditable: a step back, the host's HTML and its selection then) */
+typedef struct CeUndo { CscdStr html; size_t anchor, focus; } CeUndo;
+typedef CSCD_VEC(CeUndo) CeUndoVec;
+
 typedef struct MenuBarEntry { CscdElement* entry; CscdMenuBarFn fn; void* user; CscdFreeFn freeUser; } MenuBarEntry;
 /* a keyboard shortcut: its modifiers and key (the key's name as cscdViewKeyDown has it, lowercase) */
 typedef struct Shortcut { CscdModifiers mods; CscdStr key; CscdAction action; } Shortcut;
@@ -268,6 +272,16 @@ struct CscdView {
     CscdPtrVec modalReturnFocus;
     /* editing */
     CscdStr composition;
+    /* contenteditable (editable.c): the host last edited, the selection in its text (bytes of the text of its text
+     * nodes taken whole), where Up and Down keep to, the composition put in its text, its undo and redo */
+    CscdElement* ceHost; /* (compared only: the host is the focused element) */
+    size_t ceAnchor, ceFocus;
+    float ceGoalX;
+    bool ceHasGoal, ceComposing, ceQuiet;
+    size_t ceCompStart, ceCompLen;
+    CeUndoVec ceUndo, ceRedo;
+    double ceLastT;
+    int ceLastKind;
     size_t markStart, markEnd; /* the focused field's text an input method is still composing (cscdViewSetTextState) */
     CscdU64Map undo; /* CscdElement* -> UndoStack* */
 };
@@ -292,6 +306,17 @@ CscdRect viewPopupBounds(const CscdView* v);
 bool viewIsPopupWindow(const CscdView* v, const CscdElement* e);
 void viewPopupsFree(CscdView* v);
 void viewShortcutsFree(CscdView* v); /* (viewKeys.c) */
+/* editable.c: contenteditable */
+CscdElement* viewEditableHost(CscdView* v); /* the focused editing host, or NULL */
+bool viewIsEditableHost(const CscdElement* e);
+void viewEditableFocused(CscdView* v, CscdElement* host); /* (the host the selection is in; NULL: none, its undo freed) */
+void viewEditableInput(CscdView* v, CscdElement* host, CscdSv text);
+void viewEditableComposition(CscdView* v, CscdElement* host, CscdSv text);
+bool viewEditableKey(CscdView* v, CscdElement* host, CscdKey k, CscdModifiers m, CscdSv keyName);
+void viewEditablePress(CscdView* v, CscdElement* host, float x, float y, int clicks, bool shift);
+void viewEditableDrag(CscdView* v, CscdElement* host, float x, float y);
+CscdRect viewEditableCaret(CscdView* v, CscdElement* host);
+void viewPaintEditable(CscdView* v, CscdCanvas* c);
 void viewPopupHitsSweep(CscdView* v); /* (the hit areas of popups that closed go) */
 void viewNotifyInvalidate(CscdView* v);
 CscdRect viewPaintArea(CscdView* v, CscdElement* e);

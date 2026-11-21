@@ -193,8 +193,13 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] A text field that scales to large documents: a textarea's lines are kept from edit to edit (only the paragraphs
       an edit touches are wrapped again; the line a place is on found by halves). In 20,000 lines (1.3 MB) a key
       takes 4.7 ms and an arrow 3 ms, from 2 s and 1.6 s.
-- [ ] `contenteditable` / rich text: a caret and a selection in the page's text, typing, deleting and breaking lines in
-      its text nodes, bold and italic, pasting HTML (the clipboard's is there: `cscdViewClipboardHtml`).
+- [x] `contenteditable` (`src/view/editable.c`): a caret and a selection in the host's text (bytes of its text nodes
+      taken whole, placed and hit by their text boxes' fragments), typing and input methods, Backspace and Delete
+      across text nodes and blocks (what is left of the last block joins the first), Enter as a line break (the host
+      keeps its text as typed), the arrows, Home, End, words, the mouse, Ctrl+B/I/U, undo and redo (the host's HTML),
+      copying as HTML and text and pasting HTML (its bold, italic, underline and line breaks).
+- [ ] contenteditable's lists, links and headings by command; turning a format off in part of a run (today the
+      element that holds the selection is unwrapped whole); its text to screen readers (it is a group today).
 
 ### Conformance
 

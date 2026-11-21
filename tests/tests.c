@@ -989,6 +989,157 @@ static void testEditLinesKept(void) {
     cscdViewFree(v);
 }
 
+/* contenteditable: the page's own text edited in place */
+static CscdStr ceClipHtml, ceClipText;
+static void ceSetText(void* u, CscdSv t) { (void)u; cscdStrSet(&ceClipText, t); ceClipHtml.len = 0; }
+static void ceGetText(void* u, CscdStr* out) { (void)u; cscdStrAppend(out, cscdStrSv(&ceClipText)); }
+static void ceSetHtml(void* u, CscdSv h, CscdSv t) { (void)u; cscdStrSet(&ceClipHtml, h); cscdStrSet(&ceClipText, t); }
+static void ceGetHtml(void* u, CscdStr* out) { (void)u; cscdStrAppend(out, cscdStrSv(&ceClipHtml)); }
+
+static bool ceText(CscdView* v, const char* id, const char* want) {
+    CscdStr t = {0};
+    cscdNodeTextContent(cscdElementNode(byId(v, id)), &t);
+    const bool same = cscdStrEqC(&t, want);
+    if (!same) printf("  text: \"%s\", not \"%s\"\n", cscdStrC(&t), want);
+    cscdStrFree(&t);
+    return same;
+}
+static bool ceHtmlHas(CscdView* v, const char* id, const char* part) {
+    CscdStr h = cscdElementInnerHTML(byId(v, id));
+    const bool has = cscdSvFind(cscdStrSv(&h), cscdSv(part), 0) != CSCD_NPOS;
+    if (!has) printf("  html: %s (no %s)\n", cscdStrC(&h), part);
+    cscdStrFree(&h);
+    return has;
+}
+static bool ceHtmlLacks(CscdView* v, const char* id, const char* part) {
+    CscdStr h = cscdElementInnerHTML(byId(v, id));
+    const bool lacks = cscdSvFind(cscdStrSv(&h), cscdSv(part), 0) == CSCD_NPOS;
+    if (!lacks) printf("  html: %s (has %s)\n", cscdStrC(&h), part);
+    cscdStrFree(&h);
+    return lacks;
+}
+static bool ceSel(CscdView* v, size_t a, size_t z) {
+    size_t s = 99, e = 99;
+    const bool ok = cscdViewEditableSelection(v, &s, &e) && s == a && e == z;
+    if (!ok) printf("  selection %zu..%zu, not %zu..%zu\n", s, e, a, z);
+    return ok;
+}
+static void ceKey(CscdView* v, CscdKey k, CscdModifiers m, const char* name) { cscdViewKeyDown(v, k, m, cscdSv(name)); }
+
+static void testContentEditable(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    layoutView(v, "<style>body{margin:0} #e{width:300px;font:16px sans-serif;padding:4px} #blocks p{margin:0}</style>"
+                  "<div id=e contenteditable>hello</div><div id=blocks contenteditable><p>ab</p><p>cd</p></div><div id=off contenteditable=false>x</div><div id=edge contenteditable>ab<b>cd</b>ef</div>");
+    const CscdClipboardHooks clip = {ceSetText, ceGetText, ceSetHtml, ceGetHtml, NULL, NULL, NULL, NULL, NULL};
+    cscdViewSetClipboard(v, &clip);
+    CscdImage img;
+    cscdImageInit(&img, 800, 600);
+    frame(v, &img);
+    const CscdModifiers none = {0}, shift = {.shift = true}, ctrl = {.ctrl = true}, ctrlShift = {.ctrl = true, .shift = true};
+    int inputs = 0;
+    on(byId(v, "e"), "input", countEvent, &inputs);
+    /* a click right of the text: the caret at its end; typing goes in there */
+    const CscdRect er = viewRect(v, byId(v, "e"));
+    down(v, er.x + 250, er.y + 10);
+    up(v, er.x + 250, er.y + 10);
+    CHECK(cscdViewDocument(v)->focused == byId(v, "e") && ceSel(v, 5, 5));
+    cscdViewTextInput(v, CSCD_SV(" world"));
+    CHECK(ceText(v, "e", "hello world") && ceSel(v, 11, 11) && inputs == 1);
+    frame(v, &img);
+    const CscdRect caret = cscdViewCaretRect(v);
+    CHECK(caret.h > 10 && caret.x > er.x + 60 && caret.x < er.x + 120);
+    CHECK(cscdImageRow(&img, (int)(caret.y + caret.h / 2))[(int)caret.x] != 0xFFFFFFFFu); /* (the caret drawn) */
+    /* the arrows, a word at a time with Ctrl; Shift selects */
+    ceKey(v, CSCD_KEY_LEFT, ctrl, "ArrowLeft");
+    CHECK(ceSel(v, 6, 6));
+    ceKey(v, CSCD_KEY_END, shift, "End");
+    CHECK(ceSel(v, 6, 11));
+    /* bold, and out of it again; italic stays around what is typed after it */
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "b");
+    CHECK(ceHtmlHas(v, "e", "hello <b>world</b>") && ceText(v, "e", "hello world"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "b");
+    CHECK(ceHtmlHas(v, "e", "hello world") && ceHtmlLacks(v, "e", "<b>"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "i");
+    CHECK(ceHtmlHas(v, "e", "<i>world</i>"));
+    ceKey(v, CSCD_KEY_END, none, "End");
+    cscdViewTextInput(v, CSCD_SV("!"));
+    CHECK(ceHtmlHas(v, "e", "<i>world!</i>"));
+    /* Backspace across the formatting's edge, and a word with Ctrl */
+    cscdViewSetEditableSelection(v, 6, 6);
+    ceKey(v, CSCD_KEY_BACKSPACE, none, "Backspace");
+    CHECK(ceText(v, "e", "helloworld!") && ceSel(v, 5, 5));
+    ceKey(v, CSCD_KEY_BACKSPACE, ctrl, "Backspace");
+    CHECK(ceText(v, "e", "world!") && ceSel(v, 0, 0));
+    /* undo, redo */
+    /* (the two deletions one step, as a run of them is; then the "!") */
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "z");
+    CHECK(ceText(v, "e", "hello world!"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "z");
+    CHECK(ceText(v, "e", "hello world"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrlShift, "z");
+    CHECK(ceText(v, "e", "hello world!"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "y");
+    CHECK(ceText(v, "e", "world!"));
+    /* Enter at the end: a line of its own, under the first; Up and Down between lines */
+    ceKey(v, CSCD_KEY_END, ctrl, "End");
+    const float y1 = cscdViewCaretRect(v).y;
+    ceKey(v, CSCD_KEY_ENTER, none, "Enter");
+    frame(v, &img);
+    const float y2 = cscdViewCaretRect(v).y;
+    CHECK(y2 > y1 + 10 && ceSel(v, 7, 7));
+    cscdViewTextInput(v, CSCD_SV("abc"));
+    ceKey(v, CSCD_KEY_UP, none, "ArrowUp");
+    CHECK(cscdViewCaretRect(v).y < y2 - 10);
+    ceKey(v, CSCD_KEY_DOWN, none, "ArrowDown");
+    CHECK(fabsf(cscdViewCaretRect(v).y - y2) < 1 && ceSel(v, 10, 10));
+    /* a double click: a word */
+    frame(v, &img);
+    const CscdRect r2 = cscdViewCaretRect(v);
+    cscdViewMouseDown(v, r2.x - 10, r2.y + r2.h / 2, 0, none, 2);
+    up(v, r2.x - 10, r2.y + r2.h / 2);
+    CHECK(ceSel(v, 7, 10));
+    /* copied as HTML and text; pasted HTML keeps its bold and its line breaks */
+    cscdViewSetEditableSelection(v, 0, 6);
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "c");
+    CHECK(cscdStrEqC(&ceClipText, "world!") && cscdSvFind(cscdStrSv(&ceClipHtml), CSCD_SV("<i>world!</i>"), 0) != CSCD_NPOS);
+    cscdStrSetC(&ceClipHtml, "<p>A<b>B</b></p><p>C</p>");
+    cscdViewSetEditableSelection(v, 0, 6);
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "v");
+    CHECK(ceText(v, "e", "AB\nC\nabc\n") && ceHtmlHas(v, "e", "<b>B</b>"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "z"); /* (the paste, one step) */
+    CHECK(ceText(v, "e", "world!\nabc\n"));
+    /* an input method's composition: in the text until it is committed */
+    cscdViewSetEditableSelection(v, 0, 0);
+    cscdViewSetComposition(v, CSCD_SV("ka"));
+    CHECK(ceText(v, "e", "kaworld!\nabc\n"));
+    cscdViewSetComposition(v, CSCD_SV("kan"));
+    CHECK(ceText(v, "e", "kanworld!\nabc\n"));
+    cscdViewTextInput(v, CSCD_SV("\xE3\x81\x8B"));
+    CHECK(ceText(v, "e", "\xE3\x81\x8Bworld!\nabc\n") && ceSel(v, 3, 3));
+    /* across blocks: what is left of the second joins the first */
+    cscdViewFocus(v, byId(v, "blocks"));
+    cscdViewSetEditableSelection(v, 1, 3);
+    ceKey(v, CSCD_KEY_DELETE, none, "Delete");
+    CHECK(ceText(v, "blocks", "ad") && ceHtmlHas(v, "blocks", "<p>ad</p>") && ceHtmlLacks(v, "blocks", "<p></p>"));
+    /* at a formatting's edges: typing goes on with what is before it */
+    cscdViewFocus(v, byId(v, "edge"));
+    cscdViewSetEditableSelection(v, 4, 4);
+    cscdViewTextInput(v, CSCD_SV("X"));
+    cscdViewSetEditableSelection(v, 2, 2);
+    cscdViewTextInput(v, CSCD_SV("Y"));
+    CHECK(ceHtmlHas(v, "edge", "abY<b>cdX</b>ef"));
+    /* contenteditable=false: not edited */
+    cscdViewFocus(v, byId(v, "off"));
+    cscdViewTextInput(v, CSCD_SV("z"));
+    CHECK(ceText(v, "off", "x") && !cscdViewEditableSelection(v, &(size_t){0}, &(size_t){0}));
+    frame(v, &img);
+    cscdStrFree(&ceClipHtml);
+    cscdStrFree(&ceClipText);
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
 static void testMenus(void) {
     CscdView* v = cscdViewNew();
     menuView = v;
@@ -5232,6 +5383,7 @@ int main(void) {
     testBinding();
     testAccessors();
     testMenus();
+    testContentEditable();
     testEditLinesKept();
     testA11yUpdates();
     testA11yText();

@@ -90,6 +90,15 @@ colors the text as it is typed.
 
 **Input methods** (Chinese, Japanese, Korean): the composition shows at the caret, underlined.
 
+**Rich text**: an element with `contenteditable` is edited in place once it has the focus, its own
+markup kept: typing, the arrows (Shift selects, Ctrl goes by words), Home and End, Backspace and
+Delete, Enter (a line break: the element keeps its text as typed, `white-space: pre-wrap`), the
+mouse (a click, a double click for a word, a drag), Ctrl+B, I and U (the selection in `<b>`, `<i>`,
+`<u>`, or out of them), undo and redo, and the clipboard (copied as HTML and text; pasted HTML keeps
+its bold, italic, underline and line breaks). It gets `input` after each change; read it with
+`cscdElementInnerHTML`. `cscdViewEditableSelection` and `cscdViewSetEditableSelection` count bytes
+of its text, and `cscdViewEditableCommand(ui, CSCD_SV("bold"))` runs a command from a toolbar.
+
 **On phones** the on-screen keyboard follows the field: `type` (`email`, `url`, `tel`, `number`,
 `search`, `password`), `inputmode`, `enterkeyhint`, `autocapitalize` and `autocorrect` /
 `spellcheck` choose its kind, its action key and its corrections, as in mobile browsers

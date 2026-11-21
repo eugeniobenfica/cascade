@@ -92,7 +92,7 @@ add_library(${BT} ${cascade_library_kind}
   src/paint/canvasPath.c src/paint/canvas.c src/paint/paint.c
   # view: a page and its interaction (events, keys, touch, widgets, accessibility, the inspector)
   src/view/view.c src/view/viewLoad.c src/view/viewAnimate.c src/view/viewRestyle.c src/view/viewScroll.c
-  src/view/viewEvents.c src/view/viewKeys.c src/view/widgets.c src/view/touch.c src/view/inspector.c src/view/a11y.c
+  src/view/viewEvents.c src/view/viewKeys.c src/view/widgets.c src/view/touch.c src/view/inspector.c src/view/a11y.c src/view/editable.c
   # capi: the handle API (cascadeC.h)
   src/capi/capi.c
 )

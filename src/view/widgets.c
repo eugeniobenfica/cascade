@@ -511,6 +511,11 @@ CscdRect viewFieldPosRect(CscdView* v, CscdElement* e, size_t pos, size_t* line)
 }
 
 CscdRect cscdViewCaretRect(CscdView* v) {
+    CscdElement* host = viewEditableHost(v);
+    if (host && host->layout) {
+        viewEditableFocused(v, host);
+        return viewEditableCaret(v, host);
+    }
     CscdElement* e = v->doc->focused;
     if (!e || !isTextControl(e) || !e->layout || !e->style) return cscdRect(0, 0, 0, 0);
     size_t line;
@@ -654,6 +659,12 @@ CscdInputTraits cscdViewInputTraits(CscdView* v) {
 }
 
 void cscdViewSetComposition(CscdView* v, CscdSv utf8) {
+    CscdElement* host = viewEditableHost(v);
+    if (host) { /* (in the host's text, until it is committed) */
+        viewEditableFocused(v, host);
+        viewEditableComposition(v, host, utf8);
+        return;
+    }
     if (cscdSvEq(cscdStrSv(&v->composition), utf8)) return;
     cscdStrSet(&v->composition, utf8);
     v->caretTime = viewNow(v);

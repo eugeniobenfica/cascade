@@ -240,6 +240,17 @@ void cscdViewBindMenuBar(CscdView* v, CscdElement* entry, CscdMenuBarFn items, v
 void cscdViewCloseMenus(CscdView* v);
 bool cscdViewMenuOpen(const CscdView* v);
 
+/* contenteditable: an element with the attribute (not "false") is edited in place once it has the focus: typing, the
+ * arrows (with Shift to select), Home and End, Backspace and Delete (with Ctrl: a word), Enter (a line break: the
+ * host keeps its text as typed, white-space: pre-wrap), the mouse (a click, a double click for a word, a drag),
+ * Ctrl+B, I, U (the selection in <b>, <i>, <u>, or out of them), Ctrl+Z and Y, and the clipboard (copied as HTML and
+ * text; pasted HTML keeps its bold, italic, underline and line breaks). The host gets "input" after each change. The
+ * selection counts bytes of the host's text (its text nodes' taken whole); a command: "bold", "italic", "underline",
+ * "undo", "redo", "selectAll". */
+bool cscdViewEditableSelection(CscdView* v, size_t* start, size_t* end); /* false: no editing host has the focus */
+bool cscdViewSetEditableSelection(CscdView* v, size_t start, size_t end);
+bool cscdViewEditableCommand(CscdView* v, CscdSv command);
+
 /* Keyboard shortcuts (accelerators): keys as menus show them, "Ctrl+S", "Ctrl+Shift+Z", "Alt+Enter", "F5", "Delete"
  * (modifiers Ctrl, Shift, Alt, Meta; on the Mac Command is Ctrl, as everywhere in cascade). The action runs when
  * they are pressed and the page's keydown listeners did not cancel the key, before what the focused element does

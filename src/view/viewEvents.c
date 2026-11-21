@@ -192,6 +192,7 @@ void cscdViewFocus(CscdView* v, CscdElement* e) {
         if (old && isTextControl(old) && old->valueDirty) viewSendSimple(v, "change", old);
     }
     v->doc->focused = e;
+    viewEditableFocused(v, viewEditableHost(v)); /* (an editing host takes the selection: at its text's end) */
     if (e) {
         e->state |= CSCD_STATE_FOCUS;
         if (isTextControl(e)) {
@@ -280,6 +281,7 @@ void cscdViewMouseMove(CscdView* v, float x, float y, int buttons, CscdModifiers
     cscdEventFini(&ev);
     /* text selection by dragging in a text control */
     CscdElement* f = v->doc->focused;
+    if (v->selecting && (buttons & 1) && viewEditableHost(v) && f && f->layout) viewEditableDrag(v, f, x, y);
     if (v->selecting && f && isTextControl(f) && (buttons & 1) && f->layout) {
         f->caret = viewTextHit(v, f, x, y);
         viewEnsureCaretVisible(v, f);
@@ -294,7 +296,7 @@ void cscdViewMouseMove(CscdView* v, float x, float y, int buttons, CscdModifiers
             break;
         }
         if (a->style && a->style->cursor != CSCD_CURSOR_AUTO) { c = (CscdCursor)a->style->cursor; break; }
-        if (isTextControl(a)) { c = CSCD_CURSOR_TEXT; break; }
+        if (isTextControl(a) || viewIsEditableHost(a)) { c = CSCD_CURSOR_TEXT; break; }
     }
     if (c == CSCD_CURSOR_DEFAULT && hit && hit->style && hit->style->cursor == CSCD_CURSOR_AUTO) {
         /* over text */
@@ -389,6 +391,12 @@ void cscdViewMouseDown(CscdView* v, float x, float y, int button, CscdModifiers 
         if (clicks >= 3) { f->selAnchor = 0; f->caret = val.len; }
         v->selecting = true;
         v->caretTime = viewNow(v);
+    }
+    if (f && f == viewEditableHost(v) && f->layout) {
+        /* the caret where the press was in its text (a word, all of it) */
+        viewEditableFocused(v, f);
+        viewEditablePress(v, f, x, y, clicks, m.shift);
+        v->selecting = true;
     }
     if (hit && cscdElementIs(hit, "input") && cscdSvIEqC(cscdElementAttrC(hit, "type"), "range") && !cscdElementDisabled(hit)) {
         v->dragRange = hit;

@@ -83,6 +83,13 @@ void viewEditInput(CscdView* v, CscdElement* e, CscdSv insert, int deleteDir, bo
 }
 
 void cscdViewTextInput(CscdView* v, CscdSv utf8) {
+    CscdElement* host = viewEditableHost(v);
+    if (host && utf8.len) {
+        viewEditableFocused(v, host);
+        const CscdSv s = cscdSvEqC(utf8, "\r") ? CSCD_SV("\n") : utf8;
+        if ((unsigned char)s.ptr[0] >= 0x20 || cscdSvEqC(s, "\n") || cscdSvEqC(s, "\t")) viewEditableInput(v, host, s);
+        return;
+    }
     CscdElement* f = v->doc->focused;
     if (!f || !isTextControl(f) || cscdElementHasAttributeC(f, "readonly") || cscdElementDisabled(f)) return;
     if (!utf8.len) return;
@@ -507,7 +514,13 @@ void cscdViewKeyDown(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName) {
     }
     if (f != v->doc->focused) return;
     /* the app's shortcuts, and its menu bar's (before what the focused element does with the key) */
-    if (runShortcut(v, m, keyName, f && isTextControl(f))) return;
+    if (runShortcut(v, m, keyName, f && (isTextControl(f) || viewIsEditableHost(f)))) return;
+    /* an editing host's keys (Tab still moves the focus) */
+    CscdElement* host = viewEditableHost(v);
+    if (host && k != CSCD_KEY_TAB && k != CSCD_KEY_ESCAPE) {
+        viewEditableFocused(v, host);
+        if (viewEditableKey(v, host, k, m, keyName)) return;
+    }
     /* Esc hands the keys back to the program */
     if (k == CSCD_KEY_ESCAPE && f && cscdSvEqC(cscdElementAttrC(f, "data-focus"), "keyboard")) {
         cscdViewFocus(v, NULL);
