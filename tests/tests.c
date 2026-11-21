@@ -3,8 +3,10 @@
 #include "cascade/cascade.h"
 #include "../src/text/bidiInternal.h" /* (internal: the algorithm on its own) */
 #include "../src/text/lineBreakInternal.h" /* (internal: UAX #14 on its own) */
+#include "../src/text/graphemeInternal.h"   /* (internal: UAX #29 on its own) */
 #include "../src/view/viewInternal.h" /* (internal: viewSetInputAge, the platforms' touch times) */
 #include "../src/core/thread.h"        /* (internal: the parallel loops) */
+#include "../src/image/imageInternal.h"  /* (internal: the decoders' size limit) */
 #include "../src/paint/canvasInternal.h"  /* (internal: shadows blurred whole, to compare) */
 
 #include <stdio.h>
@@ -3060,6 +3062,119 @@ static void testLineBreakLayout(void) {
     cscdViewFree(v);
 }
 
+/* Grapheme clusters: a few always, and Unicode's conformance file when CASCADE_GRAPHEME_TEST names it (CI downloads
+ * GraphemeBreakTest.txt): its boundaries, and the same found from UTF-8 forward and back, as the caret moves. */
+static bool clustersMatch(const uint32_t* cps, size_t n, const bool* want) {
+    bool out[64];
+    cscdGraphemeBreaks(cps, n, out);
+    for (size_t i = 0; i <= n; ++i)
+        if (out[i] != want[i]) return false;
+    /* the same boundaries, stepping through the UTF-8 text forward and back */
+    CscdStr s = {0};
+    size_t at[65];
+    for (size_t i = 0; i < n; ++i) {
+        at[i] = s.len;
+        cscdUtf8Append(&s, cps[i]);
+    }
+    at[n] = s.len;
+    bool ok = true;
+    const CscdSv sv = cscdStrSv(&s);
+    size_t k = 0;
+    for (size_t p = 0; p < sv.len && ok;) {
+        const size_t q = cscdGraphemeNext(sv, p);
+        while (k < n && at[k + 1] <= p) ++k;
+        size_t want_q = sv.len;
+        for (size_t j = 1; j <= n; ++j)
+            if (at[j] > p && want[j]) { want_q = at[j]; break; }
+        ok = q == want_q && cscdGraphemePrev(sv, q) == p;
+        p = q;
+    }
+    cscdStrFree(&s);
+    return ok;
+}
+
+static void testGrapheme(void) {
+    const uint32_t accents[] = {'e', 0x301, 'x'};               /* é as e and a combining accent: one */
+    const bool a1[] = {true, false, true, true};
+    CHECK(clustersMatch(accents, 3, a1));
+    const uint32_t family[] = {0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467}; /* a family emoji: one */
+    const bool a2[] = {true, false, false, false, false, true};
+    CHECK(clustersMatch(family, 5, a2));
+    const uint32_t flags[] = {0x1F1E7, 0x1F1F7, 0x1F1F5, 0x1F1F9, 0x1F1EB}; /* two flags and a lone indicator */
+    const bool a3[] = {true, false, true, false, true, true};
+    CHECK(clustersMatch(flags, 5, a3));
+    const uint32_t conjunct[] = {0x915, 0x94D, 0x937}; /* क्ष: a conjunct (GB9c) */
+    const bool a4[] = {true, false, false, true};
+    CHECK(clustersMatch(conjunct, 3, a4));
+    const uint32_t crlf[] = {'a', '\r', '\n', 'b'};
+    const bool a5[] = {true, true, false, true, true};
+    CHECK(clustersMatch(crlf, 4, a5));
+    const char* path = getenv("CASCADE_GRAPHEME_TEST");
+    if (!path || !*path) return;
+    FILE* f = fopen(path, "rb");
+    CHECK(f != NULL);
+    if (!f) return;
+    char line[4096];
+    int cases = 0, failed = 0;
+    while (fgets(line, sizeof line, f)) {
+        char* hash = strchr(line, '#');
+        if (hash) *hash = 0;
+        uint32_t cps[64];
+        bool want[65];
+        size_t n = 0;
+        const char* p = line;
+        bool ok = true;
+        for (;;) {
+            while (*p == ' ' || *p == '\t') ++p;
+            if (!*p || *p == '\n' || *p == '\r') break;
+            if ((unsigned char)p[0] == 0xC3 && (unsigned char)p[1] == 0x97) { want[n] = false; p += 2; continue; } /* × */
+            if ((unsigned char)p[0] == 0xC3 && (unsigned char)p[1] == 0xB7) { want[n] = true; p += 2; continue; }  /* ÷ */
+            char* end;
+            const unsigned long cp = strtoul(p, &end, 16);
+            if (end == p || n >= 63) { ok = false; break; }
+            cps[n++] = (uint32_t)cp;
+            p = end;
+        }
+        if (!ok || n < 1) continue;
+        ++cases;
+        if (!clustersMatch(cps, n, want) && ++failed <= 8) printf("  GraphemeBreakTest: %s", line);
+    }
+    fclose(f);
+    printf("  GraphemeBreakTest: %d of %d lines as Unicode says\n", cases - failed, cases);
+    CHECK(cases > 1000);
+    CHECK(failed == 0);
+}
+
+/* The caret steps over a character as a reader sees it, and deleting takes it whole: an accent with its letter, a
+ * family emoji, a flag. */
+static void testGraphemeEditing(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    cscdViewSetViewport(v, 300, 100, 1);
+    cscdViewLoadHTML(v, CSCD_SV("<input id=f>"), CSCD_SV("."));
+    CscdElement* f = query(v, "#f");
+    cscdViewFocus(v, f);
+    /* e + U+0301, a family (man ZWJ woman ZWJ girl), a flag (two regional indicators) */
+    text(v, "xe\xCC\x81" "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7" "\xF0\x9F\x87\xA7\xF0\x9F\x87\xB7");
+    key(v, CSCD_KEY_HOME);
+    key(v, CSCD_KEY_RIGHT);
+    CHECK(f->caret == 1);
+    key(v, CSCD_KEY_RIGHT);
+    CHECK(f->caret == 4);                 /* (over e and its accent) */
+    key(v, CSCD_KEY_RIGHT);
+    CHECK(f->caret == 22);                /* (over the whole family) */
+    key(v, CSCD_KEY_END);
+    key(v, CSCD_KEY_BACKSPACE);
+    CHECK(f->editValue.len == 22);        /* (the flag, both its indicators) */
+    key(v, CSCD_KEY_BACKSPACE);
+    CHECK(f->editValue.len == 4);         /* (the family) */
+    key(v, CSCD_KEY_LEFT);
+    CHECK(f->caret == 1);
+    key(v, CSCD_KEY_DELETE);
+    CHECK(f->editValue.len == 1 && f->editValue.ptr[0] == 'x'); /* (e and its accent) */
+    cscdViewFree(v);
+}
+
 static void testBidi(void) {
     /* Hebrew in English: the Hebrew word at 1, the space before it stays with the English */
     CHECK(eq(bidiOf("ab \xD7\x90\xD7\x91 cd", 0), "00011000"));
@@ -3141,6 +3256,24 @@ static void checkJpeg(const unsigned char* data, size_t size, const JpegSample* 
 
 /* (a little apart from libjpeg: its transforms are not ours, nor is how 4:2:0 color is spread) */
 #define JPEG(name, tolerance) checkJpeg(name, sizeof name, name##At, sizeof name##At / sizeof name##At[0], tolerance)
+
+/* the decoders' size limit: a valid image larger than it is refused, before anything is made of it */
+static void testImageLimit(void) {
+    CscdImage src;
+    cscdImageInit(&src, 100, 100);
+    CscdBytes png = {0};
+    cscdEncodePNG(&src, &png);
+    const size_t was = cscdImageMaxPixels;
+    cscdImageMaxPixels = 5000;
+    CscdImage* refused = cscdDecodeImage(png.items, png.len);
+    CHECK(refused == NULL);
+    cscdImageMaxPixels = was;
+    CscdImage* fine = cscdDecodeImage(png.items, png.len);
+    CHECK(fine && fine->width == 100);
+    if (fine) cscdRelease(fine);
+    cscdVecFree(&png);
+    cscdImageFini(&src);
+}
 
 static void testJpeg(void) {
     JPEG(kJpeg444, 4);
@@ -4298,6 +4431,8 @@ int main(void) {
     testSmallerProperties();
     testBidi();
     testLineBreak();
+    testGrapheme();
+    testGraphemeEditing();
     testLineBreakLayout();
     testSiblingPositions();
     testStaticPositionRelayout();
@@ -4305,6 +4440,7 @@ int main(void) {
     testLimits();
     testPhoneInput();
     testJpeg();
+    testImageLimit();
     testCffFont();
     testBitmapFonts();
     testSvg();

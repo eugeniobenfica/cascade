@@ -671,7 +671,7 @@ bool cscdDecodeVP8(const uint8_t* data, size_t size, CscdYuv* out) {
     const size_t firstSize = tag >> 5;
     if (data[3] != 0x9D || data[4] != 0x01 || data[5] != 0x2A) return false;
     const int width = (data[6] | (data[7] << 8)) & 0x3FFF, height = (data[8] | (data[9] << 8)) & 0x3FFF;
-    if (width <= 0 || height <= 0 || (uint64_t)width * height > 100000000) return false;
+    if (width <= 0 || height <= 0 || (uint64_t)width * height > cscdImageMaxPixels) return false;
     data += 10;
     size -= 10;
     if (firstSize > size) return false;

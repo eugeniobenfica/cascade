@@ -124,7 +124,9 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       `tools/genLineBreak.py`), across the elements of a line; all 16,666 lines of `LineBreakTest.txt` pass, and CI
       downloads it. A page of mixed text lays out ~25% slower, from the opportunities it had missed (after a URL's
       slashes, around punctuation): more pieces to measure.
-- [ ] Grapheme clusters by UAX #29 for the caret and deletion (today: code points), with `GraphemeBreakTest.txt`.
+- [x] Grapheme clusters by UAX #29 (Unicode 16.0, `src/text/grapheme.c`, table by `tools/genGrapheme.py`): the caret,
+      Backspace and Delete, touch handles and a field's wrapping step over a character as a reader sees it (accents,
+      emoji sequences, flags, Indic conjuncts); all 1,093 lines of `GraphemeBreakTest.txt` pass, CI downloads it.
 - [ ] Arabic through the font's `init`/`medi`/`fina` features instead of the presentation-forms table.
 - [ ] Shapers for Thai, Khmer, Myanmar, Tibetan, Hangul jamo and the Universal Shaping Engine; run
       unicode-org/text-rendering-tests.

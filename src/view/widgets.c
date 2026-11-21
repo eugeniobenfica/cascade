@@ -2,6 +2,7 @@
  * bars, <select> lists), dialogs, popovers, tooltips, drag and drop, splitters, virtual lists, the
  * clipboard from the program, and the line layout and undo of text fields. Touch is touch.c's. */
 #include "view/viewInternal.h"
+#include "text/graphemeInternal.h"
 #include "text/bidiInternal.h"
 
 #include <ctype.h>
@@ -141,10 +142,10 @@ void editLines(CscdSv text, const CscdFont* f, float width, bool wrap, float ls,
                 if (cscdFontMeasure(cscdSvSub(text, start, pend - start), f, ls, 0) > width) {
                     size_t lastSpace = CSCD_NPOS;
                     for (size_t k = start; k < pend;) {
-                        size_t kn = nextChar(text, k);
+                        size_t kn = cscdGraphemeNext(text, k); /* (a line never splits a character) */
                         if (text.ptr[k] == ' ') lastSpace = k;
                         if (cscdFontMeasure(cscdSvSub(text, start, kn - start), f, ls, 0) > width) {
-                            end = lastSpace != CSCD_NPOS && lastSpace > start ? lastSpace + 1 : cscdMaxz(k, nextChar(text, start));
+                            end = lastSpace != CSCD_NPOS && lastSpace > start ? lastSpace + 1 : cscdMaxz(k, cscdGraphemeNext(text, start));
                             break;
                         }
                         k = kn;
@@ -176,7 +177,7 @@ size_t editHit(CscdSv text, EditLine line, const CscdFont* f, float x, float ls)
         float d = fabsf(w - x);
         if (d < bestD) { bestD = d; best = i; }
         if (w > x || i >= line.end) break;
-        i = nextChar(text, i);
+        i = cscdGraphemeNext(text, i);
     }
     return best;
 }

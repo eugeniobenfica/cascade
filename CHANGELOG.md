@@ -7,6 +7,12 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Grapheme clusters by UAX #29** (Unicode 16.0): in a text field the caret moves over, and Backspace and Delete take,
+  a character as a reader sees it: a letter and its accents, an emoji sequence, a flag, an Indic conjunct. The
+  conformance file passes whole (1,093 lines; CI downloads it, `CASCADE_GRAPHEME_TEST`).
+- The image decoders share one size limit (`cscdImageMaxPixels`, internal; 100 million pixels, as before); the fuzzers
+  lower it, where a valid image of tens of millions of pixels only took time (a JPEG timed out under the sanitizers).
+
 - **Line breaking by UAX #14** (Unicode 16.0): lines break where Unicode's rules let them, across the elements of a
   line (`foo<b>bar</b>` is one word), no line starts with a closing mark or a small kana, a URL breaks after its
   slashes, numbers and their signs stay together; soft hyphens, `hyphens: none` and `word-break: break-all` as before.

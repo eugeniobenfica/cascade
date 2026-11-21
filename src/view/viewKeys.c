@@ -2,6 +2,7 @@
  * lines), typing, deleting and indenting in fields, and focus moving with Tab. */
 #include "style/styleInternal.h"
 #include "view/viewInternal.h"
+#include "text/graphemeInternal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,8 +43,9 @@ void viewEditInput(CscdView* v, CscdElement* e, CscdSv insert, int deleteDir, bo
     /* typing and deleting one character at a time are undone as runs */
     viewPushUndo(v, e, !insert.len ? 2 : (nextChar(insert, 0) == insert.len && !cscdSvEqC(insert, "\n") && a == z) ? 1 : 3);
     CscdSv cur = cscdStrSv(val);
-    if (a == z && deleteDir < 0) a = word ? prevWord(cur, a) : prevChar(cur, a);
-    else if (a == z && deleteDir > 0) z = word ? nextWord(cur, z) : nextChar(cur, z);
+    /* (a character as a reader sees it: a letter and its accents, an emoji sequence, a flag, a conjunct) */
+    if (a == z && deleteDir < 0) a = word ? prevWord(cur, a) : cscdGraphemePrev(cur, a);
+    else if (a == z && deleteDir > 0) z = word ? nextWord(cur, z) : cscdGraphemeNext(cur, z);
     CscdStr ins = {0};
     for (size_t i = 0; i < insert.len; ++i)
         if (!(cscdElementIs(e, "input") && insert.ptr[i] == '\n')) cscdStrAppendChar(&ins, insert.ptr[i]);
@@ -222,11 +224,11 @@ static void textFieldKey(CscdView* v, CscdElement* f, CscdKey k, CscdModifiers m
     case CSCD_KEY_DELETE: if (!ro) viewEditInput(v, f, CSCD_SV(""), 1, m.ctrl); return;
     case CSCD_KEY_LEFT:
         if (!m.shift && f->selAnchor != f->caret) { moveCaret(&T, cscdMinz(f->selAnchor, f->caret)); return; }
-        moveCaret(&T, m.ctrl ? prevWord(cscdStrSv(val), f->caret) : prevChar(cscdStrSv(val), f->caret));
+        moveCaret(&T, m.ctrl ? prevWord(cscdStrSv(val), f->caret) : cscdGraphemePrev(cscdStrSv(val), f->caret));
         return;
     case CSCD_KEY_RIGHT:
         if (!m.shift && f->selAnchor != f->caret) { moveCaret(&T, cscdMaxz(f->selAnchor, f->caret)); return; }
-        moveCaret(&T, m.ctrl ? nextWord(cscdStrSv(val), f->caret) : nextChar(cscdStrSv(val), f->caret));
+        moveCaret(&T, m.ctrl ? nextWord(cscdStrSv(val), f->caret) : cscdGraphemeNext(cscdStrSv(val), f->caret));
         return;
     case CSCD_KEY_HOME: {
         if (!area || m.ctrl) { moveCaret(&T, 0); return; }

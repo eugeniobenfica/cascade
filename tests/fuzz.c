@@ -8,6 +8,7 @@
  * Built otherwise, it reads each file it is given and runs it once: a crash a fuzzer found, again. */
 #include "cascade/cascade.h"
 #include "cascade/font.h"
+#include "../src/image/imageInternal.h" /* (internal: the decoders' size limit) */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -75,6 +76,7 @@ static void page(const uint8_t* data, size_t size, bool asCss) {
 }
 
 static void image(const uint8_t* data, size_t size) {
+    cscdImageMaxPixels = (size_t)1 << 22; /* (4 million pixels: a fuzzer's time goes to the parsing, not to a large valid image) */
     CscdImage* img = cscdDecodeImage(data, size);
     if (img) cscdRelease(img);
     CscdAnimatedImage* anim = cscdDecodeAnimatedImage(data, size);

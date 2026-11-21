@@ -2,6 +2,7 @@
  * pinches, long presses, touch-action) and selecting text by touch (the selection's handles, the edit
  * menu, the magnifier). The platforms hand touches over with cscdViewTouch*. */
 #include "view/viewInternal.h"
+#include "text/graphemeInternal.h"
 
 #include <math.h>
 
@@ -510,11 +511,11 @@ static void dragHandle(CscdView* v, float x, float y) {
     size_t at = viewTextHit(v, f, footX, footY - now.h / 2);
     const size_t a = cscdMinz(f->selAnchor, f->caret), z = cscdMaxz(f->selAnchor, f->caret);
     if (v->handleDragged == 1) {
-        if (at >= z) at = z ? prevChar(val, z) : 0;
+        if (at >= z) at = z ? cscdGraphemePrev(val, z) : 0;
         f->selAnchor = z;
         f->caret = at;
     } else if (v->handleDragged == 2) {
-        if (at <= a) at = nextChar(val, a);
+        if (at <= a) at = cscdGraphemeNext(val, a);
         f->selAnchor = a;
         f->caret = at;
     } else f->selAnchor = f->caret = at;

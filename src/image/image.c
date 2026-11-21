@@ -368,7 +368,7 @@ static CscdImage* decodePNG(const uint8_t* d, size_t n) {
         else if (!memcmp(type, "IEND", 4)) break;
         i += 12 + (size_t)len;
     }
-    if (!w || !h || w > 16384 || h > 16384) goto done;
+    if (!w || !h || w > 16384 || h > 16384 || (uint64_t)w * h > cscdImageMaxPixels) goto done;
     /* the bit depths each color type allows */
     {
         const int allowed = ctype == 0 ? 0x1F : ctype == 3 ? 0x0F : (ctype == 2 || ctype == 4 || ctype == 6) ? 0x18 : 0;
@@ -430,6 +430,8 @@ done:
 
 /* the largest picture decoded (as many pixels as PNG's 16384 x 16384) */
 #define JPEG_MAX_PIXELS ((size_t)1 << 28)
+
+size_t cscdImageMaxPixels = 100000000;
 #define JPEG_FAST_BITS 9
 
 typedef struct HT {
@@ -910,7 +912,7 @@ static CscdImage* jpegRun(Jpeg* j) {
             j->ncomp = s[5];
             if (j->ncomp != 1 && j->ncomp != 3) return NULL;
             if (slen < 6 + 3 * (size_t)j->ncomp) return NULL;
-            if ((size_t)j->width * j->height > JPEG_MAX_PIXELS) return NULL;
+            if ((size_t)j->width * j->height > JPEG_MAX_PIXELS || (size_t)j->width * j->height > cscdImageMaxPixels) return NULL;
             for (int c = 0; c < j->ncomp; ++c) {
                 j->comps[c].id = s[6 + 3 * c];
                 j->comps[c].h = s[7 + 3 * c] >> 4;
@@ -1115,7 +1117,7 @@ static void clearRect(CscdImage* img, int x0, int y0, int w, int h) {
 static CscdAnimatedImage* decodeGIF(const uint8_t* d, size_t n, int maxFrames) {
     if (n < 13 || memcmp(d, "GIF8", 4) != 0) return NULL;
     int sw = d[6] | (d[7] << 8), sh = d[8] | (d[9] << 8); /* (0: the first frame's size, as browsers do) */
-    if ((uint64_t)sw * sh > 100000000) return NULL;
+    if ((uint64_t)sw * sh > cscdImageMaxPixels) return NULL;
     size_t i = 13;
     uint32_t global[256] = {0};
     if (d[10] & 0x80) {
@@ -1156,7 +1158,7 @@ static CscdAnimatedImage* decodeGIF(const uint8_t* d, size_t n, int maxFrames) {
         i += 9;
         if (!canvas) {
             if (sw <= 0 || sh <= 0) { sw = fx + fw; sh = fy + fh; }
-            if (sw <= 0 || sh <= 0 || (uint64_t)sw * sh > 100000000) return NULL;
+            if (sw <= 0 || sh <= 0 || (uint64_t)sw * sh > cscdImageMaxPixels) return NULL;
             canvas = cscdImageNew(sw, sh);
             anim = animationNew(sw, sh);
         }
@@ -1172,7 +1174,7 @@ static CscdAnimatedImage* decodeGIF(const uint8_t* d, size_t n, int maxFrames) {
         }
         if (i >= n) break;
         const int minSize = d[i++];
-        if (minSize < 1 || minSize > 11 || (uint64_t)fw * fh > 100000000) break;
+        if (minSize < 1 || minSize > 11 || (uint64_t)fw * fh > cscdImageMaxPixels) break;
         CscdBytes data = {0};
         while (i < n && d[i]) {
             const size_t len = d[i];
@@ -1564,7 +1566,7 @@ static CscdImage* vp8lRun(const uint8_t* p, size_t n) {
     const int width = (int)bits(br, 14) + 1, height = (int)bits(br, 14) + 1;
     bits(br, 1); /* (alpha is used: the pixels say) */
     if (bits(br, 3) != 0) return NULL;
-    if ((uint64_t)width * height > 100000000) return NULL;
+    if ((uint64_t)width * height > cscdImageMaxPixels) return NULL;
     CscdU32Vec px = {0};
     if (!vp8lStream(br, width, height, &px)) return NULL;
     CscdImage* img = cscdImageNew(width, height);
@@ -1711,7 +1713,7 @@ static CscdAnimatedImage* decodeWebP(const uint8_t* d, size_t n, int maxFrames) 
         cscdRelease(img);
         return a;
     }
-    if ((uint64_t)cw * chh > 100000000) return NULL;
+    if ((uint64_t)cw * chh > cscdImageMaxPixels) return NULL;
     CscdAnimatedImage* anim = animationNew(cw, chh);
     CscdImage* canvas = cscdImageNew(cw, chh);
     bool dispose = false;
