@@ -60,6 +60,16 @@ static Category categoryOf(uint32_t cp) {
     return CAT_OTHER;
 }
 
+/* Whether a matra of Telugu or Kannada is written before the below-base consonants (right after the base), as
+ * HarfBuzz orders them: all but those on the right (Unicode's position, Top_And_Right with them) from Telugu's
+ * VOCALIC R, U+0C43, and Kannada's, U+0CC3. */
+static bool beforeSub(uint32_t cp) {
+    if (cp >= 0xC00 && cp < 0xC80) return cp != 0xC43 && cp != 0xC44;
+    if (cp >= 0xC80 && cp < 0xD00)
+        return !(cp == 0xCC3 || cp == 0xCC4 || cp == 0xCC7 || cp == 0xCC8 || cp == 0xCCA || cp == 0xCCB || cp == 0xCD5 || cp == 0xCD6);
+    return false;
+}
+
 static MatraPos matraPos(uint32_t cp) {
     const Script* s = scriptFor(cp);
     if (!s) return POS_NONE;
@@ -71,28 +81,31 @@ static MatraPos matraPos(uint32_t cp) {
 }
 
 /* the glyphs' feature masks */
-enum { M_GLOBAL = 1u << 31, M_RPHF = 1, M_HALF = 2, M_BLWF = 4, M_PSTF = 8, M_MOD = 64 /* (a modifier, anusvara...: the reph goes before it) */ };
+enum {
+    M_GLOBAL = 1u << 31, M_RPHF = 1, M_HALF = 2, M_BLWF = 4, M_PSTF = 8, M_PREF = 16, M_BASE = 32,
+    M_MOD = 64 /* (a modifier, anusvara...: the reph goes before it) */
+};
 
 typedef struct Info { Category cat; MatraPos pos; uint32_t cp; } Info;
 
 /* One syllable from i: a consonant syllable (consonants joined by halants, then matras and
- * modifiers), a vowel syllable, or anything else alone. Returns its end. */
+ * modifiers), a vowel syllable (a vowel may take consonants after a halant too, as HarfBuzz has it),
+ * or anything else alone. Returns its end. */
 static size_t syllableEnd(const Info* in, size_t i, size_t n) {
     const Category c = in[i].cat;
     size_t k = i + 1;
     if (c == CAT_C || c == CAT_RA || c == CAT_V) {
         if (k < n && in[k].cat == CAT_N) ++k;
-        if (c != CAT_V)
-            while (k < n) { /* (halant, maybe a joiner, then the next consonant) */
-                size_t j = k;
-                if (in[j].cat != CAT_H) break;
-                ++j;
-                if (j < n && (in[j].cat == CAT_ZWJ || in[j].cat == CAT_ZWNJ)) ++j;
-                if (j < n && (in[j].cat == CAT_C || in[j].cat == CAT_RA)) {
-                    k = j + 1;
-                    if (k < n && in[k].cat == CAT_N) ++k;
-                } else break;
-            }
+        while (k < n) { /* (halant, maybe a joiner, then the next consonant) */
+            size_t j = k;
+            if (in[j].cat != CAT_H) break;
+            ++j;
+            if (j < n && (in[j].cat == CAT_ZWJ || in[j].cat == CAT_ZWNJ)) ++j;
+            if (j < n && (in[j].cat == CAT_C || in[j].cat == CAT_RA)) {
+                k = j + 1;
+                if (k < n && in[k].cat == CAT_N) ++k;
+            } else break;
+        }
         if (k < n && in[k].cat == CAT_H) {
             ++k;
             if (k < n && (in[k].cat == CAT_ZWJ || in[k].cat == CAT_ZWNJ)) ++k;
@@ -121,7 +134,7 @@ static void moveGlyph(CscdOtBuffer* buf, Info* in, size_t from, size_t to) {
 /* Whether the font has a form of the feature for the glyphs a and b (a consonant and a halant, in
  * either order): HarfBuzz's test of which consonants take below-base and post-base forms. */
 static bool wouldSubstitute(const CscdFontFace* face, uint32_t script, const char* feature, uint16_t a, uint16_t b) {
-    CscdOtGlyph gs[2] = {{a, 0, ~0u, 0, 0, false, 0, 0, 0, 0}, {b, 1, ~0u, 0, 0, false, 0, 0, 0, 0}};
+    CscdOtGlyph gs[2] = {{.glyph = a, .cluster = 0, .mask = ~0u}, {.glyph = b, .cluster = 1, .mask = ~0u}};
     CscdOtBuffer tmp = {0};
     cscdVecAppend(&tmp, gs, 2);
     const CscdOtFeature f = {tag(feature), 1, ~0u};
@@ -151,7 +164,7 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
     for (size_t s = 0; s < len;) {
         const size_t e = syllableEnd(in, s, len);
         const Script* sc = scriptFor(in[s].cp);
-        if (e - s < 2 || !sc || (in[s].cat != CAT_C && in[s].cat != CAT_RA)) {
+        if (e - s < 2 || !sc || (in[s].cat != CAT_C && in[s].cat != CAT_RA && in[s].cat != CAT_V)) {
             for (size_t k = s; k < e; ++k) buf->items[k].cluster = buf->items[s].cluster;
             s = e;
             continue;
@@ -170,7 +183,7 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
         int nc = 0;
         size_t tail = e;
         for (size_t k = start; k < e; ++k) {
-            if ((in[k].cat == CAT_C || in[k].cat == CAT_RA) && nc < 32) cons[nc++] = k;
+            if ((in[k].cat == CAT_C || in[k].cat == CAT_RA || (k == start && in[k].cat == CAT_V)) && nc < 32) cons[nc++] = k;
             if (in[k].cat == CAT_M || in[k].cat == CAT_SM) { tail = k; break; }
         }
         if (!nc) { s = e; continue; }
@@ -179,11 +192,21 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
         while (bi > 0 && in[cons[bi] - 1].cat == CAT_H) {
             const uint16_t h = buf->items[cons[bi] - 1].glyph, c = buf->items[cons[bi]].glyph;
             if (!wouldSubstitute(face, script, "blwf", h, c) && !wouldSubstitute(face, script, "blwf", c, h) &&
-                !wouldSubstitute(face, script, "pstf", h, c) && !wouldSubstitute(face, script, "pstf", c, h))
+                !wouldSubstitute(face, script, "pstf", h, c) && !wouldSubstitute(face, script, "pstf", c, h) &&
+                !wouldSubstitute(face, script, "pref", h, c))
                 break;
             --bi;
         }
         const size_t base = cons[bi];
+        buf->items[base].mask |= M_BASE;
+        /* (a consonant after the base with a pre-base form, its halant with it: pref, the glyph it makes moved before
+         * the base after the features) */
+        for (int c = bi + 1; c < nc; ++c)
+            if (in[cons[c] - 1].cat == CAT_H &&
+                wouldSubstitute(face, script, "pref", buf->items[cons[c] - 1].glyph, buf->items[cons[c]].glyph)) {
+                buf->items[cons[c] - 1].mask |= M_PREF;
+                buf->items[cons[c]].mask |= M_PREF;
+            }
         for (int c = 0; c < nc; ++c) {
             const size_t k = cons[c];
             const size_t partEnd = c + 1 < nc ? cons[c + 1] : tail;
@@ -192,7 +215,14 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
             if (k > base) buf->items[k - 1].mask |= m; /* (the halant before it) */
             for (size_t q = k; q < partEnd; ++q) buf->items[q].mask |= m;
         }
-        /* pre-base matras before the consonants (after the reph) */
+        /* Telugu's and Kannada's matras before the below-base consonants; pre-base matras before the consonants (after
+         * the reph) */
+        if (sc->baseFirst && bi + 1 < nc) {
+            size_t at = base + 1;
+            if (at < e && in[at].cat == CAT_N) ++at;
+            for (size_t k = tail; k < e; ++k)
+                if (in[k].cat == CAT_M && beforeSub(in[k].cp)) moveGlyph(buf, in, k, at++);
+        }
         for (size_t k = tail; k < e; ++k)
             if (in[k].pos == POS_PRE) {
                 moveGlyph(buf, in, k, start);
@@ -208,7 +238,10 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
     apply(face, script, buf, "akhn", ~0u);
     apply(face, script, buf, "rphf", M_RPHF);
     apply(face, script, buf, "rkrf", ~0u);
-    apply(face, script, buf, "pref", M_PSTF);
+    for (size_t i = 0; i < buf->len; ++i) buf->items[i].substituted = false;
+    apply(face, script, buf, "pref", M_PREF);
+    for (size_t i = 0; i < buf->len; ++i)
+        if ((buf->items[i].mask & M_PREF) && !buf->items[i].substituted) buf->items[i].mask &= ~(uint32_t)M_PREF;
     apply(face, script, buf, "blwf", M_BLWF);
     apply(face, script, buf, "abvf", ~0u);
     apply(face, script, buf, "half", M_HALF);
@@ -229,6 +262,31 @@ bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
             CscdOtGlyph r = buf->items[s];
             memmove(&buf->items[s], &buf->items[s + 1], (to - s) * sizeof *buf->items);
             buf->items[to] = r;
+        }
+        s = e;
+    }
+    /* 3b. a pre-base form (pref made it) before the base, and the consonants before it, after a matra or halant */
+    for (size_t s = 0; s < buf->len;) {
+        size_t e = s + 1;
+        while (e < buf->len && buf->items[e].cluster == buf->items[s].cluster) ++e;
+        size_t base = e, pref = e;
+        for (size_t k = s; k < e; ++k) {
+            if ((buf->items[k].mask & M_BASE) && base == e) base = k;
+            if ((buf->items[k].mask & M_PREF) && k > base && pref == e) pref = k;
+        }
+        if (pref < e) {
+            size_t to = base;
+            while (to > s) {
+                const Category c = categoryOf(buf->items[to - 1].ch);
+                if (c == CAT_M || c == CAT_H) break;
+                --to;
+            }
+            if (to > s && categoryOf(buf->items[to - 1].ch) == CAT_H && to < e &&
+                (categoryOf(buf->items[to].ch) == CAT_ZWJ || categoryOf(buf->items[to].ch) == CAT_ZWNJ))
+                ++to;
+            const CscdOtGlyph g = buf->items[pref];
+            memmove(&buf->items[to + 1], &buf->items[to], (pref - to) * sizeof *buf->items);
+            buf->items[to] = g;
         }
         s = e;
     }

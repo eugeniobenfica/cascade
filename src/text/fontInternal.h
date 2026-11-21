@@ -26,6 +26,8 @@ struct CscdFontFaceImpl {
     uint32_t locaLen;
     uint32_t cmapSub;
     int cmapFormat;
+    bool cmapMac, cmapTurkish; /* (a Macintosh platform cmap: its codes Mac OS Roman's, or Turkish's) */
+    uint32_t cmap14;           /* the format 14 subtable (variation sequences), 0: none */
     int numHMetrics, locaFormat;
     bool cff;
     CSCD_VEC(KernTable) kernTables; /* kern format 0 subtables: where their sorted pairs are, how many */
@@ -76,6 +78,7 @@ typedef struct CscdOtGlyph {
     bool substituted;    /* a substitution has made it (set by the substitutions; a shaper may clear it) */
     int32_t xAdvance, xOffset, yOffset;
     int32_t attach;      /* a mark attached to another glyph: how far back it is (0: none) */
+    int32_t cursive;     /* joined to another glyph by cursive attachment: where its parent is (relative; 0: none) */
 } CscdOtGlyph;
 typedef CSCD_VEC(CscdOtGlyph) CscdOtBuffer;
 
@@ -87,7 +90,10 @@ typedef struct CscdOtFeature { uint32_t tag; int value; uint32_t mask; } CscdOtF
  * 'DFLT' and 'latn' tried when the font has none for it). The buffer's glyphs come in with their
  * advances (xAdvance) set. */
 void cscdOtSubstitute(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n);
-void cscdOtPosition(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n);
+/* (rtl: the text runs right to left, the buffer in its reading order: cursive attachment joins each glyph to the one
+ * before it in the reading order, on its left) */
+void cscdOtPosition(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n,
+                    bool rtl);
 /* Indic scripts (fontIndic.c): the syllables reordered and the features applied in their stages;
  * cps: the characters, by cluster. False (nothing done) for other scripts. */
 bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, const CscdOtFeature* features, size_t n);
@@ -110,6 +116,14 @@ bool cscdMyanmarShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* b
  * pre-base glyphs reordered; false (nothing done) for another script. */
 bool cscdUseScript(uint32_t script);
 bool cscdUseShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n);
+/* The glyph of a character and the variation selector after it, by the font's format 14 cmap (font.c): the
+ * sequence's glyph, the character's own when it takes its default one, 0 when the font has not the sequence. */
+uint16_t cscdFontFaceVariantGlyph(const CscdFontFace* face, uint32_t cp, uint32_t selector);
+/* A whole Brotli stream (RFC 7932) decoded, appended to out (brotli.c); false (out as it was) when it is not a valid one
+ * or would make more than maxSize bytes. */
+bool cscdBrotliDecode(const uint8_t* data, size_t size, CscdBytes* out, size_t maxSize);
+/* A WOFF2 file unwrapped into the font (or collection) it holds, in out (fontWoff2.c); false when it is not one. */
+bool cscdWoff2Unwrap(const uint8_t* data, size_t size, CscdBytes* out);
 /* The GDEF class of a glyph (0 when the font says nothing). */
 int cscdOtGlyphClass(const CscdFontFace* face, uint16_t glyph);
 bool cscdOtHasPositioning(const CscdFontFace* face);

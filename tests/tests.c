@@ -8,6 +8,7 @@
 #include "../src/core/thread.h"        /* (internal: the parallel loops) */
 #include "../src/image/imageInternal.h"  /* (internal: the decoders' size limit) */
 #include "../src/paint/canvasInternal.h"  /* (internal: shadows blurred whole, to compare) */
+bool cscdBrotliDecode(const uint8_t* data, size_t size, CscdBytes* out, size_t maxSize); /* (internal: src/text/brotli.c) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2409,6 +2410,8 @@ static void testBidiFields(void) {
  * the results expected are HarfBuzz's for the same font). */
 #include "testFont.inc"
 #include "testFontPlain.inc"
+#include "testFontCmaps.inc"
+#include "testCompressed.inc"
 
 static const CscdShapedGlyph* shapedVisible(const CscdShapedGlyphVec* v, size_t i) {
     for (size_t k = 0; k < v->len; ++k)
@@ -2541,6 +2544,53 @@ static void testScriptShapers(void) {
     cscdFontShape(CSCD_SV("\xEE\x80\x80\xEE\x80\x81"), &font, 0, 0, &out);
     const uint16_t context[] = {65, 68, 67};
     CHECK(glyphsAre(&out, context, 3));
+    /* Indic: a consonant with a below-base form after a halant is not the base (KA VIRAMA RA: KA, rakar 72, not half
+     * KA and RA); Kannada's AA before the below-base NA (KA VIRAMA NA AA: KA 73, AA 76, NA below 77), and a vowel
+     * taking one (A VIRAMA NA: A 78, NA below) */
+    cscdFontShape(CSCD_SV("\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB0"), &font, 0, 0, &out);
+    const uint16_t rakar[] = {17, 72};
+    CHECK(glyphsAre(&out, rakar, 2));
+    cscdFontShape(CSCD_SV("\xE0\xB2\x95\xE0\xB3\x8D\xE0\xB2\xA8\xE0\xB2\xBE"), &font, 0, 0, &out);
+    const uint16_t kannada[] = {73, 76, 77};
+    CHECK(glyphsAre(&out, kannada, 3));
+    cscdFontShape(CSCD_SV("\xE0\xB2\x85\xE0\xB3\x8D\xE0\xB2\xA8"), &font, 0, 0, &out);
+    const uint16_t vowel[] = {78, 77};
+    CHECK(glyphsAre(&out, vowel, 2));
+    /* Telugu GHA VIRAMA RA: RA's pre-base form (82) before GHA (79) */
+    cscdFontShape(CSCD_SV("\xE0\xB0\x98\xE0\xB1\x8D\xE0\xB0\xB0"), &font, 0, 0, &out);
+    const uint16_t telugu[] = {82, 79};
+    CHECK(glyphsAre(&out, telugu, 2));
+    /* variation sequences (format 14): A VS1 its own glyph (A.alt 3), B VS1 the default one (B 4); the selector shows
+     * nothing */
+    cscdFontShape(CSCD_SV("A\xEF\xB8\x80" "B\xEF\xB8\x80"), &font, 0, 0, &out);
+    const uint16_t sequences[] = {3, 4};
+    CHECK(glyphsAre(&out, sequences, 2));
+    /* a Macintosh cmap in Mac OS Turkish (A 1, G breve 2, A ring 3), and a format 13 one (U+4E00.. 1, A 2) */
+    CscdFontFace* mac = cscdFontFaceLoad(NULL, kTestFontMac, sizeof kTestFontMac, 0);
+    CscdFontFace* f13 = cscdFontFaceLoad(NULL, kTestFont13, sizeof kTestFont13, 0);
+    CHECK(mac && f13);
+    if (mac && f13) {
+        CHECK(cscdFontFaceGlyphIndex(mac, 'A') == 1 && cscdFontFaceGlyphIndex(mac, 0x11E) == 2 && cscdFontFaceGlyphIndex(mac, 0xC5) == 3);
+        CHECK(cscdFontFaceGlyphIndex(mac, 0x131) == 0 && cscdFontFaceGlyphIndex(mac, 'B') == 0);
+        CHECK(cscdFontFaceGlyphIndex(f13, 0x4E00) == 1 && cscdFontFaceGlyphIndex(f13, 0x4E0F) == 1 && cscdFontFaceGlyphIndex(f13, 'A') == 2);
+        CHECK(cscdFontFaceGlyphIndex(f13, 0x4E10) == 0);
+    }
+    if (mac) cscdFontFaceFree(mac);
+    if (f13) cscdFontFaceFree(f13);
+    /* cursive attachment (cuA 70 exits at 300,100; cuB 71 enters at 50,0), as HarfBuzz places them: left to right the
+     * second moved onto the first's exit (y up 100); right to left, in Arabic, the first (on the right) at its entry */
+    cscdFontShape(CSCD_SV("\xEE\x80\x82\xEE\x80\x83"), &font, 0, 0, &out);
+    CHECK(out.len == 2 && out.items[0].glyph == 70 && out.items[1].glyph == 71);
+    if (out.len == 2) {
+        CHECK(fabsf(out.items[0].x) < 0.01f && fabsf(out.items[0].advance - 300) < 0.01f);
+        CHECK(fabsf(out.items[1].x - 250) < 0.01f && fabsf(out.items[1].y + 100) < 0.01f && fabsf(out.items[1].advance - 350) < 0.01f);
+    }
+    cscdFontShapeRtl(CSCD_SV("\xD9\x85\xD9\x86"), &font, 0, 0, &out);
+    CHECK(out.len == 2 && out.items[0].glyph == 71 && out.items[1].glyph == 70);
+    if (out.len == 2) {
+        CHECK(fabsf(out.items[0].x) < 0.01f && fabsf(out.items[0].y + 100) < 0.01f);
+        CHECK(fabsf(out.items[1].x + 250) < 0.01f && fabsf(out.items[1].y) < 0.01f);
+    }
     cscdVecFree(&out);
 }
 
@@ -3455,9 +3505,45 @@ static void testCffFont(void) {
     CHECK(fabs(r.w - 2 * rx) < 30 && fabs(r.h - 2 * ry) < 2);
     cscdPathFree(&p);
     cscdFontFaceFree(f);
-    /* WOFF2 is not read: its files are turned away */
+    /* WOFF2: the test font, glyf, loca and hmtx transformed, read back as it was (every glyph's outline and advance, the
+     * characters' glyphs); something that only starts like one turned away */
+    CscdFontFace* ttf = cscdFontFaceLoad(NULL, kTestFont, sizeof kTestFont, 0);
+    CscdFontFace* w2 = cscdFontFaceLoad(NULL, kTestFontWoff2, sizeof kTestFontWoff2, 0);
+    CHECK(ttf && w2);
+    if (ttf && w2) {
+        CHECK(ttf->numGlyphs == w2->numGlyphs && ttf->unitsPerEm == w2->unitsPerEm);
+        int same = 0;
+        for (int g = 0; g < ttf->numGlyphs && g < w2->numGlyphs; ++g) {
+            CscdPath a = {0}, b = {0};
+            cscdFontFaceOutline(ttf, (uint16_t)g, &a);
+            cscdFontFaceOutline(w2, (uint16_t)g, &b);
+            bool eq = a.points.len == b.points.len && a.verbs.len == b.verbs.len &&
+                      cscdFontFaceAdvance(ttf, (uint16_t)g) == cscdFontFaceAdvance(w2, (uint16_t)g);
+            for (size_t i = 0; eq && i < a.points.len; ++i) eq = a.points.items[i].x == b.points.items[i].x && a.points.items[i].y == b.points.items[i].y;
+            same += eq;
+            cscdPathFree(&a);
+            cscdPathFree(&b);
+        }
+        CHECK(same == ttf->numGlyphs);
+        CHECK(cscdFontFaceGlyphIndex(w2, 'A') == cscdFontFaceGlyphIndex(ttf, 'A') && cscdFontFaceGlyphIndex(w2, 'A') != 0);
+    }
+    if (ttf) cscdFontFaceFree(ttf);
+    if (w2) cscdFontFaceFree(w2);
     static const uint8_t woff2[64] = {'w', 'O', 'F', '2', 0, 1, 0, 0};
     CHECK(cscdFontFaceLoad(NULL, woff2, sizeof woff2, 0) == NULL);
+    uint8_t broken[sizeof kTestFontWoff2];
+    memcpy(broken, kTestFontWoff2, sizeof broken);
+    broken[sizeof broken - 40] ^= 0x5A; /* (in the Brotli stream) */
+    CscdFontFace* bad = cscdFontFaceLoad(NULL, broken, sizeof broken, 0);
+    if (bad) cscdFontFaceFree(bad); /* (whatever it makes of it: no crash, no read past it) */
+    /* Brotli: a text with words from the dictionary; a stream cut short, or longer than allowed, fails */
+    CscdBytes text = {0};
+    CHECK(cscdBrotliDecode(kBrotliStream, sizeof kBrotliStream, &text, 1 << 20) && text.len == sizeof kBrotliText &&
+          !memcmp(text.items, kBrotliText, sizeof kBrotliText));
+    text.len = 0;
+    CHECK(!cscdBrotliDecode(kBrotliStream, sizeof kBrotliStream - 3, &text, 1 << 20) && text.len == 0);
+    CHECK(!cscdBrotliDecode(kBrotliStream, sizeof kBrotliStream, &text, 100));
+    cscdVecFree(&text);
 }
 
 /* What the pages below read. */

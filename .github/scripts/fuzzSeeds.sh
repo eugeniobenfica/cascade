@@ -36,6 +36,13 @@ image)
 font)
   fixtures 'k(Pixels|Sbix|Cbdt)Font'
   cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "$dir/"
+  # the shaping tests' font, as it is and as WOFF2 (glyf, loca and hmtx transformed; a Brotli stream)
+  python3 - "$dir" <<'EOF'
+import re, sys
+for inc, name in (("tests/testFont.inc", "kTestFont"), ("tests/testCompressed.inc", "kTestFontWoff2")):
+    body = re.search(r"unsigned char %s\[\] = \{([^}]*)\}" % name, open(inc).read()).group(1)
+    open("%s/%s" % (sys.argv[1], name), "wb").write(bytes(int(b, 16) for b in body.split(",") if b.strip()))
+EOF
   ;;
 zlib)
   printf '\170\234\003\000\000\000\000\001' > "$dir/empty"

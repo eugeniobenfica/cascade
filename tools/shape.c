@@ -5,7 +5,8 @@
  *
  * Each line of cases.txt is a text as hex code points ("0E01 0E33"); each line out is its glyphs, in the order shown,
  * as "glyph:cluster@x,y+advance" in font units, separated by spaces (cluster: the index of the first code point the
- * glyph stands for). A glyph from another font than this one (a fallback) shows as "?". */
+ * glyph stands for). A glyph from another font than this one (a fallback) shows as "?"; a character that shows
+ * nothing (a variation selector, a joiner) is left out. */
 #include "cascade/cascade.h"
 #include "cascade/font.h"
 
@@ -63,12 +64,15 @@ int main(int argc, char** argv) {
         }
         if (rtl) cscdFontShapeRtl(cscdStrSv(&text), &font, 0, 0, &out);
         else cscdFontShape(cscdStrSv(&text), &font, 0, 0, &out);
+        bool first = true;
         for (size_t i = 0; i < out.len; ++i) {
             const CscdShapedGlyph* g = &out.items[i];
+            if (!g->glyph && g->advance == 0) continue; /* (a character that shows nothing) */
             size_t c = 0;
             while (c + 1 < starts.len && starts.items[c + 1] <= g->cluster) ++c;
-            if (g->face != face && g->glyph) printf("%s?:%zu", i ? " " : "", c);
-            else printf("%s%u:%zu@%ld,%ld+%ld", i ? " " : "", (unsigned)g->glyph, c, lroundf(g->x), lroundf(-g->y), lroundf(g->advance));
+            if (g->face != face && g->glyph) printf("%s?:%zu", first ? "" : " ", c);
+            else printf("%s%u:%zu@%ld,%ld+%ld", first ? "" : " ", (unsigned)g->glyph, c, lroundf(g->x), lroundf(-g->y), lroundf(g->advance));
+            first = false;
         }
         printf("\n");
         fflush(stdout);

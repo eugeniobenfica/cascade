@@ -1842,7 +1842,8 @@ static void buildAt(SheetBuilder* b, const RawRule* r, CscdSv media, CscdSv pare
                     }
                     CscdStr lu = cscdLower(url);
                     CscdSv l = cscdStrSv(&lu);
-                    bool ok = url.len && (cscdSvEndsC(l, ".ttf") || cscdSvEndsC(l, ".otf") || cscdSvEndsC(l, ".ttc") || cscdSvEndsC(l, ".woff"));
+                    bool ok = url.len && (cscdSvEndsC(l, ".ttf") || cscdSvEndsC(l, ".otf") || cscdSvEndsC(l, ".ttc") || cscdSvEndsC(l, ".woff") ||
+                                        cscdSvEndsC(l, ".woff2"));
                     cscdStrFree(&lu);
                     if (ok) {
                         cscdStrFree(&f.src);

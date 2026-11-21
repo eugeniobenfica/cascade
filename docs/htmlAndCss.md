@@ -33,7 +33,7 @@ Event handling, the forms and the rest of the interface are in [The interface](i
 
 - **Syntax**: the full tokenizer (CSS Syntax 3), nesting, `@media` (with ranges and
   `prefers-color-scheme`), `@container` (size queries, named containers), `@import`,
-  `@supports`, `@font-face` (TrueType, OpenType CFF, WOFF), `@keyframes`.
+  `@supports`, `@font-face` (TrueType, OpenType CFF, WOFF, WOFF2), `@keyframes`.
 - **Selectors** (level 4): type, class, id, attribute (all operators), `:is`, `:where`, `:not`,
   `:has`, `:nth-child(An+B)` and its kin, `:hover`, `:active`, `:focus`, `:focus-visible`,
   `:focus-within`, `:checked`, `:disabled`, `:empty`, `::before`, `::after`, `::placeholder`,
@@ -43,7 +43,7 @@ Event handling, the forms and the rest of the interface are in [The interface](i
 - **Generated content**: `::before` / `::after` with strings, `attr()`, quotes, images and CSS
   counters (`counter-reset`, `counter-set`, `counter-increment`, `counter()`, `counters()` in
   any list style).
-- **Fonts**: the system's fonts and `@font-face` (TrueType, OpenType, WOFF), `font-family`
+- **Fonts**: the system's fonts and `@font-face` (TrueType, OpenType, WOFF, WOFF2), `font-family`
   lists with fallback per character, weights, italics, `font-stretch`, and **variable fonts**
   (`fvar`, `avar`, `gvar`, `HVAR`: `font-weight` moves the weight axis, `font-stretch` the width,
   the size the optical size, `font-variation-settings` any axis; `font-optical-sizing`).
@@ -154,9 +154,8 @@ Tailwind build, Pico.css, a theme) since they rely on flexbox, grid, colors and 
 
 1. **Download what the page links** — the CSS, its images and fonts — into your project, and
    link them with relative paths. Links to a CDN do not load.
-2. **Fonts.** `@font-face` (or `cscdViewAddFont`) takes TrueType, OpenType and WOFF files. WOFF2,
-   what Google Fonts serves to browsers, is not read: download the font's TrueType files, or convert
-   it once (`fonttools ttLib.woff2 decompress`).
+2. **Fonts.** `@font-face` (or `cscdViewAddFont`) takes TrueType, OpenType, WOFF and WOFF2 files:
+   download the ones the page links (Google Fonts serves WOFF2 to browsers).
 3. **Behaviour in code.** Components whose behaviour is JavaScript (Bootstrap's dropdowns,
    modals, tabs) show their look but do not act on their own: wire them with events, or use
    cascade's own menus, dialogs and popovers.

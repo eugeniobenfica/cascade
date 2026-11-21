@@ -78,7 +78,7 @@ add_library(${BT} STATIC
   # layout: block, inline, flex, grid and table
   src/layout/layout.c src/layout/flexgrid.c
   # text: fonts, OpenType shaping, bidirectional text
-  src/text/font.c src/text/fontOt.c src/text/fontIndic.c src/text/fontArabic.c src/text/fontScripts.c src/text/fontUse.c src/text/fontColor.c src/text/fontVar.c src/text/bidi.c src/text/lineBreak.c src/text/grapheme.c
+  src/text/font.c src/text/fontOt.c src/text/fontIndic.c src/text/fontArabic.c src/text/fontScripts.c src/text/fontUse.c src/text/brotli.c src/text/fontWoff2.c src/text/fontColor.c src/text/fontVar.c src/text/bidi.c src/text/lineBreak.c src/text/grapheme.c
   # image: the decoders
   src/image/image.c src/image/imageVp8.c
   # paint: the canvas, the rasterizer, painting the boxes

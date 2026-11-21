@@ -10,6 +10,7 @@ import os
 import random
 import subprocess
 import sys
+import unicodedata
 
 import uharfbuzz as hb
 
@@ -17,7 +18,8 @@ FONTS = "C:/Windows/Fonts" if os.name == "nt" else "/usr/share/fonts"
 
 
 def r(a, b):
-    return list(range(a, b + 1))
+    """The assigned characters from a to b."""
+    return [c for c in range(a, b + 1) if unicodedata.category(chr(c)) != "Cn"]
 
 
 # script: (font file, rtl, syllable parts: lists of code points a syllable takes 0..n of, in order, and words)
@@ -52,6 +54,18 @@ SCRIPTS = {
                 [(r(0x0D9A, 0x0DC6), 1, 1), ([0x0DCA], 0, 1), (r(0x0D9A, 0x0DC6), 0, 0),
                  ([0x0DCF] + r(0x0DD0, 0x0DD4) + [0x0DD6] + r(0x0DD8, 0x0DDF), 0, 1), ([0x0D82, 0x0D83], 0, 1)],
                 ["0DC1 0DCA 0DBB 0DD3", "0D9A 0DCA 0DC2 0DD9"]),
+    "devanagari": ("Nirmala.ttc:0", False,
+                   [(r(0x0915, 0x0939), 1, 1), ([0x094D], 0, 1), (r(0x0915, 0x0939), 0, 0), (r(0x093E, 0x094C), 0, 1),
+                    ([0x0901, 0x0902], 0, 1)],
+                   ["0915 094D 0937 093F", "0930 094D 0915 0940", "0926 094D 0935 093E"]),
+    "telugu": ("Nirmala.ttc:0", False,
+               [(r(0x0C15, 0x0C39), 1, 1), ([0x0C4D], 0, 1), (r(0x0C15, 0x0C39), 0, 0), (r(0x0C3E, 0x0C4C), 0, 1),
+                ([0x0C02], 0, 1)],
+               ["0C15 0C4D 0C37 0C3F", "0C38 0C4D 0C24 0C41"]),
+    "kannada": ("Nirmala.ttc:0", False,
+                [(r(0x0C95, 0x0CB9), 1, 1), ([0x0CCD], 0, 1), (r(0x0C95, 0x0CB9), 0, 0), (r(0x0CBE, 0x0CCC), 0, 1),
+                 ([0x0C82], 0, 1)],
+                ["0CA8 0CCD 0CA8 0CBE", "0C95 0CCD 0CB7 0CBF"]),
     "newtailue": ("ntailu.ttf", False,
                   [(r(0x1980, 0x19AB), 1, 1), (r(0x19B0, 0x19C0), 0, 1), (r(0x19C1, 0x19C7), 0, 1), ([0x19C8, 0x19C9], 0, 1)],
                   ["1991 19B1 19C8", "19B5 1980 19C1"]),

@@ -99,10 +99,11 @@ static void parseCff(CscdFontFace* face, uint32_t off, uint32_t len);
 static void bytesDtor(void* p) { cscdVecFree((CscdBytes*)p); }
 
 CscdFontFace* cscdFontFaceLoad(void* owner, const uint8_t* data, size_t size, int faceIndex) {
-    if (size >= 4 && u32(data) == tag("wOFF")) { /* WOFF: unwrapped, then as any other */
+    if (size >= 4 && (u32(data) == tag("wOFF") || u32(data) == tag("wOF2"))) { /* WOFF, WOFF2: unwrapped, then as any other */
         CscdBytes* sfnt = (CscdBytes*)cscdRcNew(sizeof(CscdBytes), bytesDtor);
         bool ok = false;
-        unwrapWoff(data, size, sfnt, &ok);
+        if (u32(data) == tag("wOFF")) unwrapWoff(data, size, sfnt, &ok);
+        else ok = cscdWoff2Unwrap(data, size, sfnt);
         CscdFontFace* f = ok ? cscdFontFaceLoad(sfnt, sfnt->items, sfnt->len, faceIndex) : NULL;
         cscdRelease(sfnt);
         return f;
@@ -213,14 +214,29 @@ CscdFontFace* cscdFontFaceLoad(void* owner, const uint8_t* data, size_t size, in
             int fmt = u16(base + so);
             /* the arrays a lookup reads must be in the font */
             if (fmt == 4 && !within(m, so + 16, 4u * u16(base + so + 6))) continue;
-            if (fmt == 12 && (u32(base + so + 12) > (m->size - so - 16) / 12)) continue;
+            if ((fmt == 12 || fmt == 13) && (u32(base + so + 12) > (m->size - so - 16) / 12)) continue;
+            if (fmt == 0 && !within(m, so + 6, 256)) continue;
+            if (fmt == 6 && !within(m, so + 10, 2u * u16(base + so + 8))) continue;
+            if (p == 0 && e == 5 && fmt == 14) {
+                m->cmap14 = so;
+                continue;
+            }
             int score = -1;
-            if (p == 3 && e == 10 && fmt == 12) score = 5;
-            else if (p == 0 && (e == 4 || e == 6) && fmt == 12) score = 4;
-            else if (p == 3 && e == 1 && fmt == 4) score = 3;
-            else if (p == 0 && fmt == 4) score = 2;
-            else if (p == 3 && e == 0 && fmt == 4) score = 1; /* symbol fonts */
-            if (score > best) { best = score; m->cmapSub = so; m->cmapFormat = fmt; }
+            if (p == 3 && e == 10 && fmt == 12) score = 9;
+            else if (p == 0 && (e == 4 || e == 6) && fmt == 12) score = 8;
+            else if ((p == 3 && e == 10) || (p == 0 && e == 6)) score = fmt == 13 ? 7 : -1; /* (many characters, one glyph) */
+            else if (p == 3 && e == 1 && fmt == 4) score = 6;
+            else if (p == 0 && fmt == 4) score = 5;
+            else if ((p == 0 || (p == 3 && e == 1)) && fmt == 6) score = 4;
+            else if (p == 3 && e == 0 && fmt == 4) score = 3; /* symbol fonts */
+            else if (p == 1 && e == 0 && (fmt == 0 || fmt == 6)) score = 2; /* Mac OS Roman (or Turkish, by its language) */
+            if (score > best) {
+                best = score;
+                m->cmapSub = so;
+                m->cmapFormat = fmt;
+                m->cmapMac = p == 1;
+                m->cmapTurkish = p == 1 && u16(base + so + 4) == 18; /* (Turkish: Macintosh language 17, plus one) */
+            }
         }
     }
     if (m->kern) {
@@ -526,6 +542,90 @@ float cscdFontFaceKerning(const CscdFontFace* face, uint16_t left, uint16_t righ
     return 0;
 }
 
+/* Mac OS Roman's characters 0x80..0xFF (a Macintosh platform cmap, encoding 0, is in its codes), and where Mac OS
+ * Turkish (the same encoding, its subtable's language Turkish) has others */
+static const uint16_t kMacRoman[128] = {
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1,
+    0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
+    0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3,
+    0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
+    0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF,
+    0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+    0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211,
+    0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
+    0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB,
+    0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
+    0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA,
+    0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+    0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1,
+    0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+    0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC,
+    0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
+};
+static const uint16_t kMacTurkish[][2] = {{0xDA, 0x011E}, {0xDB, 0x011F}, {0xDC, 0x0130}, {0xDD, 0x0131},
+                                          {0xDE, 0x015E}, {0xDF, 0x015F}, {0xF5, 0xF8A0}};
+
+/* A character's code in a Macintosh cmap (Roman, or Turkish): -1 when it has none. */
+static int macCode(uint32_t cp, bool turkish) {
+    if (cp < 0x80) return (int)cp;
+    if (turkish)
+        for (size_t i = 0; i < CSCD_COUNT(kMacTurkish); ++i)
+            if (kMacTurkish[i][1] == cp) return kMacTurkish[i][0];
+    for (int i = 0; i < 128; ++i) {
+        if (kMacRoman[i] != cp) continue;
+        bool replaced = false; /* (a code Turkish gives another character) */
+        for (size_t k = 0; turkish && k < CSCD_COUNT(kMacTurkish); ++k) replaced = replaced || kMacTurkish[k][0] == 0x80 + i;
+        if (!replaced) return 0x80 + i;
+    }
+    return -1;
+}
+
+/* The glyph of a character followed by a variation selector, by the font's format 14 cmap: the glyph the sequence
+ * has, the character's own when the sequence takes its default glyph, 0 when the font has not the sequence. */
+uint16_t cscdFontFaceVariantGlyph(const CscdFontFace* face, uint32_t cp, uint32_t selector) {
+    const CscdFontFaceImpl* m = face->impl;
+    const uint32_t t = m->cmap14;
+    if (!t || !within(m, t, 10)) return 0;
+    const uint32_t n = u32(m->base + t + 6);
+    if (n > (m->size - t - 10) / 11) return 0;
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        const uint8_t* r = m->base + t + 10 + 11 * mid;
+        const uint32_t vs = (uint32_t)r[0] << 16 | (uint32_t)r[1] << 8 | r[2];
+        if (vs < selector) { lo = mid + 1; continue; }
+        if (vs > selector) { hi = mid; continue; }
+        const uint32_t def = u32(r + 3), nondef = u32(r + 7);
+        if (nondef && within(m, t + nondef, 4)) {
+            const uint32_t k = u32(m->base + t + nondef);
+            uint32_t a = 0, b = k <= (m->size - t - nondef - 4) / 5 ? k : 0;
+            while (a < b) {
+                const uint32_t c = a + (b - a) / 2;
+                const uint8_t* e = m->base + t + nondef + 4 + 5 * c;
+                const uint32_t u = (uint32_t)e[0] << 16 | (uint32_t)e[1] << 8 | e[2];
+                if (u == cp) {
+                    const uint16_t g = u16(e + 3);
+                    return g < face->numGlyphs ? g : 0;
+                }
+                if (u < cp) a = c + 1;
+                else b = c;
+            }
+        }
+        if (def && within(m, t + def, 4)) {
+            const uint32_t k = u32(m->base + t + def);
+            if (k > (m->size - t - def - 4) / 4) return 0;
+            for (uint32_t i = 0; i < k; ++i) { /* (ranges: a start and how many more) */
+                const uint8_t* e = m->base + t + def + 4 + 4 * i;
+                const uint32_t start = (uint32_t)e[0] << 16 | (uint32_t)e[1] << 8 | e[2];
+                if (cp >= start && cp <= start + e[3]) return cscdFontFaceGlyphIndex(face, cp);
+                if (start > cp) break;
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
 uint16_t cscdFontFaceGlyphIndex(const CscdFontFace* face, uint32_t cp) {
     CscdFontFaceImpl* m = face->impl;
     cscdMutexLock(&m->cacheMutex);
@@ -573,7 +673,14 @@ uint16_t cscdFontFaceGlyphIndex(const CscdFontFace* face, uint32_t cp) {
             cscdMutexUnlock(&m->cacheMutex);
             return 0;
         }
-    } else if (m->cmapFormat == 12) {
+    } else if (m->cmapFormat == 0 || m->cmapFormat == 6) {
+        const int code = m->cmapMac ? macCode(cp, m->cmapTurkish) : (cp <= 0xFFFF ? (int)cp : -1);
+        if (m->cmapFormat == 0 && code >= 0 && code < 256) g = t[6 + code];
+        else if (m->cmapFormat == 6 && code >= 0) {
+            const int first = u16(t + 6), count = u16(t + 8);
+            if (code >= first && code - first < count) g = u16(t + 10 + 2 * (code - first));
+        }
+    } else if (m->cmapFormat == 12 || m->cmapFormat == 13) {
         uint32_t n = u32(t + 12);
         int64_t lo = 0, hi = (int64_t)n - 1;
         while (lo <= hi) {
@@ -582,7 +689,7 @@ uint16_t cscdFontFaceGlyphIndex(const CscdFontFace* face, uint32_t cp) {
             uint32_t a = u32(r), b = u32(r + 4);
             if (cp < a) hi = mid - 1;
             else if (cp > b) lo = mid + 1;
-            else { g = (uint16_t)(u32(r + 8) + (cp - a)); break; }
+            else { g = (uint16_t)(u32(r + 8) + (m->cmapFormat == 12 ? cp - a : 0)); break; }
         }
     }
     if (g >= face->numGlyphs) g = 0;
@@ -2218,7 +2325,7 @@ static int markZeroing(uint32_t script) {
 }
 
 static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdFont* font, float letterSpacing, float wordSpacing,
-                     const OtFeatureVec* feats, bool handTabular, float* pen, CscdShapedGlyphVec* out) {
+                     const OtFeatureVec* feats, bool handTabular, bool rtl, float* pen, CscdShapedGlyphVec* out) {
     CscdFontFace* face = items[from].face;
     const float sc = font->size / face->unitsPerEm;
     CscdOtBuffer* buf = &shapeBuf;
@@ -2257,7 +2364,7 @@ static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdF
     if (zeroMarks == ZERO_EARLY)
         for (size_t i = 0; i < buf->len; ++i)
             if (cscdOtGlyphClass(face, buf->items[i].glyph) == 3) buf->items[i].xAdvance = 0;
-    if (cscdOtHasPositioning(face)) cscdOtPosition(face, script, buf, feats->items, feats->len);
+    if (cscdOtHasPositioning(face)) cscdOtPosition(face, script, buf, feats->items, feats->len, rtl);
     else if (!(font->settings && font->settings->noKerning))
         for (size_t i = 1; i < buf->len; ++i) buf->items[i - 1].xAdvance += (int32_t)lroundf(cscdFontFaceKerning(face, buf->items[i - 1].glyph, buf->items[i].glyph));
     if (zeroMarks == ZERO_LATE)
@@ -2275,7 +2382,7 @@ static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdF
             if (items[scan].invisible) emit(out, (CscdShapedGlyph){0, face, *pen, 0, 0, items[scan].cluster}, *pen, -1);
         const ShapeItem* it = &items[from + g->cluster];
         cscdVecPush(at, (uint32_t)out->len);
-        if (isIgnorable(it->cp) && it->glyph == g->glyph) { /* (left over: shows nothing) */
+        if (isIgnorable(g->ch) && !g->substituted) { /* (left over: shows nothing; its own character, not its cluster's) */
             emit(out, (CscdShapedGlyph){0, face, *pen, 0, 0, it->cluster}, *pen, -1);
             continue;
         }
@@ -2394,6 +2501,18 @@ static void shapeText(CscdSv text, const CscdFont* font, float letterSpacing, fl
         ++i;
     }
     cscdVecFree(&cps);
+    /* variation sequences the font has (its format 14 cmap): the character's glyph for the sequence, the selector
+     * showing nothing */
+    for (size_t i = 0; i + 1 < items->len; ++i) {
+        ShapeItem *it = &items->items[i], *vs = &items->items[i + 1];
+        const bool selector = (vs->cp >= 0xFE00 && vs->cp <= 0xFE0F) || (vs->cp >= 0xE0100 && vs->cp <= 0xE01EF);
+        if (!selector || !it->face->impl->cmap14 || vs->face != it->face) continue;
+        const uint16_t g = cscdFontFaceVariantGlyph(it->face, it->cp, vs->cp);
+        if (!g) continue;
+        it->glyph = g;
+        vs->glyph = 0;
+        vs->invisible = true;
+    }
     /* (scripts: the shared characters take the script around them) */
     uint32_t last = 0;
     for (size_t i = 0; i < items->len; ++i) {
@@ -2432,7 +2551,7 @@ static void shapeText(CscdSv text, const CscdFont* font, float letterSpacing, fl
         size_t j = i + 1;
         while (j < items->len && items->items[j].face == items->items[i].face && items->items[j].script == items->items[i].script) ++j;
         const bool hand = font->tabularNums && !tabularGlyphs && items->items[i].face == font->face;
-        shapeRun(items->items, i, j, font, letterSpacing, wordSpacing, &shapeFeatures, hand, &pen, out);
+        shapeRun(items->items, i, j, font, letterSpacing, wordSpacing, &shapeFeatures, hand, rtl, &pen, out);
         i = j;
     }
     if (!rtl || !out->len) return;

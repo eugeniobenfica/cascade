@@ -134,15 +134,24 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] Shapers for Thai and Lao (SARA AM), Hangul jamo (composed into the font's syllables), Khmer, Myanmar and the
       Universal Shaping Engine (`src/text/fontScripts.c`, `fontUse.c`; its categories, decompositions and combining
       classes from the Unicode Indic properties by `tools/genUse.py`): Tibetan, Javanese, Balinese, Tai Tham, Sinhala,
-      New Tai Lue and the other Brahmic scripts. `tools/compareShaping.py` shapes random syllables of nine scripts with
-      Windows' fonts by cascade and HarfBuzz: 1,373 of 1,376 the same (Lao: a mark on a mark, 3). Unicode's
-      text-rendering-tests run in CI (`tools/textRenderingTests.py`): every Balinese and Tai Tham case as HarfBuzz
-      shapes it; the failures listed in `tests/textRenderingTests.known`, and no others.
-- [ ] GPOS cursive attachment (lookup type 3): Nasta'liq's letters on their heights (SHARAN-1).
-- [ ] cmap formats 13 and 14 (variation sequences) and the Macintosh platform's cmaps (CMAP-1..4).
-- [ ] Kannada as HarfBuzz shapes it (SHKNDA-1..3: the Indic shaper's below-base and post-base forms).
-- [ ] Lao: a tone mark over another mark, positioned as HarfBuzz does (its mark-to-mark).
-- [ ] WOFF2.
+      New Tai Lue and the other Brahmic scripts. `tools/compareShaping.py` shapes random syllables of twelve scripts
+      with Windows' fonts by cascade and HarfBuzz: 1,830 of 1,833 the same (Lao: a mark on a mark, 3). Unicode's
+      text-rendering-tests run in CI (`tools/textRenderingTests.py`): every Arabic, Balinese, Kannada, Tai Tham and
+      cmap case as HarfBuzz shapes it (and the Mac Turkish cmaps HarfBuzz misses); the failures listed in
+      `tests/textRenderingTests.known` (Apple's AAT tables, cases where HarfBuzz disagrees with the suite), no others.
+- [x] GPOS cursive attachment (lookup type 3), as HarfBuzz joins the glyphs and moves a chain across the line:
+      Nasta'liq's letters on their heights (SHARAN-1).
+- [x] cmap formats 13 (many characters, one glyph) and 14 (variation sequences: a character and its selector, one
+      glyph), and the Macintosh platform's (formats 0 and 6, Mac OS Roman, and Turkish by the subtable's language).
+- [x] Kannada and Telugu as HarfBuzz shapes them: their matras before the below-base consonants, a vowel taking a
+      consonant after a halant, `pref` forms moved before the base. (Fixed on the way: which consonant is the base was
+      tested with the glyphs' masks empty since the last change, so every Indic syllable took its last one.)
+- [ ] Lao: a tone mark over another mark, positioned as HarfBuzz does (3 of 153 random texts; HarfBuzz's final
+      places do not follow from the mark offsets its lookups give, as far as its trace shows).
+- [x] WOFF2 (`src/text/fontWoff2.c`): its Brotli stream (`src/text/brotli.c`, RFC 7932, the static dictionary and
+      tables by `tools/genBrotli.py`, each checked against the RFC's CRC-32), glyf, loca and hmtx transforms undone,
+      collections. 26 fonts (Latin, CJK, Indic, emoji, CFF) and 3 collections compressed by fontTools read back the
+      same glyph for glyph; 600 Brotli streams of every quality and window decode; `@font-face` takes `.woff2`.
 
 ### Platform and API
 

@@ -7,6 +7,16 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **WOFF2**: `@font-face` and `cscdFontFaceLoad` read WOFF2 files (what Google Fonts and most sites serve), with a
+  Brotli decoder of the library's own (RFC 7932: the static dictionary, every context mode, large windows), the
+  glyf, loca and hmtx transforms and font collections.
+- **Cursive attachment** (GPOS type 3): Nasta'liq and other cursive scripts join and step along their baselines.
+- **More cmaps**: variation sequences (format 14: a CJK character and its variation selector draw the variant), format
+  13, and Macintosh fonts (Mac OS Roman and Turkish).
+- **Kannada and Telugu** as HarfBuzz shapes them (matras before the below-base forms, pre-base forms, a vowel with a
+  consonant); fixed: since the last change every Indic syllable took its last consonant as its base.
+- Fixed: a default ignorable character (ZWNJ, ZWJ) in a syllable showed the font's glyph for it.
+
 - **More scripts shaped by their models**: Thai and Lao (SARA AM split, NIKHAHIT before the tone marks), Hangul jamo
   (composed into the syllables the font has), Khmer and Myanmar (syllables reordered: pre-base vowels, Coeng Ro, Medial
   Ra, kinzi; their features syllable by syllable), and the **Universal Shaping Engine** for Tibetan, Javanese, Balinese,

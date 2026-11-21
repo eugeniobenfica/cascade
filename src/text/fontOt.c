@@ -157,6 +157,7 @@ typedef struct Ctx {
     int depth;
     size_t maxLen;    /* how long substitutions may make the text */
     size_t* work;     /* subtables that may still be tried in this run (shared by the copies) */
+    bool rtl;         /* (positioning: the text runs right to left) */
 } Ctx;
 
 static void refreshClass(Ctx* c, CscdOtGlyph* g) { g->gclass = (uint8_t)cscdOtGlyphClass(c->face, g->glyph); }
@@ -646,6 +647,80 @@ static bool gposMark(Ctx* c, uint32_t st, size_t pos, int type) {
     return attachMark(c, pos, (size_t)b, markArray, mi, anchor);
 }
 
+/* Cursive attachment (as HarfBuzz does it): the glyph at pos, by its entry anchor, joined to the exit anchor of the glyph
+ * before it. Along the line the two meet by their advances (the first's ends at its exit, or, right to left, the
+ * second's at its entry); across it one is moved to the other: the glyph before onto the one after when the lookup
+ * says RightToLeft, the other way when not; a chain of them keeps its root on the baseline (the moves add up after the
+ * lookups: cursiveOffsets). */
+static void reverseCursive(CscdOtBuffer* buf, size_t i, size_t newParent, int depth) {
+    const int32_t chain = buf->items[i].cursive;
+    if (!chain || depth > 64) return;
+    buf->items[i].cursive = 0;
+    const size_t j = (size_t)((ptrdiff_t)i + chain);
+    if (j == newParent || j >= buf->len) return;
+    reverseCursive(buf, j, newParent, depth + 1);
+    buf->items[j].yOffset = -buf->items[i].yOffset;
+    buf->items[j].cursive = -chain;
+}
+
+static bool gposCursive(Ctx* c, uint32_t st, size_t pos) {
+    if (u16(c->b + st) != 1 || !within(c->m, st, 6)) return false;
+    const uint32_t cov = st + u16(c->b + st + 2);
+    const uint16_t count = u16(c->b + st + 4);
+    const int ci = coverIndex(c, cov, c->buf->items[pos].glyph);
+    if (ci < 0 || ci >= count || !within(c->m, st + 6 + 4u * ci, 4)) return false;
+    const uint16_t entry = u16(c->b + st + 6 + 4 * ci);
+    if (!entry) return false;
+    const ptrdiff_t p = prevOf(c, (ptrdiff_t)pos);
+    if (p < 0) return false;
+    const int pi = coverIndex(c, cov, c->buf->items[p].glyph);
+    if (pi < 0 || pi >= count || !within(c->m, st + 6 + 4u * pi, 4)) return false;
+    const uint16_t exit = u16(c->b + st + 6 + 4 * pi + 2);
+    if (!exit) return false;
+    int entryX, entryY, exitX, exitY;
+    if (!anchorAt(c, st + entry, &entryX, &entryY) || !anchorAt(c, st + exit, &exitX, &exitY)) return false;
+    const size_t i = (size_t)p, j = pos;
+    CscdOtGlyph *gi = &c->buf->items[i], *gj = &c->buf->items[j];
+    if (!c->rtl) {
+        gi->xAdvance = exitX + gi->xOffset;
+        const int32_t d = entryX + gj->xOffset;
+        gj->xAdvance -= d;
+        gj->xOffset -= d;
+    } else {
+        const int32_t d = exitX + gi->xOffset;
+        gi->xAdvance -= d;
+        gi->xOffset -= d;
+        gj->xAdvance = entryX + gj->xOffset;
+    }
+    size_t child = i, parent = j;
+    int32_t y = entryY - exitY;
+    if (!(c->flag & 1)) { /* (not RightToLeft: the glyph after moves onto the one before) */
+        child = j;
+        parent = i;
+        y = -y;
+    }
+    reverseCursive(c->buf, child, parent, 0);
+    CscdOtGlyph *ch = &c->buf->items[child], *pa = &c->buf->items[parent];
+    ch->cursive = (int32_t)((ptrdiff_t)parent - (ptrdiff_t)child);
+    ch->yOffset = y;
+    if (pa->cursive == -ch->cursive) { /* (the parent was attached to the child: they part) */
+        pa->cursive = 0;
+        pa->yOffset = 0;
+    }
+    return true;
+}
+
+/* The moves across the line of cursive chains added up, each glyph by its parent's (once all lookups are done). */
+static void cursiveOffset(CscdOtBuffer* buf, size_t i, int depth) {
+    const int32_t chain = buf->items[i].cursive;
+    if (!chain) return;
+    buf->items[i].cursive = 0;
+    const size_t j = (size_t)((ptrdiff_t)i + chain);
+    if (j >= buf->len || depth > 64) return;
+    cursiveOffset(buf, j, depth + 1);
+    buf->items[i].yOffset += buf->items[j].yOffset;
+}
+
 /* ---- lookups ---- */
 
 static uint32_t lookupOffset(const Ctx* c, uint16_t index) {
@@ -680,6 +755,7 @@ static bool applySubtable(Ctx* c, uint16_t type, uint32_t st, size_t pos, size_t
     switch (type) {
     case 1: return gposSingle(c, st, pos);
     case 2: return gposPair(c, st, pos, next);
+    case 3: return gposCursive(c, st, pos);
     case 4: case 5: case 6: return gposMark(c, st, pos, type);
     case 7: return applyContext(c, st, pos, next);
     case 8: return applyChain(c, st, pos, next);
@@ -702,14 +778,17 @@ static bool applyAt(Ctx* c, uint16_t lookupIndex, size_t pos, size_t* next) {
     return false;
 }
 
-static void run(const CscdFontFace* face, bool gpos, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* feats, size_t n) {
+static void run(const CscdFontFace* face, bool gpos, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* feats, size_t n, bool rtl) {
     const CscdFontFaceImpl* m = face->impl;
     const uint32_t table = gpos ? m->gpos : m->gsub;
     if (!table || !buf->len) return;
     const PlanLookupVec* plan = planFor(face, table, script, feats, n);
     size_t work = cscdMaxz(buf->len * WORK_PER_GLYPH, MIN_WORK);
     Ctx c = {face, m, m->base, table + u16(m->base + table + 8), gpos, buf, 0, 0, 1, 0, cscdMaxz(buf->len * MAX_GROWTH, MIN_MAX_GLYPHS), &work};
+    c.rtl = rtl;
     for (size_t i = 0; i < buf->len; ++i) if (!buf->items[i].gclass) refreshClass(&c, &buf->items[i]);
+    if (gpos)
+        for (size_t i = 0; i < buf->len; ++i) buf->items[i].cursive = 0;
     for (size_t l = 0; l < plan->len; ++l) {
         const PlanLookup* pl = &plan->items[l];
         const uint32_t lk = lookupOffset(&c, pl->index);
@@ -732,9 +811,11 @@ static void run(const CscdFontFace* face, bool gpos, uint32_t script, CscdOtBuff
 }
 
 void cscdOtSubstitute(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n) {
-    run(face, false, script, buf, features, n);
+    run(face, false, script, buf, features, n, false);
 }
 
-void cscdOtPosition(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n) {
-    run(face, true, script, buf, features, n);
+void cscdOtPosition(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const CscdOtFeature* features, size_t n,
+                    bool rtl) {
+    run(face, true, script, buf, features, n, rtl);
+    for (size_t i = 0; i < buf->len; ++i) cursiveOffset(buf, i, 0);
 }

@@ -79,7 +79,7 @@ platform offers something through it and nothing else. Today, there is none.
 | :--- | :--- |
 | **CSS** | Selectors 4, custom properties, `calc()`, `@media`, `@container`, animations, transitions, nesting, 3D transforms |
 | **Layout** | Flow, flexbox, grid with subgrid, tables, floats, sticky, writing modes, bidirectional text |
-| **Text** | OpenType shaping, color and variable fonts, WOFF, the system's fonts |
+| **Text** | OpenType shaping, color and variable fonts, WOFF and WOFF2, the system's fonts |
 | **Images** | PNG, JPEG, BMP, GIF and WebP (animated too), inline SVG |
 | **Drawing** | A 2D canvas in any element, from C: paths, gradients, images, text, shadows |
 | **Platform** | Native windows, input methods, clipboard, drag and drop, touch, screen readers |
