@@ -1,0 +1,1 @@
+tests/abi/cascade.abi -diff linguist-generated eol=lf
