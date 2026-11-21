@@ -89,6 +89,13 @@ void cscdOtPosition(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf
 /* Indic scripts (fontIndic.c): the syllables reordered and the features applied in their stages;
  * cps: the characters, by cluster. False (nothing done) for other scripts. */
 bool cscdIndicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, const CscdOtFeature* features, size_t n);
+/* Arabic (fontArabic.c): the joined forms by the font's isol, fina, medi and init in their stages, then rlig, then the
+ * rest of the features; cps (ncps of them): the run's characters, by cluster. False (nothing done) for another script,
+ * or a font without those features, which takes the Unicode presentation forms instead (cscdArabicPresentationForms,
+ * before its features). */
+bool cscdArabicShape(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, size_t ncps, const CscdOtFeature* features,
+                     size_t n);
+void cscdArabicPresentationForms(const CscdFontFace* face, uint32_t script, CscdOtBuffer* buf, const uint32_t* cps, size_t ncps);
 /* The GDEF class of a glyph (0 when the font says nothing). */
 int cscdOtGlyphClass(const CscdFontFace* face, uint16_t glyph);
 bool cscdOtHasPositioning(const CscdFontFace* face);

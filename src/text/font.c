@@ -1978,77 +1978,6 @@ CscdFontFace* cscdFontFallback(uint32_t cp, int weight, bool italic, const CscdF
     return found;
 }
 
-/* ---- Arabic letters joined ------------------------------------------------------------------------
- * Each letter takes the form its neighbours ask for (isolated, final, initial, medial) as one of the
- * Unicode presentation forms, which the usual fonts carry; lam followed by alef becomes their
- * ligature. Applied to text in its logical order (before right-to-left text is turned around). */
-
-typedef struct ArabicForms { uint16_t letter, isolated; uint8_t forms; } ArabicForms; /* forms: 1 (none), 2 (right-joining), 4 (dual) */
-static const ArabicForms kArabic[] = {
-    {0x0621, 0xFE80, 1}, {0x0622, 0xFE81, 2}, {0x0623, 0xFE83, 2}, {0x0624, 0xFE85, 2}, {0x0625, 0xFE87, 2}, {0x0626, 0xFE89, 4},
-    {0x0627, 0xFE8D, 2}, {0x0628, 0xFE8F, 4}, {0x0629, 0xFE93, 2}, {0x062A, 0xFE95, 4}, {0x062B, 0xFE99, 4}, {0x062C, 0xFE9D, 4},
-    {0x062D, 0xFEA1, 4}, {0x062E, 0xFEA5, 4}, {0x062F, 0xFEA9, 2}, {0x0630, 0xFEAB, 2}, {0x0631, 0xFEAD, 2}, {0x0632, 0xFEAF, 2},
-    {0x0633, 0xFEB1, 4}, {0x0634, 0xFEB5, 4}, {0x0635, 0xFEB9, 4}, {0x0636, 0xFEBD, 4}, {0x0637, 0xFEC1, 4}, {0x0638, 0xFEC5, 4},
-    {0x0639, 0xFEC9, 4}, {0x063A, 0xFECD, 4}, {0x0641, 0xFED1, 4}, {0x0642, 0xFED5, 4}, {0x0643, 0xFED9, 4}, {0x0644, 0xFEDD, 4},
-    {0x0645, 0xFEE1, 4}, {0x0646, 0xFEE5, 4}, {0x0647, 0xFEE9, 4}, {0x0648, 0xFEED, 2}, {0x0649, 0xFEEF, 2}, {0x064A, 0xFEF1, 4},
-    {0x067E, 0xFB56, 4}, {0x0686, 0xFB7A, 4}, {0x0698, 0xFB8A, 2}, {0x06A9, 0xFB8E, 4}, {0x06AF, 0xFB92, 4}, {0x06CC, 0xFBFC, 4},
-};
-
-static const ArabicForms* arabicForms(uint32_t cp) {
-    for (size_t i = 0; i < CSCD_COUNT(kArabic); ++i)
-        if (kArabic[i].letter == cp) return &kArabic[i];
-    return NULL;
-}
-
-/* (harakat and other marks: they sit on a letter and let it join across them) */
-static bool arabicTransparent(uint32_t cp) { return (cp >= 0x064B && cp <= 0x065F) || cp == 0x0670 || (cp >= 0x06D6 && cp <= 0x06ED); }
-static bool joinsNext(uint32_t cp) { const ArabicForms* f = arabicForms(cp); return cp == 0x0640 || (f && f->forms == 4); }
-static bool joinsPrevious(uint32_t cp) { const ArabicForms* f = arabicForms(cp); return cp == 0x0640 || (f && f->forms >= 2); }
-
-bool cscdArabicJoin(CscdSv text, CscdStr* out, CscdU32Vec* map) {
-    bool any = false;
-    for (size_t i = 0; i < text.len && !any; ++i) any = (unsigned char)text.ptr[i] == 0xD8 || (unsigned char)text.ptr[i] == 0xD9 || (unsigned char)text.ptr[i] == 0xDA || (unsigned char)text.ptr[i] == 0xDB;
-    if (!any) return false;
-    CscdU32Vec cps = {0}, at = {0};
-    for (size_t i = 0; i < text.len;) {
-        cscdVecPush(&at, (uint32_t)i);
-        cscdVecPush(&cps, cscdUtf8Next(text, &i));
-    }
-    for (size_t i = 0; i < cps.len; ++i) {
-        const uint32_t cp = cps.items[i];
-        const ArabicForms* f = arabicForms(cp);
-        uint32_t shown = cp;
-        size_t used = 1;
-        if (f) {
-            /* the neighbours that count (marks skipped) */
-            size_t p = i, n = i + 1;
-            while (p > 0 && arabicTransparent(cps.items[p - 1])) --p;
-            while (n < cps.len && arabicTransparent(cps.items[n])) ++n;
-            const bool before = p > 0 && joinsNext(cps.items[p - 1]) && joinsPrevious(cp);
-            if (cp == 0x0644 && n < cps.len) { /* lam alef */
-                const uint32_t a = cps.items[n];
-                const uint32_t lig = a == 0x0622 ? 0xFEF5 : a == 0x0623 ? 0xFEF7 : a == 0x0625 ? 0xFEF9 : a == 0x0627 ? 0xFEFB : 0;
-                if (lig) {
-                    shown = lig + (before ? 1 : 0);
-                    used = n - i + 1;
-                }
-            }
-            if (used == 1) {
-                const bool after = n < cps.len && joinsNext(cp) && joinsPrevious(cps.items[n]);
-                const int form = f->forms == 1 ? 0 : f->forms == 2 ? (before ? 1 : 0) : before && after ? 3 : before ? 1 : after ? 2 : 0;
-                shown = f->isolated + (uint32_t)form;
-            }
-        }
-        const size_t from = out->len;
-        cscdUtf8Append(out, shown);
-        for (size_t b = from; b < out->len; ++b) cscdVecPush(map, at.items[i]);
-        i += used - 1;
-    }
-    cscdVecFree(&cps);
-    cscdVecFree(&at);
-    return true;
-}
-
 /* ---- emoji fonts, settings ------------------------------------------------------------------------ */
 
 /* A color font with a glyph for cp: the "emoji" family first, then the fallback families whose
@@ -2201,8 +2130,6 @@ typedef CSCD_VEC(ShapeItem) ShapeItemVec;
 typedef CSCD_VEC(CscdOtFeature) OtFeatureVec;
 
 static CSCD_THREAD_LOCAL ShapeItemVec shapeItems;
-static CSCD_THREAD_LOCAL CscdStr shapeJoined;
-static CSCD_THREAD_LOCAL CscdU32Vec shapeMap;
 static CSCD_THREAD_LOCAL CscdOtBuffer shapeBuf;
 static CSCD_THREAD_LOCAL CscdU32Vec shapeOut;
 static CSCD_THREAD_LOCAL OtFeatureVec shapeFeatures;
@@ -2285,7 +2212,12 @@ static void shapeRun(const ShapeItem* items, size_t from, size_t to, const CscdF
     CscdU32Vec* cps = &shapeCps;
     cps->len = 0;
     for (size_t i = from; i < to; ++i) cscdVecPush(cps, items[i].cp);
-    if (!cscdIndicShape(face, script, buf, cps->items, feats->items, feats->len)) cscdOtSubstitute(face, script, buf, feats->items, feats->len);
+    /* (Indic and Arabic in their stages; a font with no Arabic forms of its own: the Unicode presentation forms) */
+    if (!cscdIndicShape(face, script, buf, cps->items, feats->items, feats->len) &&
+        !cscdArabicShape(face, script, buf, cps->items, cps->len, feats->items, feats->len)) {
+        cscdArabicPresentationForms(face, script, buf, cps->items, cps->len);
+        cscdOtSubstitute(face, script, buf, feats->items, feats->len);
+    }
     for (size_t i = 0; i < buf->len; ++i) buf->items[i].xAdvance = (int32_t)lroundf(cscdFontFaceAdvance(face, buf->items[i].glyph));
     if (cscdOtHasPositioning(face)) cscdOtPosition(face, script, buf, feats->items, feats->len);
     else if (!(font->settings && font->settings->noKerning))
@@ -2340,14 +2272,7 @@ static void shapeText(CscdSv text, const CscdFont* font, float letterSpacing, fl
     cscdVecClear(out);
     shapePens.len = shapeBases.len = 0;
     if (!font->face) return;
-    /* Arabic letters in their joined forms; clusters stay offsets in text */
-    const uint32_t* map = NULL;
-    cscdStrClear(&shapeJoined);
-    shapeMap.len = 0;
-    if (cscdArabicJoin(text, &shapeJoined, &shapeMap)) {
-        text = cscdStrSv(&shapeJoined);
-        map = shapeMap.items;
-    }
+    const uint32_t* map = NULL; /* (clusters: offsets in text) */
     /* 1. characters to glyphs, from the font or a fallback: an emoji from a color font, marks and
      * invisible characters from their base's font */
     ShapeItemVec* items = &shapeItems;

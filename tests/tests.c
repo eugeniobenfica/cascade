@@ -2408,11 +2408,86 @@ static void testBidiFields(void) {
 /* OpenType shaping, variations and color glyphs, on a font made for it (tools/makeTestFont.py;
  * the results expected are HarfBuzz's for the same font). */
 #include "testFont.inc"
+#include "testFontPlain.inc"
 
 static const CscdShapedGlyph* shapedVisible(const CscdShapedGlyphVec* v, size_t i) {
     for (size_t k = 0; k < v->len; ++k)
         if (v->items[k].glyph && i-- == 0) return &v->items[k];
     return NULL;
+}
+
+/* the glyphs shaped, in order (the visible ones), against want (n of them) */
+static bool glyphsAre(const CscdShapedGlyphVec* out, const uint16_t* want, size_t n) {
+    size_t k = 0;
+    for (size_t i = 0; i < out->len; ++i) {
+        if (!out->items[i].glyph) continue;
+        if (k >= n || out->items[i].glyph != want[k]) return false;
+        ++k;
+    }
+    return k == n;
+}
+
+/* Arabic: each letter in the form its neighbours ask for, made by the font's isol, init, medi and fina, lam alef by its
+ * rlig, a mark passed over; a font without them gets the Unicode presentation forms it has. */
+static void testArabicShaping(void) {
+    CscdFontFace* face = cscdFontFaceLoad(NULL, kTestFont, sizeof kTestFont, 0);
+    CscdFontFace* plainFace = cscdFontFaceLoad(NULL, kTestFontPlain, sizeof kTestFontPlain, 0);
+    CHECK(face && plainFace);
+    if (!face || !plainFace) return;
+    CscdFont font = cscdFontDefault();
+    font.face = face;
+    font.size = 1000;
+    CscdShapedGlyphVec out = {0};
+#define BEH "\xD8\xA8"
+#define ALEF "\xD8\xA7"
+#define LAM "\xD9\x84"
+#define FATHA "\xD9\x8E"
+    /* (the test font: beh 23, its init 24, medi 25, fina 26; alef 27, fina 28; lam 29 .. ; lam alef 33, final 34; fatha 35) */
+    cscdFontShape(CSCD_SV(BEH BEH BEH BEH), &font, 0, 0, &out);
+    const uint16_t w1[] = {24, 25, 25, 26};
+    CHECK(glyphsAre(&out, w1, 4));
+    cscdFontShape(CSCD_SV(BEH), &font, 0, 0, &out);
+    const uint16_t w2[] = {23};
+    CHECK(glyphsAre(&out, w2, 1));
+    cscdFontShape(CSCD_SV(ALEF BEH ALEF), &font, 0, 0, &out); /* (alef joins only what is before it) */
+    const uint16_t w3[] = {27, 24, 28};
+    CHECK(glyphsAre(&out, w3, 3));
+    cscdFontShape(CSCD_SV(LAM ALEF), &font, 0, 0, &out);
+    const uint16_t w4[] = {33};
+    CHECK(glyphsAre(&out, w4, 1));
+    cscdFontShape(CSCD_SV(BEH LAM ALEF), &font, 0, 0, &out);
+    const uint16_t w5[] = {24, 34};
+    CHECK(glyphsAre(&out, w5, 2));
+    cscdFontShape(CSCD_SV(BEH FATHA BEH), &font, 0, 0, &out); /* (the mark between them: they join across it) */
+    const uint16_t w6[] = {24, 35, 26};
+    CHECK(glyphsAre(&out, w6, 3));
+    cscdFontShape(CSCD_SV(BEH " " BEH), &font, 0, 0, &out); /* (a space: no joining across it) */
+    const uint16_t w7[] = {23, 1, 23};
+    CHECK(glyphsAre(&out, w7, 3));
+    /* the plain font: presentation forms (its glyphs: beh 2, isolated 3, final 4, initial 5, medial 6; lam alef 15, final 16) */
+    font.face = plainFace;
+    cscdFontShape(CSCD_SV(BEH BEH BEH BEH), &font, 0, 0, &out);
+    const uint16_t p1[] = {5, 6, 6, 4};
+    CHECK(glyphsAre(&out, p1, 4));
+    cscdFontShape(CSCD_SV(BEH), &font, 0, 0, &out);
+    const uint16_t p2[] = {3};
+    CHECK(glyphsAre(&out, p2, 1));
+    cscdFontShape(CSCD_SV(LAM ALEF), &font, 0, 0, &out);
+    const uint16_t p3[] = {15};
+    CHECK(glyphsAre(&out, p3, 1));
+    cscdFontShape(CSCD_SV(BEH LAM ALEF), &font, 0, 0, &out);
+    const uint16_t p4[] = {5, 16};
+    CHECK(glyphsAre(&out, p4, 2));
+    /* right to left: the same glyphs, out as shown (the last letter first) */
+    font.face = face;
+    cscdFontShapeRtl(CSCD_SV(BEH BEH ALEF), &font, 0, 0, &out);
+    const uint16_t r1[] = {28, 25, 24};
+    CHECK(glyphsAre(&out, r1, 3));
+#undef BEH
+#undef ALEF
+#undef LAM
+#undef FATHA
+    cscdVecFree(&out);
 }
 
 static void testOpenType(void) {
@@ -4393,6 +4468,7 @@ int main(void) {
     testBrokenImages();
     testAnimatedImages();
     testOpenType();
+    testArabicShaping();
     testBidiFields();
     testMoreCss();
     testBinding();

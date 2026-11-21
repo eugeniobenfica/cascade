@@ -127,7 +127,10 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] Grapheme clusters by UAX #29 (Unicode 16.0, `src/text/grapheme.c`, table by `tools/genGrapheme.py`): the caret,
       Backspace and Delete, touch handles and a field's wrapping step over a character as a reader sees it (accents,
       emoji sequences, flags, Indic conjuncts); all 1,093 lines of `GraphemeBreakTest.txt` pass, CI downloads it.
-- [ ] Arabic through the font's `init`/`medi`/`fina` features instead of the presentation-forms table.
+- [x] Arabic through the font's `isol`/`init`/`medi`/`fina` features in their stages, then `rlig`, by Unicode's joining
+      (`Joining_Type` of every code point, `tools/genArabicJoining.py`; `src/text/fontArabic.c`); a font without them
+      gets the presentation forms it has. The test font has Arabic glyphs and features, and a second one only
+      presentation forms.
 - [ ] Shapers for Thai, Khmer, Myanmar, Tibetan, Hangul jamo and the Universal Shaping Engine; run
       unicode-org/text-rendering-tests.
 - [ ] WOFF2.

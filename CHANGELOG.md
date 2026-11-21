@@ -7,6 +7,11 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Arabic shaped by the font**: each letter takes the form Unicode's joining asks for (every Arabic letter, not 42 of
+  them: Persian, Urdu, Kurdish...), made by the font's `isol`, `init`, `medi` and `fina` in their stages, then `rlig`
+  (lam alef) and the rest, as the OpenType Arabic model says; marks are passed over. A font without those features
+  gets the Unicode presentation forms it carries, as before. `cscdArabicJoin` joins by the same rules.
+
 - **Grapheme clusters by UAX #29** (Unicode 16.0): in a text field the caret moves over, and Backspace and Delete take,
   a character as a reader sees it: a letter and its accents, an emoji sequence, a flag, an Indic conjunct. The
   conformance file passes whole (1,093 lines; CI downloads it, `CASCADE_GRAPHEME_TEST`).
