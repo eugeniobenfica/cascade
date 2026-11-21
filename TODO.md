@@ -223,9 +223,9 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] A JS-free runner for WPT reftests in `css/` (`tests/wpt.c`): ten folders of a pinned commit (flexbox, grid,
       CSS2 margins, positioning, normal flow, floats, backgrounds), each test and its reference painted at 800x600 and
       compared within the test's fuzzy allowance; pages with scripts passed over, XHTML pages parsed as XML. The score
-      of each folder is in `tests/wpt.score` (2,113 of 3,307 run, from 846: a line of text is now whole pixels high,
-      its font's ascent and descent rounded as browsers round them; then the table fixup below); CI fails when a
-      folder passes fewer.
+      of each folder is in `tests/wpt.score` (2,309 of 3,307 run, from 846: a line of text is now whole pixels high,
+      its font's ascent and descent rounded as browsers round them; then the table fixup and SVG images below); CI
+      fails when a folder passes fewer.
 - [x] html5lib tree-construction tests (`tests/html5lib.c`: all 1,784 cases but the 8 that need scripting),
       css-parsing-tests (`tools/cssParsingTests.py`: 2,645 of 2,684; fixed on the way: lab() and lch() as CIE Lab,
       An+B by CSS Syntax, `3n - 1` was 3n+1, declarations named by an identifier only, `color(srgb ...)`), BidiTest
@@ -240,6 +240,11 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       by `cscdViewLoadFile`), and the table fixup is CSS 2.1's (17.2.1: text in a table is no longer dropped, a run of
       what is not a table's part goes in an anonymous row and cell, a row or cell outside a table in an anonymous one):
       2,054 WPT reftests to 2,113.
+- [x] SVG files as images (`<img src>`, `background-image`, `data:image/svg+xml`), drawn at the size they are shown,
+      their sizing as CSS Images has it for an image with only some of a width, a height and a ratio; percentages in
+      SVG shapes' geometry; a viewBox of no width or height draws nothing. css-backgrounds: 149 reftests to 339.
+- [ ] An image or inline SVG with a ratio but no width (only a viewBox) as wide as the space it has (CSS 2.1
+      10.3.2), not 300px: css-flexbox's align-items-007.
 - [ ] The WPT reftests that still fail, folder by folder (`cascade-wpt-tests` with `CASCADE_WPT_LIST=1` lists them,
       `CASCADE_WPT_DUMP=1` saves the first's two pictures).
 

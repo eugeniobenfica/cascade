@@ -20,6 +20,9 @@ static CscdImage* viewImageOf(CscdView* v, CscdAnimatedImage* anim) {
     return img;
 }
 
+static void svgImageFree(SvgImage* s);
+static void svgForget(CscdView* v, const CscdImage* img);
+
 static CscdImage* viewDecodeImage(CscdView* v, const uint8_t* data, size_t size) { return viewImageOf(v, cscdDecodeAnimatedImage(data, size)); }
 
 /* ---- the images held ------------------------------------------------------------------------------------------------
@@ -62,6 +65,7 @@ static void imagesMakeRoom(CscdView* v, const ImageEntry* keep) {
         CscdStrMapSlot* s = (CscdStrMapSlot*)idle.items[i];
         ImageEntry* e = (ImageEntry*)s->val.p;
         v->imageBytes -= e->bytes;
+        svgForget(v, e->img);
         cscdRelease(e->img);
         cscdFree(e);
         s->val.p = NULL;
@@ -193,6 +197,8 @@ void viewClearImages(CscdView* v) {
         cscdFree(e);
     }
     cscdStrMapClear(&v->images);
+    for (size_t i = 0; i < v->svgImages.len; ++i) svgImageFree((SvgImage*)v->svgImages.items[i]);
+    cscdVecFree(&v->svgImages);
     v->imageBytes = 0;
     for (size_t i = 0; i < v->playing.len; ++i) cscdRelease(v->playing.items[i].anim);
     v->playing.len = 0;
@@ -219,6 +225,164 @@ bool viewAdvanceImages(CscdView* v, double t) {
     return changed;
 }
 
+/* ---- SVG files as images -----------------------------------------------------------------------------------------
+ * An SVG file (img src, background-image...) is a picture drawn at whatever size it is shown: the image the page holds
+ * is a raster of it at its own size (its width and height, or what its viewBox's ratio and the default object size
+ * give), for what takes pixels as they are; painting asks for it at the size it draws it (viewSvgRaster), drawn by a
+ * view of its own. What it has of an intrinsic size (a width, a height, a ratio: each, or none) is the sizing's. */
+
+/* a length as an SVG root's width or height gives it, in pixels; false for none (or a percentage) */
+static bool svgLength(CscdSv v, float* out) {
+    v = cscdSvTrim(v);
+    if (!v.len || cscdSvEndsC(v, "%")) return false;
+    char* c = cscdSvDupC(v);
+    char* end = NULL;
+    const double n = strtod(c, &end);
+    const CscdSv unit = cscdSvTrim(cscdSv(end ? end : ""));
+    cscdFree(c);
+    double k = 1;
+    if (cscdSvIEqC(unit, "in")) k = 96;
+    else if (cscdSvIEqC(unit, "cm")) k = 96 / 2.54;
+    else if (cscdSvIEqC(unit, "mm")) k = 96 / 25.4;
+    else if (cscdSvIEqC(unit, "pt")) k = 96.0 / 72;
+    else if (cscdSvIEqC(unit, "pc")) k = 16;
+    else if (cscdSvIEqC(unit, "em")) k = 16;
+    else if (unit.len && !cscdSvIEqC(unit, "px")) return false;
+    if (!(n * k >= 0) || n * k > 1e6) return false;
+    *out = (float)(n * k);
+    return true;
+}
+
+static void svgImageFree(SvgImage* s) {
+    cscdStrFree(&s->source);
+    cscdStrFree(&s->baseDir);
+    cscdRelease(s->raster);
+    cscdFree(s);
+}
+
+/* the picture drawn w by h (pixels: transparent where it draws nothing) */
+static CscdImage* svgRender(const SvgImage* s, int w, int h) {
+    CscdImage* out = cscdImageNew(w, h);
+    if (s->blank) return out;
+    CscdDocument* x = cscdParseXHTML(cscdStrSv(&s->source));
+    CscdElement* root = cscdDocumentElement(x);
+    if (!root || root->ns_ != CSCD_NS_SVG || !cscdElementIs(root, "svg")) {
+        cscdDocumentFree(x);
+        return out;
+    }
+    /* (one with a width and a height but no viewBox scales as if it had one of that size, as browsers draw it) */
+    if (!cscdElementHasAttributeC(root, "viewBox") && (s->has & SVG_HAS_WIDTH) && (s->has & SVG_HAS_HEIGHT) && s->w > 0 && s->h > 0) {
+        CscdStr vb = cscdStrf("0 0 %g %g", (double)s->w, (double)s->h);
+        cscdElementSetAttribute(root, CSCD_SV("viewBox"), cscdStrSv(&vb));
+        cscdStrFree(&vb);
+    }
+    /* (its size is the one it is drawn at: its own width and height go) */
+    cscdElementRemoveAttribute(root, CSCD_SV("width"));
+    cscdElementRemoveAttribute(root, CSCD_SV("height"));
+    CscdView* iv = cscdViewNew();
+    cscdViewOnWarning(iv, NULL, NULL);
+    cscdViewSetTransparent(iv, true);
+    cscdViewSetViewport(iv, (float)w, (float)h, 1);
+    /* (the picture fills the view: its width and height are the size it is drawn at, as an image's are) */
+    cscdViewLoadHTML(iv, CSCD_SV("<!DOCTYPE html><style>html, body { margin: 0; padding: 0; overflow: hidden }"
+                                 " body > svg { display: block; width: 100vw !important; height: 100vh !important }</style><body>"),
+                     cscdStrSv(&s->baseDir));
+    CscdNode* moved = cscdNodeRemoveChild(root->node.parent, &root->node);
+    CscdElement* body = cscdDocumentBody(iv->doc);
+    if (moved && !(body && cscdNodeAppendChild(&body->node, moved))) cscdNodeDestroy(moved);
+    cscdDocumentFree(x);
+    cscdViewPaint(iv, out, false);
+    cscdViewFree(iv);
+    return out;
+}
+
+/* An SVG file's image (NULL when it is not one): its intrinsic size read, a raster at its default size made. */
+static CscdImage* svgImageOf(CscdView* v, CscdSv text, CscdSv baseDir) {
+    CscdDocument* x = cscdParseXHTML(text);
+    CscdElement* root = cscdDocumentElement(x);
+    if (!root || root->ns_ != CSCD_NS_SVG || !cscdElementIs(root, "svg")) {
+        cscdDocumentFree(x);
+        return NULL;
+    }
+    SvgImage* s = CSCD_NEW(SvgImage);
+    s->source = cscdStrDup(text);
+    s->baseDir = cscdStrDup(baseDir);
+    if (svgLength(cscdElementAttrC(root, "width"), &s->w)) s->has |= SVG_HAS_WIDTH;
+    if (svgLength(cscdElementAttrC(root, "height"), &s->h)) s->has |= SVG_HAS_HEIGHT;
+    {
+        float vb[4];
+        int n = 0;
+        CscdSv b = cscdElementAttrC(root, "viewBox");
+        while (n < 4 && b.len) {
+            b = cscdSvTrim(b);
+            size_t k = 0;
+            while (k < b.len && b.ptr[k] != ' ' && b.ptr[k] != ',' && b.ptr[k] != '\t' && b.ptr[k] != '\n') ++k;
+            char* c = cscdSvDupC(cscdSvSub(b, 0, k));
+            vb[n++] = (float)atof(c);
+            cscdFree(c);
+            b = cscdSvFrom(b, k < b.len ? k + 1 : k);
+        }
+        if (n == 4 && (vb[2] <= 0 || vb[3] <= 0)) s->blank = true;
+        if ((s->has & SVG_HAS_WIDTH) && (s->has & SVG_HAS_HEIGHT)) {
+            if (s->w > 0 && s->h > 0) {
+                s->ratio = s->w / s->h;
+                s->has |= SVG_HAS_RATIO;
+            }
+        } else if (n == 4 && vb[2] > 0 && vb[3] > 0) {
+            s->ratio = vb[2] / vb[3];
+            s->has |= SVG_HAS_RATIO;
+        }
+    }
+    cscdDocumentFree(x);
+    /* its default size: what it has, the rest from its ratio or the default object size (300 by 150) */
+    float w = s->w, h = s->h;
+    const bool hw = s->has & SVG_HAS_WIDTH, hh = s->has & SVG_HAS_HEIGHT, hr = s->has & SVG_HAS_RATIO;
+    if (!hw && !hh) {
+        w = 300;
+        h = hr ? w / s->ratio : 150;
+    } else if (!hw) w = hr ? h * s->ratio : 300;
+    else if (!hh) h = hr ? w / s->ratio : 150;
+    const int iw = cscdMaxi(1, cscdMini(4096, (int)lroundf(w))), ih = cscdMaxi(1, cscdMini(4096, (int)lroundf(h)));
+    s->img = svgRender(s, iw, ih);
+    cscdVecPush(&v->svgImages, s);
+    return s->img;
+}
+
+const SvgImage* viewSvgImage(const CscdView* v, const CscdImage* img) {
+    if (!img) return NULL;
+    for (size_t i = 0; i < v->svgImages.len; ++i)
+        if (((const SvgImage*)v->svgImages.items[i])->img == img) return (const SvgImage*)v->svgImages.items[i];
+    return NULL;
+}
+
+CscdImage* viewSvgRaster(CscdView* v, const CscdImage* img, int w, int h) {
+    SvgImage* s = (SvgImage*)viewSvgImage(v, img);
+    if (!s || w <= 0 || h <= 0 || (size_t)w * (size_t)h > (size_t)1 << 24) return NULL;
+    if (w == img->width && h == img->height) return s->img;
+    if (!s->raster || s->rw != w || s->rh != h) {
+        cscdRelease(s->raster);
+        s->raster = svgRender(s, w, h);
+        s->rw = w;
+        s->rh = h;
+    }
+    return s->raster;
+}
+
+static void svgForget(CscdView* v, const CscdImage* img) {
+    for (size_t i = v->svgImages.len; i-- > 0;)
+        if (((SvgImage*)v->svgImages.items[i])->img == img) {
+            svgImageFree((SvgImage*)v->svgImages.items[i]);
+            cscdVecRemove(&v->svgImages, i);
+        }
+}
+
+/* whether a file or data is an SVG one (by its name or type, or by its start) */
+static bool looksSvg(CscdSv url, CscdSv data) {
+    if (cscdSvEndsC(url, ".svg") || cscdSvEndsC(url, ".SVG") || cscdSvStartsC(url, "data:image/svg+xml")) return true;
+    const CscdSv head = cscdSvSub(data, 0, cscdMinz(data.len, 512));
+    return cscdSvFind(head, CSCD_SV("<svg"), 0) != CSCD_NPOS;
+}
+
 CscdImage* viewImage(CscdView* v, CscdSv url) {
     CscdMapVal* known = cscdStrMapGet(&v->images, url);
     if (known && known->p) {
@@ -243,13 +407,30 @@ CscdImage* viewImage(CscdView* v, CscdSv url) {
                 if (bits >= 8) { bits -= 8; cscdVecPush(&bytes, (uint8_t)((acc >> bits) & 0xFF)); }
             }
             img = viewDecodeImage(v, bytes.items, bytes.len);
+            if (!img && looksSvg(url, (CscdSv){(const char*)bytes.items, bytes.len})) img = svgImageOf(v, (CscdSv){(const char*)bytes.items, bytes.len}, CSCD_SV(""));
             cscdVecFree(&bytes);
+        } else if (comma != CSCD_NPOS && looksSvg(url, CSCD_SV(""))) { /* (data:image/svg+xml,<svg ...>, percent-encoded) */
+            CscdStr text = {0};
+            for (size_t i = comma + 1; i < url.len; ++i) {
+                if (url.ptr[i] == '%' && i + 2 < url.len && cscdIsXDigit(url.ptr[i + 1]) && cscdIsXDigit(url.ptr[i + 2])) {
+                    const char hex[3] = {url.ptr[i + 1], url.ptr[i + 2], 0};
+                    cscdStrAppendChar(&text, (char)strtol(hex, NULL, 16));
+                    i += 2;
+                } else cscdStrAppendChar(&text, url.ptr[i]);
+            }
+            img = svgImageOf(v, cscdStrSv(&text), CSCD_SV(""));
+            cscdStrFree(&text);
         }
     } else {
         CscdStr file = {0};
         const bool read = cscdReadFile(url, &file);
         if (read && file.len >= kDecodeAfter && viewOn(v, CSCD_FEATURE_ASYNC_IMAGES)) later = decodeLater(v, url, &file);
-        if (read && !later) img = viewDecodeImage(v, (const uint8_t*)file.ptr, file.len);
+        if (read && !later && looksSvg(url, cscdStrSv(&file))) {
+            CscdStr dir = cscdDirName(url);
+            img = svgImageOf(v, cscdStrSv(&file), cscdStrSv(&dir));
+            cscdStrFree(&dir);
+        }
+        if (read && !later && !img) img = viewDecodeImage(v, (const uint8_t*)file.ptr, file.len);
         cscdStrFree(&file);
         if (!img && !later) viewWarnf(v, CSCD_FEATURE_WARN_FILES, "cannot load the image %.*s", (int)url.len, url.ptr);
     }
@@ -276,6 +457,7 @@ void cscdViewSetImage(CscdView* v, CscdSv url, CscdImage* img) {
             cscdVecRemove(&v->playing, i);
         }
     v->imageBytes -= e->bytes;
+    if (e->img != img) svgForget(v, e->img);
     cscdRelease(e->img);
     e->img = (CscdImage*)cscdRetain(img);
     e->bytes = imageBytesOf(img);

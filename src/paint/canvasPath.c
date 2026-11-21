@@ -881,6 +881,7 @@ static void accLine(CscdAccumulator* acc, CscdPoint p0, CscdPoint p1) {
         const float top = cscdMaxf((float)Y, p0.y), bottom = cscdMinf((float)(Y + 1), p1.y);
         float x = top == p0.y ? p0.x : p0.x + (top - p0.y) * dxdy;
         float xnext = bottom == p1.y ? p1.x : p0.x + (bottom - p0.y) * dxdy;
+        if (!isfinite(x) || !isfinite(xnext)) continue; /* (an edge too steep for floats: none of it) */
         float dy = bottom - top;
         float d = dy * dir;
         float xa = cscdMinf(x, xnext), xb = cscdMaxf(x, xnext);
@@ -929,6 +930,7 @@ static size_t clipX(CscdPoint a0, CscdPoint a1, float edge, Seg* out) {
 }
 
 void cscdAccAddLine(CscdAccumulator* acc, CscdPoint p0, CscdPoint p1) {
+    if (!isfinite(p0.x) || !isfinite(p0.y) || !isfinite(p1.x) || !isfinite(p1.y)) return; /* (a path's NaN or infinity: no edge) */
     /* (x relative to the area's left side, y kept on the device) */
     p0.x -= acc->x0;
     p1.x -= acc->x0;

@@ -530,7 +530,7 @@ static void markAttributeChanged(CscdElement* e, CscdSv name, const CscdStr* old
 }
 
 void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value) {
-    CscdStr n = cscdLower(name);
+    CscdStr n = e->ns_ == CSCD_NS_HTML ? cscdLower(name) : cscdStrDup(name); /* (an SVG or MathML element's names keep their case: viewBox) */
     if (cscdStrEqC(&n, "class")) e->classesValid_ = false;
     for (size_t i = 0; i < e->attributes.len; ++i) {
         CscdStrPair* a = &e->attributes.items[i];

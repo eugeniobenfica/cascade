@@ -197,6 +197,39 @@ static void testTableFixup(void) {
     cscdViewFree(v);
 }
 
+/* SVG files as images: drawn at the size they are shown, their sizes as much as they have of one */
+static void testSvgImages(void) {
+    CscdView* v = cscdViewNew();
+    /* only a ratio (a viewBox, 1 by 2): background-size 10px auto makes it 10 by 20; its halves lime and blue (rects of
+     * 50% of the viewBox), its pixels the picture's, not a blurred scaling of another size */
+    layoutView(v, "<style>body { margin: 0 } div { width: 100px; height: 100px; background-repeat: no-repeat }</style>"
+                  "<div id=a style=\"background-size: 10px auto; background-image: url('data:image/svg+xml,"
+                  "%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 2%22 preserveAspectRatio=%22none%22%3E"
+                  "%3Crect width=%22100%25%22 height=%2250%25%22 fill=%22lime%22/%3E"
+                  "%3Crect y=%2250%25%22 width=%22100%25%22 height=%2250%25%22 fill=%22blue%22/%3E%3C/svg%3E')\"></div>"
+                  "<img id=i src=\"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2230%22 height=%2210%22%3E"
+                  "%3Crect width=%2230%22 height=%2210%22 fill=%22red%22/%3E%3C/svg%3E\" style='display: block; width: 60px'>"
+                  "<div id=z style=\"background-image: url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 "
+                  "width=%228%22 viewBox=%220 0 8 0%22%3E%3Crect width=%228%22 height=%228%22 fill=%22red%22/%3E%3C/svg%3E')\"></div>");
+    CscdImage img;
+    cscdImageInit(&img, 800, 600);
+    frame(v, &img);
+    CHECK(cscdImageRow(&img, 1)[1] == 0xFF00FF00u && cscdImageRow(&img, 9)[9] == 0xFF00FF00u); /* (lime: 10 by 10) */
+    CHECK(cscdImageRow(&img, 10)[1] == 0xFF0000FFu && cscdImageRow(&img, 19)[9] == 0xFF0000FFu); /* (blue under it) */
+    CHECK(cscdImageRow(&img, 20)[1] == 0xFFFFFFFFu && cscdImageRow(&img, 1)[10] == 0xFFFFFFFFu); /* (nothing past it) */
+    /* an img of an SVG 30 by 10, 60 wide: 20 high (its ratio), red to its edge */
+    const CscdRect ir = rectOf(v, "i");
+    CHECK(fabsf(ir.w - 60) < 0.5f && fabsf(ir.h - 20) < 0.5f);
+    CHECK(cscdImageRow(&img, (int)ir.y + 19)[59] == 0xFFFF0000u);
+    /* a viewBox of no height: nothing drawn */
+    const CscdRect zr = rectOf(v, "z");
+    bool red = false;
+    for (int y = (int)zr.y; y < (int)(zr.y + zr.h) && y < 600; ++y) red = red || cscdImageRow(&img, y)[2] == 0xFFFF0000u;
+    CHECK(!red);
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
 static void testSelectors(void) {
     CscdDocument* doc = cscdParseHTML(CSCD_SV("<ul id=l><li>1</li><li class=k>2</li><li>3</li><li data-v='a b'>4</li></ul><div><p></p><span></span></div>"));
 #define ALL(s) (all.len = 0, cscdDocumentQuerySelectorAll(doc, CSCD_SV(s), &all), all.len)
@@ -5493,6 +5526,7 @@ int main(void) {
     testParser();
     testTreeConstruction();
     testTableFixup();
+    testSvgImages();
     testSelectors();
     testHasSiblings();
     testCascade();

@@ -257,6 +257,41 @@ static bool opaqueRing(const CscdLayoutBox* b) {
     return true;
 }
 
+/* ---- images that are SVG files: what they have of a size, drawn at the size they are shown -------------------------- */
+
+/* the image's intrinsic width, height and ratio, and which of them it has (SVG_HAS_*: a raster one has all three) */
+static uint8_t imageIntrinsic(const Painter* P, const CscdImage* img, float* iw, float* ih, float* ratio) {
+    const SvgImage* s = viewSvgImage(P->view, img);
+    if (!s) {
+        *iw = (float)img->width;
+        *ih = (float)img->height;
+        *ratio = *iw / *ih;
+        return SVG_HAS_WIDTH | SVG_HAS_HEIGHT | SVG_HAS_RATIO;
+    }
+    *iw = s->w;
+    *ih = s->h;
+    *ratio = s->ratio;
+    return s->has;
+}
+
+/* the canvas's scale (device pixels to a CSS pixel), along each axis */
+static void canvasScale(CscdCanvas* c, float* sx, float* sy) {
+    const CscdMatrix m = cscdCanvasMatrix(c);
+    *sx = sqrtf(m.a * m.a + m.b * m.b);
+    *sy = sqrtf(m.c * m.c + m.d * m.d);
+    if (!(*sx > 0)) *sx = 1;
+    if (!(*sy > 0)) *sy = 1;
+}
+
+/* the image to draw as w by h CSS pixels: an SVG file's drawn at that size (on the device's pixels), any other as it is */
+static CscdImage* imageAtSize(Painter* P, CscdImage* img, float w, float h) {
+    if (!viewSvgImage(P->view, img)) return img;
+    float sx, sy;
+    canvasScale(P->canvas, &sx, &sy);
+    CscdImage* r = viewSvgRaster(P->view, img, (int)lroundf(w * sx), (int)lroundf(h * sy));
+    return r ? r : img;
+}
+
 NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect borderBox, CscdRRect outer, bool skipText, bool wholeBorder) {
     CscdCanvas* canvas = P->canvas;
     const CscdComputedStyle* s = b->style;
@@ -276,27 +311,38 @@ NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect bord
         CscdRect area = L->origin == CSCD_BG_BORDER_BOX ? borderBox : L->origin == CSCD_BG_CONTENT_BOX ? contentBox : paddingBox;
         CscdRRect clip = clipFor(b, outer, L->clip);
         /* tile size */
-        float iw = 0, ih = 0;
+        float iw = 0, ih = 0, ir = 0;
+        uint8_t has = 0; /* (what the image has of an intrinsic size: an SVG file may lack any of them) */
         bool img = L->kind == CSCD_LAYER_URL;
         if (img) {
             if (!L->image || cscdImageEmpty(L->image)) continue;
-            iw = (float)L->image->width;
-            ih = (float)L->image->height;
+            has = imageIntrinsic(P, L->image, &iw, &ih, &ir);
         }
+        const bool hw = has & SVG_HAS_WIDTH, hh = has & SVG_HAS_HEIGHT, hr = (has & SVG_HAS_RATIO) && ir > 0;
         float tw = 0, th = 0;
         if (L->sizeKeyword == 1 || L->sizeKeyword == 2) {
-            if (img) {
-                float sc = L->sizeKeyword == 1 ? cscdMaxf(area.w / iw, area.h / ih) : cscdMinf(area.w / iw, area.h / ih);
-                tw = iw * sc;
-                th = ih * sc;
+            if (hr) { /* (cover: the smallest size of its ratio that covers the area; contain: the largest within it) */
+                const bool wide = area.w / area.h > ir;
+                if ((L->sizeKeyword == 1) == wide) { tw = area.w; th = area.w / ir; }
+                else { th = area.h; tw = area.h * ir; }
             } else { tw = area.w; th = area.h; }
         } else {
             bool ax = cscdLenIsAuto(L->sizeX), ay = cscdLenIsAuto(L->sizeY);
             if (!ax) tw = cscdLenResolve(L->sizeX, area.w, 0);
             if (!ay) th = cscdLenResolve(L->sizeY, area.h, 0);
-            if (ax && ay) { tw = img ? iw : area.w; th = img ? ih : area.h; }
-            else if (ax) tw = img && ih > 0 ? th * iw / ih : area.w;
-            else if (ay) th = img && iw > 0 ? tw * ih / iw : area.h;
+            if (!img) {
+                if (ax) tw = area.w;
+                if (ay) th = area.h;
+            } else if (ax && ay) {
+                if (hw && hh) { tw = iw; th = ih; }
+                else if (hw && hr) { tw = iw; th = iw / ir; }
+                else if (hh && hr) { th = ih; tw = ih * ir; }
+                else if (hr) { /* (contain) */
+                    if (area.w / area.h > ir) { th = area.h; tw = area.h * ir; }
+                    else { tw = area.w; th = area.w / ir; }
+                } else { tw = hw ? iw : area.w; th = hh ? ih : area.h; }
+            } else if (ax) tw = hr ? th * ir : hw ? iw : area.w;
+            else if (ay) th = hr ? tw / ir : hh ? ih : area.h;
         }
         if (tw <= 0 || th <= 0) continue;
         float px = area.x + cscdLenResolve(L->posX, area.w - tw, 0);
@@ -305,7 +351,7 @@ NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect bord
         cscdCanvasSave(canvas);
         cscdCanvasClipRRect(canvas, &clip);
         if (img) {
-            CscdShader sh = cscdShaderImage(L->image, tile, L->repeatX, L->repeatY);
+            CscdShader sh = cscdShaderImage(imageAtSize(P, L->image, tw, th), tile, L->repeatX, L->repeatY);
             CscdRect fill = clip.rect;
             if (!L->repeatX) { fill.x = cscdMaxf(fill.x, tile.x); fill.w = cscdMinf(cscdRectRight(clip.rect), cscdRectRight(tile)) - fill.x; }
             if (!L->repeatY) { fill.y = cscdMaxf(fill.y, tile.y); fill.h = cscdMinf(cscdRectBottom(clip.rect), cscdRectBottom(tile)) - fill.y; }
@@ -823,7 +869,8 @@ static void paintImage(Painter* P, CscdLayoutBox* b, CscdImage* image) {
     CscdRRect clip = rrInset(borderRRect(b, cscdBoxBorderBox(b)), b->border[0] + b->padding[0], b->border[1] + b->padding[1], b->border[2] + b->padding[2],
                            b->border[3] + b->padding[3]);
     cscdCanvasClipRRect(canvas, &clip);
-    cscdCanvasDrawSharedImage(canvas, image, cscdRect(0, 0, iw, ih), dst, !s->pixelated); /* (kept, not copied, by a recording) */
+    CscdImage* drawn = imageAtSize(P, image, dst.w, dst.h); /* (an SVG file's: drawn at that size) */
+    cscdCanvasDrawSharedImage(canvas, drawn, cscdRect(0, 0, (float)drawn->width, (float)drawn->height), dst, !s->pixelated); /* (kept, not copied, by a recording) */
     cscdCanvasRestore(canvas);
 }
 
@@ -1322,12 +1369,54 @@ static CscdSv attrOr(const CscdElement* e, const char* name, CscdSv def) {
     return v ? cscdStrSv(v) : def;
 }
 
+static float svToFloat(CscdSv v);
+
+/* the size of the viewport e's lengths are percentages of: its nearest svg's viewBox, or that svg's own size */
+static void svgViewport(const CscdElement* e, float* w, float* h) {
+    *w = 300;
+    *h = 150;
+    for (const CscdElement* a = parentEl((CscdElement*)e); a; a = parentEl((CscdElement*)a)) {
+        if (!cscdElementIs(a, "svg")) continue;
+        CscdFloatVec n = {0};
+        numbers(cscdElementAttrC(a, "viewBox"), &n);
+        const bool box = n.len >= 4 && n.items[2] > 0 && n.items[3] > 0;
+        if (box) {
+            *w = n.items[2];
+            *h = n.items[3];
+        }
+        cscdVecFree(&n);
+        if (box) return;
+        if (a->layout) { /* (the outermost: its box's) */
+            const CscdRect cb = cscdBoxContentBox(a->layout);
+            *w = cb.w;
+            *h = cb.h;
+            return;
+        }
+        const CscdSv aw = cscdElementAttrC(a, "width"), ah = cscdElementAttrC(a, "height");
+        if (aw.len && !cscdSvEndsC(aw, "%") && ah.len && !cscdSvEndsC(ah, "%")) {
+            *w = svToFloat(aw);
+            *h = svToFloat(ah);
+            return;
+        }
+    }
+}
+
+/* the attribute as a length (def when e has none): a percentage of the viewport's width (x, width, cx...), height (y,
+ * height, cy...) or, for r, its normalized diagonal */
 static float svgNum(const CscdElement* e, const char* name, float def) {
-    CscdSv v = cscdElementAttrC(e, name);
+    CscdSv v = cscdSvTrim(cscdElementAttrC(e, name));
     if (!v.len) return def;
     char* c = cscdSvDupC(v);
     float f = (float)atof(c);
     cscdFree(c);
+    if (cscdSvEndsC(v, "%")) {
+        float w, h;
+        svgViewport(e, &w, &h);
+        const char k = name[strlen(name) - 1] == '1' || name[strlen(name) - 1] == '2' ? name[0] : name[strlen(name) - 1];
+        const bool vertical = k == 'y' || !strcmp(name, "height");
+        const float of = !strcmp(name, "r") ? sqrtf((w * w + h * h) / 2) : vertical ? h : w;
+        f = f / 100 * of;
+    }
     return f;
 }
 
@@ -1514,6 +1603,11 @@ static void paintSvg(Painter* P, CscdLayoutBox* b) {
     if (cscdElementHasAttributeC(svg, "viewBox")) {
         CscdFloatVec n = {0};
         numbers(cscdElementAttrC(svg, "viewBox"), &n);
+        if (n.len >= 4 && (n.items[2] <= 0 || n.items[3] <= 0)) { /* (a viewBox of no width or height: nothing drawn) */
+            cscdVecFree(&n);
+            cscdCanvasRestore(canvas);
+            return;
+        }
         if (n.len >= 4 && n.items[2] > 0 && n.items[3] > 0) {
             float sx = cb.w / n.items[2], sy = cb.h / n.items[3];
             CscdSv par = attrOr(svg, "preserveAspectRatio", CSCD_SV("xMidYMid meet"));

@@ -95,7 +95,8 @@ grayscale, brightness, saturate, invert); `backdrop-filter` (the same functions,
 with `mask-size`, `mask-position`, `mask-repeat`); `mix-blend-mode`; `clip-path` basic shapes; text with
 kerning (`kern` and GPOS), font fallback, synthetic bold and italic, `text-shadow`,
 decorations, `-webkit-text-fill-color` and `-webkit-text-stroke`; `image-rendering: pixelated`;
-`isolation`; inline SVG (paths, shapes, `use`, transforms); CSS **transitions** and
+`isolation`; inline SVG (paths, shapes, `use`, transforms) and SVG files as images (`<img>`,
+`background-image`, drawn at the size they are shown); CSS **transitions** and
 **animations**; **bidirectional text** (the Unicode bidi algorithm, UAX #9: `direction` and the
 `dir` attribute, Hebrew and Arabic in English and the other way round, numbers, mirrored
 brackets, the embedding and isolate controls).

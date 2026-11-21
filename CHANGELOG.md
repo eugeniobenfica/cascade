@@ -28,6 +28,11 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **Tables**: CSS 2.1's anonymous table objects. Text in a `display: table` element was dropped; now it goes in an
   anonymous row and cell, as does whatever else sits between a table's parts, and a row or a cell outside a table
   gets an anonymous table. WPT reftests passed: 2,113 (2,054 before).
+- **SVG files as images**: `<img src="x.svg">`, `background-image: url(x.svg)` and `data:image/svg+xml` URLs, drawn
+  at the size they are shown (not a scaled raster), sized by what they have of a width, a height and a ratio. In SVG,
+  percentages in shapes' geometry (`width="50%"`), and a viewBox of no width or height draws nothing. WPT reftests
+  passed: 2,309.
+- `setAttribute` keeps an SVG or MathML element's attribute name as given (`viewBox`), as the DOM does.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

@@ -49,6 +49,18 @@ typedef struct ImageEntry {
 } ImageEntry;
 typedef struct ImageInbox ImageInbox;
 
+/* An SVG file shown as an image: its source, what it has of an intrinsic size, its raster at the size last asked */
+enum { SVG_HAS_WIDTH = 1, SVG_HAS_HEIGHT = 2, SVG_HAS_RATIO = 4 };
+typedef struct SvgImage {
+    CscdImage* img; /* (the image the page holds: the picture at its default size) */
+    CscdStr source, baseDir;
+    float w, h, ratio;
+    uint8_t has;
+    bool blank; /* (a viewBox with no width or height: it draws nothing) */
+    CscdImage* raster;
+    int rw, rh;
+} SvgImage;
+
 /* An animated image (GIF, WebP) playing: shown is the image the page holds, its pixels the frame's */
 typedef struct PlayingImage { CscdImage* shown; CscdAnimatedImage* anim; int frame, played; double due; } PlayingImage;
 typedef struct RunningTransition {
@@ -135,6 +147,7 @@ struct CscdView {
     void* baseSheet;         /* a CscdStyleSheet*, under the document's; or NULL */
     size_t tabPlace;         /* where Tab went last, among what takes focus, from 1; 0: nowhere yet */
     CscdStrMap images;       /* url -> ImageEntry* */
+    CscdPtrVec svgImages;    /* SvgImage*: the SVG files among them */
     size_t imageBytes, imageLimit; /* what the images held take, and the most they may (cscdViewSetImageCacheLimit) */
     uint64_t imageClock;
     ImageInbox* inbox;       /* images decoded on other threads, coming back (a reference) */
@@ -332,6 +345,8 @@ void viewClearAnimations(CscdView* v);
 /* viewLoad.c */
 CscdImage* viewImage(CscdView* v, CscdSv url); /* borrowed (the view keeps it) */
 CscdImage* viewImageLoader(void* view, CscdSv url); /* a new reference (layout and style) */
+const SvgImage* viewSvgImage(const CscdView* v, const CscdImage* img); /* NULL: not an SVG file's */
+CscdImage* viewSvgRaster(CscdView* v, const CscdImage* img, int w, int h); /* borrowed; NULL: not an SVG file's */
 CscdMediaContext viewMediaOf(const CscdView* v);
 void viewCollectSheets(CscdView* v);
 bool viewAdvanceImages(CscdView* v, double t);
