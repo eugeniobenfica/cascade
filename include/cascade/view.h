@@ -250,6 +250,10 @@ bool cscdViewMenuOpen(const CscdView* v);
 bool cscdViewEditableSelection(CscdView* v, size_t* start, size_t* end); /* false: no editing host has the focus */
 bool cscdViewSetEditableSelection(CscdView* v, size_t start, size_t end);
 bool cscdViewEditableCommand(CscdView* v, CscdSv command);
+/* the same with a value: "createLink" (the address; a link there already: its address changed), "formatBlock" ("h1"
+ * to "h6", "p": the caret's block; a heading of that level again: a paragraph); and, value unused, "unlink",
+ * "insertUnorderedList", "insertOrderedList" (the selection's lines as a list's items; in that list: out of it) */
+bool cscdViewEditableCommandWith(CscdView* v, CscdSv command, CscdSv value);
 
 /* Keyboard shortcuts (accelerators): keys as menus show them, "Ctrl+S", "Ctrl+Shift+Z", "Alt+Enter", "F5", "Delete"
  * (modifiers Ctrl, Shift, Alt, Meta; on the Mac Command is Ctrl, as everywhere in cascade). The action runs when

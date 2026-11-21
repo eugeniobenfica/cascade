@@ -1119,7 +1119,12 @@ static void testContentEditable(void) {
     CHECK(ceText(v, "e", "\xE3\x81\x8Bworld!\nabc\n") && ceSel(v, 3, 3));
     /* across blocks: what is left of the second joins the first */
     cscdViewFocus(v, byId(v, "blocks"));
-    cscdViewSetEditableSelection(v, 1, 3);
+    /* (between the blocks a line break of the text's: "ab\ncd"; the second's start can be reached) */
+    cscdViewSetEditableSelection(v, 3, 3);
+    cscdViewTextInput(v, CSCD_SV("X"));
+    CHECK(ceHtmlHas(v, "blocks", "<p>ab</p><p>Xcd</p>"));
+    ceKey(v, CSCD_KEY_BACKSPACE, none, "Backspace");
+    cscdViewSetEditableSelection(v, 1, 4);
     ceKey(v, CSCD_KEY_DELETE, none, "Delete");
     CHECK(ceText(v, "blocks", "ad") && ceHtmlHas(v, "blocks", "<p>ad</p>") && ceHtmlLacks(v, "blocks", "<p></p>"));
     /* at a formatting's edges: typing goes on with what is before it */
@@ -1133,6 +1138,78 @@ static void testContentEditable(void) {
     cscdViewFocus(v, byId(v, "off"));
     cscdViewTextInput(v, CSCD_SV("z"));
     CHECK(ceText(v, "off", "x") && !cscdViewEditableSelection(v, &(size_t){0}, &(size_t){0}));
+    frame(v, &img);
+    cscdStrFree(&ceClipHtml);
+    cscdStrFree(&ceClipText);
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
+/* contenteditable's blocks: lists (Enter, Backspace, out of them), headings, links */
+static void testContentEditableBlocks(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    layoutView(v, "<style>body{margin:0;font:16px sans-serif} div{width:400px}</style>"
+                  "<div id=e contenteditable>one\ntwo\nthree</div><div id=l contenteditable>see <a href='https://a.example'>this</a> page</div>");
+    const CscdClipboardHooks clip = {ceSetText, ceGetText, ceSetHtml, ceGetHtml, NULL, NULL, NULL, NULL, NULL};
+    cscdViewSetClipboard(v, &clip);
+    CscdImage img;
+    cscdImageInit(&img, 800, 600);
+    frame(v, &img);
+    const CscdModifiers none = {0}, ctrl = {.ctrl = true};
+    cscdViewFocus(v, byId(v, "e"));
+    /* the selection's lines as a list: one item a line */
+    cscdViewSetEditableSelection(v, 1, 6); /* ("one", "two") */
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("insertUnorderedList")));
+    CHECK(ceHtmlHas(v, "e", "<ul><li>one</li><li>two</li></ul>three"));
+    frame(v, &img);
+    /* Enter in an item: a new item; on an empty one: out of the list */
+    cscdViewSetEditableSelection(v, 7, 7); /* (after "two") */
+    ceKey(v, CSCD_KEY_ENTER, none, "Enter");
+    CHECK(ceHtmlHas(v, "e", "<li>two</li><li></li></ul>") && ceSel(v, 8, 8));
+    cscdViewTextInput(v, CSCD_SV("2b"));
+    CHECK(ceHtmlHas(v, "e", "<li>two</li><li>2b</li></ul>"));
+    ceKey(v, CSCD_KEY_ENTER, none, "Enter");
+    ceKey(v, CSCD_KEY_ENTER, none, "Enter");
+    CHECK(ceHtmlHas(v, "e", "<li>2b</li></ul><div></div>three") && ceSel(v, 11, 11));
+    cscdViewTextInput(v, CSCD_SV("after"));
+    CHECK(ceText(v, "e", "onetwo2bafterthree"));
+    frame(v, &img);
+    /* an item split in its middle, then joined back with Backspace at the new one's start */
+    cscdViewSetEditableSelection(v, 1, 1);
+    ceKey(v, CSCD_KEY_ENTER, none, "Enter");
+    CHECK(ceHtmlHas(v, "e", "<li>o</li><li>ne</li>") && ceSel(v, 2, 2));
+    ceKey(v, CSCD_KEY_BACKSPACE, none, "Backspace");
+    CHECK(ceHtmlHas(v, "e", "<ul><li>one</li><li>two</li>") && ceSel(v, 1, 1));
+    /* the list made lines again; an ordered one */
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("insertUnorderedList")));
+    CHECK(ceHtmlLacks(v, "e", "<ul>") && ceHtmlHas(v, "e", "<div>one</div><div>two</div>"));
+    cscdViewSetEditableSelection(v, 0, 0);
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("insertOrderedList")));
+    CHECK(ceHtmlHas(v, "e", "<ol><li>one</li></ol>"));
+    /* a heading, and a paragraph again */
+    cscdViewSetEditableSelection(v, 5, 5); /* ("two") */
+    CHECK(cscdViewEditableCommandWith(v, CSCD_SV("formatBlock"), CSCD_SV("h2")));
+    CHECK(ceHtmlHas(v, "e", "<h2>two</h2>"));
+    CHECK(cscdViewEditableCommandWith(v, CSCD_SV("formatBlock"), CSCD_SV("h2")));
+    CHECK(ceHtmlHas(v, "e", "<p>two</p>") && ceHtmlLacks(v, "e", "<h2>"));
+    frame(v, &img);
+    /* links: made, its address changed, taken off; copied with it, pasted with it */
+    cscdViewFocus(v, byId(v, "l"));
+    cscdViewSetEditableSelection(v, 9, 13); /* ("page") */
+    CHECK(cscdViewEditableCommandWith(v, CSCD_SV("createLink"), CSCD_SV("https://b.example")));
+    CHECK(ceHtmlHas(v, "l", "<a href=\"https://b.example\">page</a>"));
+    cscdViewSetEditableSelection(v, 4, 8); /* ("this") */
+    CHECK(cscdViewEditableCommandWith(v, CSCD_SV("createLink"), CSCD_SV("https://c.example")));
+    CHECK(ceHtmlHas(v, "l", "<a href=\"https://c.example\">this</a>") && ceHtmlLacks(v, "l", "a.example"));
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "c");
+    CHECK(cscdSvFind(cscdStrSv(&ceClipHtml), CSCD_SV("<a href=\"https://c.example\">this</a>"), 0) != CSCD_NPOS);
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("unlink")));
+    CHECK(ceHtmlHas(v, "l", "see this <a") && ceText(v, "l", "see this page"));
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("unlink")) && ceHtmlHas(v, "l", "see this <a")); /* (no link there: nothing) */
+    cscdViewSetEditableSelection(v, 0, 0);
+    ceKey(v, CSCD_KEY_CHARACTER, ctrl, "v");
+    CHECK(ceHtmlHas(v, "l", "<a href=\"https://c.example\">this</a>see this"));
     frame(v, &img);
     cscdStrFree(&ceClipHtml);
     cscdStrFree(&ceClipText);
@@ -5384,6 +5461,7 @@ int main(void) {
     testAccessors();
     testMenus();
     testContentEditable();
+    testContentEditableBlocks();
     testEditLinesKept();
     testA11yUpdates();
     testA11yText();

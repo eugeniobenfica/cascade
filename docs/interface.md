@@ -97,7 +97,10 @@ mouse (a click, a double click for a word, a drag), Ctrl+B, I and U (the selecti
 `<u>`, or out of them), undo and redo, and the clipboard (copied as HTML and text; pasted HTML keeps
 its bold, italic, underline and line breaks). It gets `input` after each change; read it with
 `cscdElementInnerHTML`. `cscdViewEditableSelection` and `cscdViewSetEditableSelection` count bytes
-of its text, and `cscdViewEditableCommand(ui, CSCD_SV("bold"))` runs a command from a toolbar.
+of its text (a line break between two blocks counts as one), and `cscdViewEditableCommand(ui, CSCD_SV("bold"))` runs a
+command from a toolbar; `cscdViewEditableCommandWith` takes a value: lists (`insertUnorderedList`,
+`insertOrderedList`: Enter makes the next item, Enter on an empty one leaves the list), headings
+(`formatBlock` with `h1` to `h6` or `p`) and links (`createLink` with the address, `unlink`).
 
 **On phones** the on-screen keyboard follows the field: `type` (`email`, `url`, `tel`, `number`,
 `search`, `password`), `inputmode`, `enterkeyhint`, `autocapitalize` and `autocorrect` /

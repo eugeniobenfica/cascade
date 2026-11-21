@@ -20,8 +20,9 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
     `cscdWindowOptionsFree` (`cscdWindowNew` copies what it needs), in place of `cscdWindowOptions()` and its fields;
   - layout boxes: only through the view (`cscdViewElementRect` and the like).
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
-- **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, undo, the clipboard
-  as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`, `cscdViewEditableCommand`.
+- **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
+  links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,
+  `cscdViewEditableCommand`, `cscdViewEditableCommandWith`.
 - **Long texts in a textarea**: its lines are kept from edit to edit, so a key in 20,000 lines takes milliseconds
   instead of two seconds.
 - **Screen readers**: UI Automation's text pattern on text fields (by character, word and line, with the selection);

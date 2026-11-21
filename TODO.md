@@ -198,8 +198,12 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       across text nodes and blocks (what is left of the last block joins the first), Enter as a line break (the host
       keeps its text as typed), the arrows, Home, End, words, the mouse, Ctrl+B/I/U, undo and redo (the host's HTML),
       copying as HTML and text and pasting HTML (its bold, italic, underline and line breaks).
-- [ ] contenteditable's lists, links and headings by command; turning a format off in part of a run (today the
-      element that holds the selection is unwrapped whole); its text to screen readers (it is a group today).
+- [x] contenteditable's lists, links and headings by command (`cscdViewEditableCommandWith`: insertUnorderedList,
+      insertOrderedList, formatBlock, createLink, unlink): Enter in a list item makes the next one (on an empty one:
+      out of the list), Backspace at an item's start joins it to the one before; between two blocks the host's text
+      has a line break of its own, so each block's start can be reached; links kept when copied and pasted.
+- [ ] contenteditable: turning a format off in part of a run (today the element that holds the selection is unwrapped
+      whole); its text to screen readers (it is a group today).
 
 ### Conformance
 

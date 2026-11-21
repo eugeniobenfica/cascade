@@ -2,8 +2,10 @@
  * host when it has the focus; its text is that of the text nodes in it, in document order, and the selection is two
  * places in it counted in bytes of that text taken whole (a node that comes or goes elsewhere leaves nothing
  * dangling). The host keeps its text as typed (white-space: pre-wrap in the UA sheet), so a text box's text is its
- * node's data and its fragments say where each byte of it shows. Enter is a line break in the text; bold, italic and
- * underline wrap the selection in <b>, <i>, <u>. */
+ * node's data and its fragments say where each byte of it shows. Between two blocks (paragraphs, list items) the text
+ * has a line break of its own that no node holds: deleting it joins them. Enter is a line break in the text (in a list
+ * item: a new item); bold, italic, underline and links wrap the selection in <b>, <i>, <u>, <a>; lists and headings
+ * make blocks of its lines. */
 #include "view/viewInternal.h"
 #include "text/graphemeInternal.h"
 
@@ -25,6 +27,31 @@ CscdElement* viewEditableHost(CscdView* v) {
 
 bool viewIsEditableHost(const CscdElement* e) { return editableAttr(e); }
 
+static bool inlineTag(const CscdElement* e) {
+    static const char* const tags[] = {"b", "i", "u", "s", "em", "strong", "span", "code", "sub", "sup", "mark", "small", "a", "font"};
+    for (size_t i = 0; i < CSCD_COUNT(tags); ++i) if (cscdElementIs(e, tags[i])) return true;
+    return false;
+}
+
+static bool blockTag(const CscdElement* e) {
+    static const char* const tags[] = {"p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre",
+                                       "section", "article", "header", "footer", "nav", "aside", "table", "tr", "td", "th"};
+    for (size_t i = 0; i < CSCD_COUNT(tags); ++i) if (cscdElementIs(e, tags[i])) return true;
+    return false;
+}
+
+/* the block a node is in, within the host (the host itself when there is none) */
+static CscdElement* blockOf(CscdElement* host, CscdNode* n) {
+    for (CscdElement* e = cscdNodeParentElement(n); e && e != host; e = cscdNodeParentElement(&e->node))
+        if (blockTag(e) || (!inlineTag(e) && e->style && e->style->display != CSCD_DISPLAY_INLINE)) return e;
+    return host;
+}
+
+static bool holds(const CscdNode* a, const CscdNode* n) {
+    for (; n; n = n->parent) if (n == a) return true;
+    return false;
+}
+
 static void textNodesIn(CscdNode* n, CscdPtrVec* out) {
     for (size_t i = 0; i < n->children.len; ++i) {
         CscdNode* c = cscdNodeChild(n, i);
@@ -33,26 +60,41 @@ static void textNodesIn(CscdNode* n, CscdPtrVec* out) {
     }
 }
 
-/* the host's text taken whole, and where each of its nodes starts in it */
+/* the host's text taken whole, where each of its nodes starts in it, and where the line breaks between blocks are
+ * (in the text, held by no node) */
 typedef struct HostText {
     CscdPtrVec nodes; /* CscdText* */
     CscdSizeVec starts;
+    CscdSizeVec seps;
     CscdStr all;
 } HostText;
 
 static void hostText(CscdElement* host, HostText* t) {
     memset(t, 0, sizeof *t);
     textNodesIn(&host->node, &t->nodes);
+    CscdElement* block = NULL;
     for (size_t i = 0; i < t->nodes.len; ++i) {
-        const CscdText* n = (const CscdText*)t->nodes.items[i];
+        CscdText* n = (CscdText*)t->nodes.items[i];
+        CscdElement* b = blockOf(host, &n->node);
+        if (i && b != block) {
+            cscdVecPush(&t->seps, t->all.len);
+            cscdStrAppendChar(&t->all, '\n');
+        }
+        block = b;
         cscdVecPush(&t->starts, t->all.len);
         cscdStrAppend(&t->all, cscdStrSv(&n->data));
     }
 }
 
+static bool isSep(const HostText* t, size_t pos) {
+    for (size_t i = 0; i < t->seps.len; ++i) if (t->seps.items[i] == pos) return true;
+    return false;
+}
+
 static void hostTextFree(HostText* t) {
     cscdVecFree(&t->nodes);
     cscdVecFree(&t->starts);
+    cscdVecFree(&t->seps);
     cscdStrFree(&t->all);
 }
 
@@ -127,6 +169,14 @@ static CscdRect hostStart(const CscdElement* host) {
     return cscdRect((float)(b->x + b->border[3] + b->padding[3]), (float)(b->y + b->border[0] + b->padding[0]), 1, h > 0 ? h : 16);
 }
 
+/* where an empty node's caret goes: its block's start (layout coordinates); false when it has no box */
+static bool emptyStart(CscdElement* host, CscdNode* n, CscdRect* out) {
+    CscdElement* b = blockOf(host, n);
+    if (!b->layout || !b->style) return false;
+    *out = hostStart(b);
+    return true;
+}
+
 /* where the caret at pos shows (view coordinates) */
 static CscdRect caretAt(CscdView* v, CscdElement* host, const HostText* t, size_t pos) {
     if (!host->layout) return cscdRect(0, 0, 0, 0);
@@ -153,6 +203,8 @@ static CscdRect caretAt(CscdView* v, CscdElement* host, const HostText* t, size_
         r = cscdRect((float)hostStart(host).x, (float)(last->frag->top + last->frag->height), 1, last->frag->height);
         if (off > 0 && off <= ((const CscdText*)t->nodes.items[node])->data.len && ((const CscdText*)t->nodes.items[node])->data.ptr[off - 1] != '\n')
             r = cscdRect(fragX(last, last->frag->end), (float)last->frag->top, 1, last->frag->height);
+    } else if (!placed && node >= 0 && !((const CscdText*)t->nodes.items[node])->data.len && emptyStart(host, t->nodes.items[node], &r)) {
+        /* (an empty block's) */
     } else if (!placed && node >= 0 && t->all.len) {
         /* (a node with nothing shown: before the next one that shows) */
         for (size_t i = 0; i < frags.len; ++i)
@@ -167,12 +219,29 @@ static CscdRect caretAt(CscdView* v, CscdElement* host, const HostText* t, size_
 
 /* the place nearest (x, y) (view coordinates) */
 static size_t hitAt(CscdView* v, CscdElement* host, const HostText* t, float x, float y) {
-    if (!host->layout || !t->all.len) return 0;
+    if (!host->layout || !t->nodes.len) return 0;
     const CscdPoint d = hostShift(v, host);
     x -= d.x;
     y -= d.y;
     FragVec frags = {0};
     fragsIn(host->layout, t, &frags);
+    /* (an empty block: a line of nothing at its start) */
+    CscdTextFrag empties[16];
+    CscdLayoutBox emptyBoxes[16];
+    int emptyCount = 0;
+    for (size_t i = 0; i < t->nodes.len && emptyCount < 16; ++i) {
+        CscdRect r;
+        if (((const CscdText*)t->nodes.items[i])->data.len || !emptyStart(host, t->nodes.items[i], &r)) continue;
+        memset(&empties[emptyCount], 0, sizeof empties[emptyCount]);
+        memset(&emptyBoxes[emptyCount], 0, sizeof emptyBoxes[emptyCount]);
+        empties[emptyCount].x = r.x;
+        empties[emptyCount].top = r.y;
+        empties[emptyCount].height = r.h;
+        emptyBoxes[emptyCount].textNode = t->nodes.items[i];
+        Frag f = {&emptyBoxes[emptyCount], &empties[emptyCount], t->starts.items[i]};
+        cscdVecPush(&frags, f);
+        ++emptyCount;
+    }
     /* the line: the fragments whose height holds y, else the nearest */
     double bestDy = 1e30;
     for (size_t i = 0; i < frags.len; ++i) {
@@ -194,6 +263,10 @@ static size_t hitAt(CscdView* v, CscdElement* host, const HostText* t, float x, 
         lineTop = f->frag->top;
         any = true;
         /* the boundary of its characters nearest x */
+        if (f->frag->end == f->frag->start) { /* (an empty block's) */
+            best = f->base;
+            continue;
+        }
         const CscdSv s = cscdStrSv(&f->box->text);
         size_t at = f->frag->start;
         double atD = fabs(fragX(f, at) - x);
@@ -289,33 +362,17 @@ static void setData(CscdView* v, CscdText* n, CscdSv data) {
     cscdViewInvalidate(v);
 }
 
-static bool inlineTag(const CscdElement* e) {
-    static const char* const tags[] = {"b", "i", "u", "s", "em", "strong", "span", "code", "sub", "sup", "mark", "small", "a", "font"};
-    for (size_t i = 0; i < CSCD_COUNT(tags); ++i) if (cscdElementIs(e, tags[i])) return true;
-    return false;
-}
-
 /* empty text nodes, and inline elements left with nothing in them, out of the host */
 static void tidy(CscdNode* n) {
     for (size_t i = n->children.len; i-- > 0;) {
         CscdNode* c = cscdNodeChild(n, i);
         CscdElement* e = cscdNodeAsElement(c);
         if (e) tidy(c);
-        const bool empty = (cscdNodeIsText(c) && !((CscdText*)c)->data.len) || (e && inlineTag(e) && !c->children.len);
+        /* (an empty text node alone in a block stays: the caret's place there) */
+        const bool holder = cscdNodeIsText(c) && n->children.len == 1 && cscdNodeIsElement(n) && blockTag((CscdElement*)n);
+        const bool empty = (cscdNodeIsText(c) && !((CscdText*)c)->data.len && !holder) || (e && inlineTag(e) && !c->children.len);
         if (empty && cscdNodeRemoveChild(n, c)) cscdNodeDestroy(c);
     }
-}
-
-/* the block a node is in, within the host (the host itself when there is none) */
-static CscdElement* blockOf(CscdElement* host, CscdNode* n) {
-    for (CscdElement* e = cscdNodeParentElement(n); e && e != host; e = cscdNodeParentElement(&e->node))
-        if (e->style ? e->style->display != CSCD_DISPLAY_INLINE : !inlineTag(e)) return e;
-    return host;
-}
-
-static bool holds(const CscdNode* a, const CscdNode* n) {
-    for (; n; n = n->parent) if (n == a) return true;
-    return false;
 }
 
 /* deletes [a, z) of the host's text: the text nodes in it shortened or gone, the block it ends in joined to the one it
@@ -325,17 +382,18 @@ static void deleteRange(CscdView* v, CscdElement* host, size_t a, size_t z) {
     HostText t;
     hostText(host, &t);
     z = cscdMinz(z, t.all.len);
+    /* (the nodes the range starts and ends in: their blocks join when they differ) */
     CscdNode *firstNode = NULL, *lastNode = NULL;
+    for (size_t i = 0; i < t.nodes.len; ++i) {
+        const size_t s = t.starts.items[i], e = s + ((CscdText*)t.nodes.items[i])->data.len;
+        if (!firstNode && s <= a && a <= e) firstNode = t.nodes.items[i];
+        if (s <= z && z <= e) lastNode = t.nodes.items[i];
+    }
     for (size_t i = 0; i < t.nodes.len; ++i) {
         CscdText* n = (CscdText*)t.nodes.items[i];
         const size_t s = t.starts.items[i], e = s + n->data.len;
-        if (e <= a || s >= z) {
-            if (s >= z && !lastNode && firstNode) lastNode = &n->node;
-            continue;
-        }
+        if (e <= a || s >= z) continue;
         const size_t from = a > s ? a - s : 0, to = cscdMinz(z, e) - s;
-        if (!firstNode) firstNode = &n->node;
-        lastNode = &n->node;
         CscdStr kept = {0};
         cscdStrAppend(&kept, cscdSvSub(cscdStrSv(&n->data), 0, from));
         cscdStrAppend(&kept, cscdSvFrom(cscdStrSv(&n->data), to));
@@ -345,13 +403,29 @@ static void deleteRange(CscdView* v, CscdElement* host, size_t a, size_t z) {
     /* (blocks: what is left of the last one joins the first) */
     if (firstNode && lastNode && firstNode != lastNode) {
         CscdElement *from = blockOf(host, firstNode), *to = blockOf(host, lastNode);
-        if (from != to && !holds(&from->node, &to->node) && !holds(&to->node, &from->node)) {
+        if (from != to && !holds(&to->node, &from->node)) {
+            /* what is left of the last block goes after the first's (into it; or, when the first holds it, a list item in
+             * the text before its list: before that list) */
+            CscdNode* into = &from->node;
+            CscdNode* before = NULL;
+            if (holds(&from->node, &to->node)) {
+                CscdNode* top = &to->node;
+                while (top->parent && top->parent != &from->node) top = top->parent;
+                before = top;
+            }
             while (to->node.children.len) {
                 CscdNode* c = cscdNodeRemoveChild(&to->node, cscdNodeChild(&to->node, 0));
-                if (c && !cscdNodeAppendChild(&from->node, c)) cscdNodeDestroy(c);
+                if (c && !(before ? cscdNodeInsertBefore(into, c, before) : cscdNodeAppendChild(into, c))) cscdNodeDestroy(c);
             }
-            CscdNode* gone = cscdNodeRemoveChild(to->node.parent, &to->node);
+            CscdNode* list = to->node.parent;
+            CscdNode* gone = cscdNodeRemoveChild(list, &to->node);
             if (gone) cscdNodeDestroy(gone);
+            /* (a list left with no items goes too) */
+            CscdElement* le = cscdNodeAsElement(list);
+            if (le && (cscdElementIs(le, "ul") || cscdElementIs(le, "ol")) && !list->children.len && list->parent) {
+                CscdNode* empty = cscdNodeRemoveChild(list->parent, list);
+                if (empty) cscdNodeDestroy(empty);
+            }
         }
     }
     hostTextFree(&t);
@@ -490,7 +564,7 @@ static CscdElement* ancestorTag(CscdElement* host, CscdNode* n, const char* tag,
 
 /* the selection's text in <tag> (each of its text nodes' part of it wrapped), or out of it when all of it is and only
  * is false */
-static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const char* alias, bool only) {
+static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const char* alias, bool only, CscdSv href) {
     HostText t;
     hostText(host, &t);
     size_t a, z;
@@ -504,6 +578,10 @@ static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const c
         const CscdText* n = (const CscdText*)t.nodes.items[i];
         const size_t s = t.starts.items[i], e = s + n->data.len;
         if (e > a && s < z && !ancestorTag(host, (CscdNode*)&n->node, tag, alias)) all = false;
+    }
+    if (!all && !only && !strcmp(tag, "a") && !href.len) { /* (unlink with no link there: nothing) */
+        hostTextFree(&t);
+        return;
     }
     pushUndo(v, host, 3);
     if (all && only) {
@@ -547,6 +625,7 @@ static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const c
             setData(v, n, cscdStrSv(&mid));
             cscdStrFree(&mid);
             CscdElement* wrap = cscdElementNew(cscdSv(tag));
+            if (href.len) cscdElementSetAttribute(wrap, CSCD_SV("href"), href);
             if (!cscdNodeInsertBefore(parent, &wrap->node, &n->node)) {
                 cscdNodeDestroy(&wrap->node);
                 continue;
@@ -562,7 +641,7 @@ static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const c
 
 /* ---- copying and pasting ----------------------------------------------------------------------------------- */
 
-static void toggleFormat(CscdView* v, CscdElement* host, const char* tag, const char* alias) { applyFormat(v, host, tag, alias, false); }
+static void toggleFormat(CscdView* v, CscdElement* host, const char* tag, const char* alias) { applyFormat(v, host, tag, alias, false, CSCD_SV("")); }
 
 static void escapeInto(CscdSv s, CscdStr* out) {
     for (size_t i = 0; i < s.len; ++i) {
@@ -575,40 +654,58 @@ static void escapeInto(CscdSv s, CscdStr* out) {
     }
 }
 
-/* the formatting a node's text has, as tag names (b, i, u), outermost first */
-static void formatsOf(CscdElement* host, CscdNode* n, const char** out, int* count) {
+/* the formatting a node's text has (bold, italic, underline, a link), outermost first */
+static void formatsOf(CscdElement* host, CscdNode* n, CscdElement** out, int* count) {
     *count = 0;
-    const char* found[8];
+    CscdElement* found[8];
     int k = 0;
-    for (CscdElement* e = cscdNodeParentElement(n); e && e != host && k < 8; e = cscdNodeParentElement(&e->node)) {
-        if (cscdElementIs(e, "b") || cscdElementIs(e, "strong")) found[k++] = "b";
-        else if (cscdElementIs(e, "i") || cscdElementIs(e, "em")) found[k++] = "i";
-        else if (cscdElementIs(e, "u")) found[k++] = "u";
-    }
+    for (CscdElement* e = cscdNodeParentElement(n); e && e != host && k < 8; e = cscdNodeParentElement(&e->node))
+        if (cscdElementIs(e, "b") || cscdElementIs(e, "strong") || cscdElementIs(e, "i") || cscdElementIs(e, "em") || cscdElementIs(e, "u") ||
+            (cscdElementIs(e, "a") && cscdElementHasAttributeC(e, "href")))
+            found[k++] = e;
     for (int i = k; i-- > 0;) out[(*count)++] = found[i];
 }
 
-/* [a, z) as HTML: its text, with its bold, italic and underline */
+static void openTag(CscdElement* e, CscdStr* out) {
+    const char* name = cscdElementIs(e, "strong") ? "b" : cscdElementIs(e, "em") ? "i" : NULL;
+    cscdStrAppendChar(out, '<');
+    if (name) cscdStrAppendC(out, name);
+    else cscdStrAppend(out, cscdElementTag(e));
+    if (cscdElementIs(e, "a")) {
+        cscdStrAppendC(out, " href=\"");
+        const CscdSv href = cscdElementAttrC(e, "href");
+        for (size_t i = 0; i < href.len; ++i) {
+            if (href.ptr[i] == '"') cscdStrAppendC(out, "&quot;");
+            else if (href.ptr[i] == '&') cscdStrAppendC(out, "&amp;");
+            else cscdStrAppendChar(out, href.ptr[i]);
+        }
+        cscdStrAppendChar(out, '"');
+    }
+    cscdStrAppendChar(out, '>');
+}
+
+static void closeTag(CscdElement* e, CscdStr* out) {
+    const char* name = cscdElementIs(e, "strong") ? "b" : cscdElementIs(e, "em") ? "i" : NULL;
+    cscdStrAppendC(out, "</");
+    if (name) cscdStrAppendC(out, name);
+    else cscdStrAppend(out, cscdElementTag(e));
+    cscdStrAppendChar(out, '>');
+}
+
+/* [a, z) as HTML: its text, with its bold, italic, underline and links (a line break between blocks: <br>) */
 static void selectionHtml(CscdElement* host, const HostText* t, size_t a, size_t z, CscdStr* out) {
     for (size_t i = 0; i < t->nodes.len; ++i) {
         CscdText* n = (CscdText*)t->nodes.items[i];
         const size_t s = t->starts.items[i], e = s + n->data.len;
+        if (s > a && s - 1 < z && s > 0 && isSep(t, s - 1) && out->len) cscdStrAppendC(out, "<br>");
         if (e <= a || s >= z) continue;
-        const char* tags[8];
+        CscdElement* tags[8];
         int count;
         formatsOf(host, &n->node, tags, &count);
-        for (int k = 0; k < count; ++k) {
-            cscdStrAppendChar(out, '<');
-            cscdStrAppendC(out, tags[k]);
-            cscdStrAppendChar(out, '>');
-        }
+        for (int k = 0; k < count; ++k) openTag(tags[k], out);
         const size_t from = a > s ? a - s : 0, to = cscdMinz(z, e) - s;
         escapeInto(cscdSvSub(cscdStrSv(&n->data), from, to - from), out);
-        for (int k = count; k-- > 0;) {
-            cscdStrAppendC(out, "</");
-            cscdStrAppendC(out, tags[k]);
-            cscdStrAppendChar(out, '>');
-        }
+        for (int k = count; k-- > 0;) closeTag(tags[k], out);
     }
 }
 
@@ -629,14 +726,14 @@ static bool copySelection(CscdView* v, CscdElement* host) {
 }
 
 /* pasted HTML as runs of text with their formatting (blocks and <br> as line breaks), for the host to take */
-typedef struct Run { CscdStr text; bool b, i, u; } Run;
+typedef struct Run { CscdStr text; bool b, i, u; CscdStr href; } Run;
 typedef CSCD_VEC(Run) RunVec;
 
-static void runsOf(CscdNode* n, bool b, bool i, bool u, RunVec* out) {
+static void runsOf(CscdNode* n, bool b, bool i, bool u, CscdSv href, RunVec* out) {
     for (size_t k = 0; k < n->children.len; ++k) {
         CscdNode* c = cscdNodeChild(n, k);
         if (cscdNodeIsText(c)) {
-            Run r = {cscdStrCopy(&((CscdText*)c)->data), b, i, u};
+            Run r = {cscdStrCopy(&((CscdText*)c)->data), b, i, u, cscdStrDup(href)};
             if (r.text.len) cscdVecPush(out, r);
             else cscdStrFree(&r.text);
             continue;
@@ -644,7 +741,7 @@ static void runsOf(CscdNode* n, bool b, bool i, bool u, RunVec* out) {
         CscdElement* e = cscdNodeAsElement(c);
         if (!e || cscdElementIs(e, "script") || cscdElementIs(e, "style") || cscdElementIs(e, "template") || cscdElementIs(e, "head")) continue;
         if (cscdElementIs(e, "br")) {
-            Run r = {cscdStrDupC("\n"), b, i, u};
+            Run r = {cscdStrDupC("\n"), b, i, u, {0}};
             cscdVecPush(out, r);
             continue;
         }
@@ -653,11 +750,11 @@ static void runsOf(CscdNode* n, bool b, bool i, bool u, RunVec* out) {
         for (size_t q = 0; q < CSCD_COUNT(blocks); ++q) block = block || cscdElementIs(e, blocks[q]);
         const CscdStr* lastRun = out->len ? &out->items[out->len - 1].text : NULL;
         if (block && lastRun && !(lastRun->len && lastRun->ptr[lastRun->len - 1] == '\n')) {
-            Run r = {cscdStrDupC("\n"), b, i, u};
+            Run r = {cscdStrDupC("\n"), b, i, u, {0}};
             cscdVecPush(out, r);
         }
         runsOf(c, b || cscdElementIs(e, "b") || cscdElementIs(e, "strong"), i || cscdElementIs(e, "i") || cscdElementIs(e, "em"),
-               u || cscdElementIs(e, "u"), out);
+               u || cscdElementIs(e, "u"), cscdElementIs(e, "a") && cscdElementHasAttributeC(e, "href") ? cscdElementAttrC(e, "href") : href, out);
     }
 }
 
@@ -668,13 +765,13 @@ static void paste(CscdView* v, CscdElement* host) {
     if (html.len) {
         CscdElement* holder = cscdElementNew(CSCD_SV("div"));
         cscdElementSetInnerHTML(holder, cscdStrSv(&html));
-        runsOf(&holder->node, false, false, false, &runs);
+        runsOf(&holder->node, false, false, false, CSCD_SV(""), &runs);
         cscdNodeDestroy(&holder->node);
     }
     if (!runs.len) {
         cscdViewClipboardText(v, &text);
         if (text.len) {
-            Run r = {cscdStrCopy(&text), false, false, false};
+            Run r = {cscdStrCopy(&text), false, false, false, {0}};
             cscdVecPush(&runs, r);
         }
     }
@@ -694,8 +791,13 @@ static void paste(CscdView* v, CscdElement* host) {
                 if (tags[q]) {
                     v->ceAnchor = at;
                     v->ceFocus = at + r->text.len;
-                    applyFormat(v, host, tags[q], NULL, true);
+                    applyFormat(v, host, tags[q], NULL, true, CSCD_SV(""));
                 }
+            if (r->href.len) {
+                v->ceAnchor = at;
+                v->ceFocus = at + r->text.len;
+                applyFormat(v, host, "a", NULL, true, cscdStrSv(&r->href));
+            }
             at += r->text.len;
         }
         v->ceQuiet = false;
@@ -703,10 +805,315 @@ static void paste(CscdView* v, CscdElement* host) {
         cscdStrFree(&all);
         changed(v, host);
     }
-    for (size_t k = 0; k < runs.len; ++k) cscdStrFree(&runs.items[k].text);
+    for (size_t k = 0; k < runs.len; ++k) {
+        cscdStrFree(&runs.items[k].text);
+        cscdStrFree(&runs.items[k].href);
+    }
     cscdVecFree(&runs);
     cscdStrFree(&html);
     cscdStrFree(&text);
+}
+
+/* ---- blocks: list items, lists, headings ------------------------------------------------------------------------ */
+
+/* Splits the host's tree at pos up to block: the text node there and the inline elements around it in two; returns the
+ * node in block that starts the second part (NULL: pos is at the block's end). */
+static CscdNode* splitTo(CscdView* v, CscdElement* host, CscdElement* block, size_t pos) {
+    HostText t;
+    hostText(host, &t);
+    size_t off = 0;
+    const int i = nodeAt(&t, pos, &off);
+    if (i < 0) {
+        hostTextFree(&t);
+        return NULL;
+    }
+    CscdText* n = (CscdText*)t.nodes.items[i];
+    hostTextFree(&t);
+    if (!holds(&block->node, &n->node)) return NULL;
+    /* (the text node: its part from off on, a node of its own after it) */
+    CscdNode* right = NULL;
+    if (off < n->data.len) {
+        CscdText* after = cscdTextNew(cscdSvFrom(cscdStrSv(&n->data), off));
+        CscdStr before = cscdStrDup(cscdSvSub(cscdStrSv(&n->data), 0, off));
+        setData(v, n, cscdStrSv(&before));
+        cscdStrFree(&before);
+        if (!cscdNodeInsertBefore(n->node.parent, &after->node, cscdNodeNextSibling(&n->node))) cscdNodeDestroy(&after->node);
+        else right = &after->node;
+    } else {
+        right = cscdNodeNextSibling(&n->node);
+    }
+    /* (each inline element above it: the part from right on into a copy of it, after it) */
+    CscdNode* at = &n->node;
+    while (at->parent && at->parent != &block->node) {
+        CscdNode* parent = at->parent;
+        if (right) {
+            CscdElement* copy = cscdElementClone((CscdElement*)parent, false);
+            if (copy && cscdNodeInsertBefore(parent->parent, &copy->node, cscdNodeNextSibling(parent))) {
+                while (right) {
+                    CscdNode* next = cscdNodeNextSibling(right);
+                    CscdNode* moving = cscdNodeRemoveChild(parent, right);
+                    if (moving && !cscdNodeAppendChild(&copy->node, moving)) cscdNodeDestroy(moving);
+                    right = next;
+                }
+                right = &copy->node;
+            } else if (copy) {
+                cscdNodeDestroy(&copy->node);
+            }
+        } else {
+            right = cscdNodeNextSibling(parent);
+        }
+        at = parent;
+    }
+    return right;
+}
+
+/* the element that holds pos's node with that tag (within the host), or NULL */
+static CscdElement* holderAt(CscdElement* host, size_t pos, const char* tag) {
+    HostText t;
+    hostText(host, &t);
+    size_t off = 0;
+    const int i = nodeAt(&t, pos, &off);
+    CscdElement* found = i >= 0 ? ancestorTag(host, t.nodes.items[i], tag, NULL) : NULL;
+    hostTextFree(&t);
+    return found;
+}
+
+/* the element with that tag that holds the character at pos (not the place: the character after it), or NULL */
+static CscdElement* holderOfChar(CscdElement* host, size_t pos, const char* tag) {
+    HostText t;
+    hostText(host, &t);
+    CscdElement* found = NULL;
+    for (size_t i = 0; i < t.nodes.len; ++i) {
+        const size_t s = t.starts.items[i], e = s + ((CscdText*)t.nodes.items[i])->data.len;
+        if (s <= pos && pos < e) {
+            found = ancestorTag(host, t.nodes.items[i], tag, NULL);
+            break;
+        }
+    }
+    hostTextFree(&t);
+    return found;
+}
+
+/* a block with nothing in it gets the empty text node the caret goes in */
+static void caretHolder(CscdElement* block) {
+    CscdPtrVec texts = {0};
+    textNodesIn(&block->node, &texts);
+    if (!texts.len) {
+        CscdText* empty = cscdTextNew(CSCD_SV(""));
+        if (!cscdNodeAppendChild(&block->node, &empty->node)) cscdNodeDestroy(&empty->node);
+    }
+    cscdVecFree(&texts);
+}
+
+/* Enter in a list item: a new item from the caret on (an empty one: out of the list, a line after it) */
+static bool enterInItem(CscdView* v, CscdElement* host, size_t pos) {
+    CscdElement* li = holderAt(host, pos, "li");
+    if (!li) return false;
+    CscdStr text = {0};
+    cscdNodeTextContent(&li->node, &text);
+    const bool empty = !text.len;
+    cscdStrFree(&text);
+    CscdNode* list = li->node.parent;
+    if (empty && list && list->parent) {
+        /* (out of the list: the item goes, an empty line after the list) */
+        CscdText* line = cscdTextNew(CSCD_SV(""));
+        CscdElement* p = cscdElementNew(CSCD_SV("div"));
+        cscdNodeAppendChild(&p->node, &line->node);
+        if (!cscdNodeInsertBefore(list->parent, &p->node, cscdNodeNextSibling(list))) cscdNodeDestroy(&p->node);
+        CscdNode* gone = cscdNodeRemoveChild(list, &li->node);
+        if (gone) cscdNodeDestroy(gone);
+        if (!list->children.len) {
+            CscdNode* l = cscdNodeRemoveChild(list->parent, list);
+            if (l) cscdNodeDestroy(l);
+        }
+        cscdNodeMarkDirty(&host->node);
+        v->ceAnchor = v->ceFocus = pos; /* (the line where the item was) */
+        return true;
+    }
+    CscdNode* right = splitTo(v, host, li, pos);
+    CscdElement* next = cscdElementClone(li, false);
+    if (!next) return false;
+    if (!cscdNodeInsertBefore(list, &next->node, cscdNodeNextSibling(&li->node))) {
+        cscdNodeDestroy(&next->node);
+        return false;
+    }
+    while (right) {
+        CscdNode* after = cscdNodeNextSibling(right);
+        CscdNode* moving = cscdNodeRemoveChild(&li->node, right);
+        if (moving && !cscdNodeAppendChild(&next->node, moving)) cscdNodeDestroy(moving);
+        right = after;
+    }
+    caretHolder(li);
+    caretHolder(next);
+    tidy(&host->node);
+    cscdNodeMarkDirty(&host->node);
+    v->ceAnchor = v->ceFocus = pos + 1; /* (past the line break between them: the new item's start) */
+    return true;
+}
+
+/* the lines [a, z) lies on: from the start of the first to the end of the last (not their line breaks) */
+static void linesAround(const HostText* t, size_t a, size_t z, size_t* from, size_t* to) {
+    const CscdSv s = cscdStrSv(&t->all);
+    size_t p = cscdMinz(a, s.len), q = cscdMinz(z, s.len);
+    while (p > 0 && s.ptr[p - 1] != '\n') --p;
+    while (q < s.len && s.ptr[q] != '\n') ++q;
+    *from = p;
+    *to = q;
+}
+
+/* Puts element where pos is in the host's tree: the text there split, the inline elements around it too. */
+static void placeBlock(CscdView* v, CscdElement* host, size_t pos, CscdElement* e) {
+    HostText t;
+    hostText(host, &t);
+    size_t off = 0;
+    const int i = nodeAt(&t, pos, &off);
+    CscdElement* block = i >= 0 ? blockOf(host, t.nodes.items[i]) : host;
+    hostTextFree(&t);
+    CscdNode* right = i >= 0 ? splitTo(v, host, block, pos) : NULL;
+    if (!(right ? cscdNodeInsertBefore(&block->node, &e->node, right) : cscdNodeAppendChild(&block->node, &e->node))) cscdNodeDestroy(&e->node);
+}
+
+/* The lines the selection is on as blocks: each one a list item of a new <ul> or <ol> (list), or each a <tag>
+ * (a heading, a paragraph); their text, with its formatting, moved in. */
+static void linesToBlocks(CscdView* v, CscdElement* host, const char* list, const char* tag) {
+    HostText t;
+    hostText(host, &t);
+    size_t a, z, from, to;
+    selection(v, t.all.len, &a, &z);
+    linesAround(&t, a, z, &from, &to);
+    /* each line's HTML */
+    CscdStrVec lines = {0};
+    for (size_t p = from; p <= to;) {
+        size_t q = p;
+        while (q < to && t.all.ptr[q] != '\n') ++q;
+        CscdStr html = {0};
+        selectionHtml(host, &t, p, q, &html);
+        cscdVecPush(&lines, html);
+        if (q >= to) break;
+        p = q + 1;
+    }
+    /* (the line breaks of the text around them go: the new blocks separate the lines) */
+    const bool breakBefore = from > 0 && !isSep(&t, from - 1);
+    const bool breakAfter = to < t.all.len && !isSep(&t, to);
+    hostTextFree(&t);
+    pushUndo(v, host, 3);
+    deleteRange(v, host, from, to + (breakAfter ? 1 : 0));
+    if (breakBefore) {
+        deleteRange(v, host, from - 1, from);
+        --from;
+    }
+    CscdElement* outer = list ? cscdElementNew(cscdSv(list)) : NULL;
+    for (size_t k = 0; k < lines.len; ++k) {
+        CscdElement* item = cscdElementNew(cscdSv(list ? "li" : tag));
+        cscdElementSetInnerHTML(item, cscdStrSv(&lines.items[k]));
+        caretHolder(item);
+        if (outer) {
+            if (!cscdNodeAppendChild(&outer->node, &item->node)) cscdNodeDestroy(&item->node);
+        } else {
+            placeBlock(v, host, from, item);
+            /* (the next one after it) */
+            CscdStr text = {0};
+            cscdNodeTextContent(&item->node, &text);
+            from += text.len + 1;
+            cscdStrFree(&text);
+        }
+    }
+    if (outer) placeBlock(v, host, from, outer);
+    for (size_t k = 0; k < lines.len; ++k) cscdStrFree(&lines.items[k]);
+    cscdVecFree(&lines);
+    tidy(&host->node);
+    cscdNodeMarkDirty(&host->node);
+    changed(v, host);
+}
+
+/* Blocks of that tag that hold the selection made lines again: their contents in the text, a line break between
+ * them (a list: its items). */
+static void blocksToLines(CscdView* v, CscdElement* host, CscdElement* block) {
+    pushUndo(v, host, 3);
+    CscdNode* parent = block->node.parent;
+    const bool list = cscdElementIs(block, "ul") || cscdElementIs(block, "ol");
+    CscdPtrVec items = {0};
+    if (list) {
+        for (size_t i = 0; i < block->node.children.len; ++i)
+            if (cscdNodeIsElement(cscdNodeChild(&block->node, i))) cscdVecPush(&items, cscdNodeChild(&block->node, i));
+    } else {
+        cscdVecPush(&items, &block->node);
+    }
+    /* (in a block of their own when the list was not alone in the host's text: a div a line) */
+    for (size_t k = 0; k < items.len; ++k) {
+        CscdNode* item = (CscdNode*)items.items[k];
+        CscdElement* line = cscdElementNew(CSCD_SV("div"));
+        while (item->children.len) {
+            CscdNode* c = cscdNodeRemoveChild(item, cscdNodeChild(item, 0));
+            if (c && !cscdNodeAppendChild(&line->node, c)) cscdNodeDestroy(c);
+        }
+        caretHolder(line);
+        if (!cscdNodeInsertBefore(parent, &line->node, &block->node)) cscdNodeDestroy(&line->node);
+    }
+    cscdVecFree(&items);
+    CscdNode* gone = cscdNodeRemoveChild(parent, &block->node);
+    if (gone) cscdNodeDestroy(gone);
+    tidy(&host->node);
+    cscdNodeMarkDirty(&host->node);
+    changed(v, host);
+}
+
+static void toggleList(CscdView* v, CscdElement* host, const char* list) {
+    HostText t;
+    hostText(host, &t);
+    size_t a, z;
+    selection(v, t.all.len, &a, &z);
+    hostTextFree(&t);
+    CscdElement* li = holderAt(host, a, "li");
+    CscdElement* in = li ? cscdNodeParentElement(&li->node) : NULL;
+    if (in && cscdElementIs(in, list)) blocksToLines(v, host, in);
+    else if (in) { /* (a list of the other kind: renamed) */
+        pushUndo(v, host, 3);
+        CscdElement* other = cscdElementNew(cscdSv(list));
+        CscdNode* parent = in->node.parent;
+        while (in->node.children.len) {
+            CscdNode* c = cscdNodeRemoveChild(&in->node, cscdNodeChild(&in->node, 0));
+            if (c && !cscdNodeAppendChild(&other->node, c)) cscdNodeDestroy(c);
+        }
+        if (!cscdNodeInsertBefore(parent, &other->node, &in->node)) cscdNodeDestroy(&other->node);
+        CscdNode* gone = cscdNodeRemoveChild(parent, &in->node);
+        if (gone) cscdNodeDestroy(gone);
+        changed(v, host);
+    } else {
+        linesToBlocks(v, host, list, NULL);
+    }
+}
+
+/* the block the caret is in as a <tag> (h1 to h6, p); a heading of that tag already: a paragraph */
+static void formatBlock(CscdView* v, CscdElement* host, CscdSv tag) {
+    static const char* const ok[] = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "pre", "blockquote"};
+    const char* want = NULL;
+    for (size_t i = 0; i < CSCD_COUNT(ok); ++i) if (cscdSvIEqC(tag, ok[i])) want = ok[i];
+    if (!want) return;
+    HostText t;
+    hostText(host, &t);
+    size_t a, z, off = 0;
+    selection(v, t.all.len, &a, &z);
+    const int i = nodeAt(&t, a, &off);
+    CscdElement* block = i >= 0 ? blockOf(host, t.nodes.items[i]) : host;
+    hostTextFree(&t);
+    if (block == host || cscdElementIs(block, "li")) {
+        linesToBlocks(v, host, NULL, want);
+        return;
+    }
+    pushUndo(v, host, 3);
+    if (cscdElementIs(block, want) && want[0] == 'h') want = "p";
+    CscdElement* renamed = cscdElementNew(cscdSv(want));
+    CscdNode* parent = block->node.parent;
+    while (block->node.children.len) {
+        CscdNode* c = cscdNodeRemoveChild(&block->node, cscdNodeChild(&block->node, 0));
+        if (c && !cscdNodeAppendChild(&renamed->node, c)) cscdNodeDestroy(c);
+    }
+    if (!cscdNodeInsertBefore(parent, &renamed->node, &block->node)) cscdNodeDestroy(&renamed->node);
+    CscdNode* gone = cscdNodeRemoveChild(parent, &block->node);
+    if (gone) cscdNodeDestroy(gone);
+    cscdNodeMarkDirty(&host->node);
+    changed(v, host);
 }
 
 /* ---- the keys ----------------------------------------------------------------------------------------------- */
@@ -792,7 +1199,12 @@ bool viewEditableKey(CscdView* v, CscdElement* host, CscdKey k, CscdModifiers m,
     }
     case CSCD_KEY_ENTER:
         pushUndo(v, host, 3);
-        replaceSelection(v, host, CSCD_SV("\n"));
+        if (holderAt(host, a, "li") && !m.shift) {
+            replaceSelection(v, host, CSCD_SV(""));
+            enterInItem(v, host, a);
+        } else {
+            replaceSelection(v, host, CSCD_SV("\n"));
+        }
         changed(v, host);
         break;
     default:
@@ -913,10 +1325,34 @@ bool cscdViewSetEditableSelection(CscdView* v, size_t start, size_t end) {
     return true;
 }
 
-bool cscdViewEditableCommand(CscdView* v, CscdSv command) {
+bool cscdViewEditableCommand(CscdView* v, CscdSv command) { return cscdViewEditableCommandWith(v, command, CSCD_SV("")); }
+
+bool cscdViewEditableCommandWith(CscdView* v, CscdSv command, CscdSv value) {
     CscdElement* host = viewEditableHost(v);
     if (!host) return false;
-    if (cscdSvEqC(command, "bold")) toggleFormat(v, host, "b", "strong");
+    cscdViewUpdate(v); /* (the blocks as they are) */
+    if (cscdSvEqC(command, "createLink")) {
+        if (!value.len) return false;
+        /* (a link already over the selection: its address changed) */
+        HostText t;
+        hostText(host, &t);
+        size_t a, z;
+        selection(v, t.all.len, &a, &z);
+        hostTextFree(&t);
+        CscdElement* link = holderOfChar(host, a, "a");
+        if (link && link == holderOfChar(host, z > a ? z - 1 : z, "a")) {
+            pushUndo(v, host, 3);
+            cscdElementSetAttribute(link, CSCD_SV("href"), value);
+            changed(v, host);
+        } else {
+            applyFormat(v, host, "a", NULL, true, value);
+        }
+    } else if (cscdSvEqC(command, "unlink")) {
+        applyFormat(v, host, "a", NULL, false, CSCD_SV(""));
+    } else if (cscdSvEqC(command, "insertUnorderedList")) toggleList(v, host, "ul");
+    else if (cscdSvEqC(command, "insertOrderedList")) toggleList(v, host, "ol");
+    else if (cscdSvEqC(command, "formatBlock")) formatBlock(v, host, value);
+    else if (cscdSvEqC(command, "bold")) toggleFormat(v, host, "b", "strong");
     else if (cscdSvEqC(command, "italic")) toggleFormat(v, host, "i", "em");
     else if (cscdSvEqC(command, "underline")) toggleFormat(v, host, "u", NULL);
     else if (cscdSvEqC(command, "undo")) { if (undoStep(v, host, false)) changed(v, host); }
