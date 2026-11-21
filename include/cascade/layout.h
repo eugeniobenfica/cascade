@@ -29,8 +29,6 @@ CSCD_INLINE CscdBoxRect cscdBoxRectIntersect(CscdBoxRect a, CscdBoxRect b) {
     const double y1 = cscdBoxRectBottom(a) < cscdBoxRectBottom(b) ? cscdBoxRectBottom(a) : cscdBoxRectBottom(b);
     return cscdBoxRect(x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0);
 }
-/* the border box, padding box and content box in layout's own doubles */
-CSCD_INLINE CscdBoxRect cscdBoxBorderBoxD(const CscdLayoutBox* b);
 /* (as cscdRectUnite: an empty one adds nothing) */
 CSCD_INLINE CscdBoxRect cscdBoxRectUnite(CscdBoxRect a, CscdBoxRect b) {
     if (cscdBoxRectEmpty(a)) return b;
@@ -77,6 +75,7 @@ typedef enum CscdReplacedKind {
     CSCD_REPL_RANGE, CSCD_REPL_SELECT, CSCD_REPL_PROGRESS, CSCD_REPL_METER, CSCD_REPL_COLOR_INPUT, CSCD_REPL_VIDEO, CSCD_REPL_FRAME
 } CscdReplacedKind;
 
+#ifdef CASCADE_INTERNAL /* (its fields, and what reads them: the library's own, not the API) */
 struct CscdLayoutBox {
     uint8_t kind;          /* CscdBoxKind */
     uint8_t replaced;      /* CscdReplacedKind */
@@ -187,6 +186,10 @@ CSCD_INLINE bool cscdBoxIsScrollContainer(const CscdLayoutBox* b) {
     return s && (s->overflowX == CSCD_OVERFLOW_AUTO || s->overflowX == CSCD_OVERFLOW_SCROLL || s->overflowY == CSCD_OVERFLOW_AUTO ||
                  s->overflowY == CSCD_OVERFLOW_SCROLL || s->overflowX == CSCD_OVERFLOW_HIDDEN || s->overflowY == CSCD_OVERFLOW_HIDDEN);
 }
+CSCD_INLINE bool cscdBoxIsElements(const CscdLayoutBox* b) {
+    return b->element && !b->anonymous && !b->pseudo.len && b->kind != CSCD_BOX_TEXT;
+}
+#endif
 /* Moves the box and everything inside it. */
 void cscdBoxShift(CscdLayoutBox* b, double dx, double dy);
 
@@ -206,9 +209,6 @@ CscdLayoutBox* cscdLayoutDocumentFrom(CscdDocument* doc, const CscdStyleEngine* 
  * box (one with an element, not anonymous, not a pseudo element's nor a text). */
 CscdRect cscdBoxOwnInk(const CscdLayoutBox* b);
 uint64_t cscdBoxOwnLook(const CscdLayoutBox* b);
-CSCD_INLINE bool cscdBoxIsElements(const CscdLayoutBox* b) {
-    return b->element && !b->anonymous && !b->pseudo.len && b->kind != CSCD_BOX_TEXT;
-}
 /* Frees what is left of a layout cscdLayoutDocumentFrom took boxes from (not those), and forgets it in the elements
  * whose boxes go. */
 void cscdLayoutBoxFreeReplaced(CscdLayoutBox* b);

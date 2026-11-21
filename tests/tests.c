@@ -702,6 +702,40 @@ static void editMenu(void* u, CscdMenu* out) {
     cscdMenuAdd(out, item("Redo", NULL));
 }
 
+/* The API's own way into events and elements (what a program has: the structs are opaque to it; the window's options:
+ * tests/window.c). */
+static int accessorsSeen;
+static void readThroughAccessors(void* user, CscdEvent* ev) {
+    CscdElement* e = (CscdElement*)user;
+    size_t n = 1;
+    if (cscdSvEqC(cscdEventType(ev), "keydown") && cscdEventCurrentTarget(ev) == e && cscdSvEqC(cscdEventKey(ev), "Enter") &&
+        cscdEventModifiers(ev) == (CSCD_MOD_CTRL | CSCD_MOD_SHIFT) && cscdEventPosition(ev).x == 3 && cscdEventPosition(ev).y == 4 &&
+        cscdEventButton(ev) == 2 && cscdEventButtons(ev) == 2 && cscdSvEqC(cscdEventPointerType(ev), "mouse") &&
+        cscdEventTouches(ev, &n) == NULL && n == 0)
+        ++accessorsSeen;
+    cscdEventPreventDefault(ev);
+}
+
+static void testAccessors(void) {
+    CscdElement* e = cscdElementNew(CSCD_SV("section"));
+    CHECK(cscdSvEqC(cscdElementTag(e), "section") && cscdElementIs(e, "section") && !cscdElementChecked(e));
+    CHECK(cscdElementNode(e) == &e->node && !cscdElementHasHighlighter(e));
+    int mark = 0;
+    cscdElementSetUserData(e, &mark);
+    CHECK(cscdElementUserData(e) == &mark);
+    cscdElementOn(e, CSCD_SV("keydown"), readThroughAccessors, e);
+    CscdEvent* ev = cscdEventNew(CSCD_SV("keydown"));
+    cscdEventSetKey(ev, CSCD_SV("Enter"));
+    cscdEventSetModifiers(ev, CSCD_MOD_CTRL | CSCD_MOD_SHIFT);
+    cscdEventSetPosition(ev, 3, 4);
+    cscdEventSetButton(ev, 2, 2);
+    accessorsSeen = 0;
+    cscdElementCallListeners(e, ev, false);
+    CHECK(accessorsSeen == 1 && cscdEventDefaultPrevented(ev));
+    cscdEventFree(ev);
+    cscdNodeDestroy(cscdElementNode(e));
+}
+
 static void testMenus(void) {
     CscdView* v = cscdViewNew();
     menuView = v;
@@ -4885,6 +4919,7 @@ int main(void) {
     testBidiFields();
     testMoreCss();
     testBinding();
+    testAccessors();
     testMenus();
     testDragDrop();
     testTouch();

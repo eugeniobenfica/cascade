@@ -132,10 +132,11 @@ static void onStart(void* user, CscdEvent* ev) {
 }
 
 int main(int argc, char** argv) {
-    CscdWindowOptions opts = cscdWindowOptions();           /* Vulkan, then OpenGL, then software */
-    opts.title = "Focus";
-    opts.page = "ui/index.html";                              /* found wherever the program starts from */
-    CscdWindow* win = cscdWindowNew(&opts);
+    CscdWindowOptions* opts = cscdWindowOptionsNew();         /* Vulkan, then OpenGL, then software */
+    cscdWindowOptionsSetTitle(opts, "Focus");
+    cscdWindowOptionsSetPage(opts, "ui/index.html");          /* found wherever the program starts from */
+    CscdWindow* win = cscdWindowNew(opts);
+    cscdWindowOptionsFree(opts);
     CscdView* ui = cscdWindowView(win);
 
     cscdElementOnClick(cscdViewGet(ui, CSCD_SV("#start")), onStart, ui);

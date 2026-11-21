@@ -236,6 +236,38 @@ jobs:
           name: fuzz-crashes
           path: crashes/
 
+  abi:
+    name: ABI (libabigail)
+    # The functions and types include/cascade declares, as libcascade.so has them, compared with tests/abi/cascade.abi
+    # (the ABI of the last release, or of the first commit of the next major version): something removed or changed
+    # there breaks programs built against it, and fails; what is only added passes. A new major version writes the file
+    # anew (the job uploads the one it read: tests/abi/cascade.abi is that file).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y ninja-build abigail-tools libx11-dev
+      - name: Build the engine as a shared library
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCASCADE_SHARED=ON -DCASCADE_BUILD_TESTS=OFF \
+            -DCASCADE_BUILD_EXAMPLES=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake --build build
+      - name: Compare with tests/abi/cascade.abi
+        run: |
+          abidw --headers-dir include/cascade --drop-private-types --no-corpus-path --out-file cascade.abi build/libcascade.so
+          if [ ! -f tests/abi/cascade.abi ]; then echo "::warning::no tests/abi/cascade.abi yet: this run's is the artifact"; exit 0; fi
+          set +e
+          abidiff --no-added-syms tests/abi/cascade.abi cascade.abi
+          r=$?
+          set -e
+          # (1: abidiff failed; 8: a change that breaks what was built against the old; 4 alone: a compatible change)
+          if [ $((r & 9)) -ne 0 ]; then echo "::error::the ABI changed incompatibly (abidiff $r)"; exit 1; fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cascade-abi
+          path: cascade.abi
+
   threads:
     name: ThreadSanitizer
     # the paint threads, the workers' loops and the caches they share (glyphs, shadows, fonts), watched for races

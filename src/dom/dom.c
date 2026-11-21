@@ -86,6 +86,72 @@ void cscdEventFini(CscdEvent* ev) {
     cscdVecFree(&ev->changedTouches);
 }
 
+/* ---- events, as the API has them ------------------------------------------------------------------- */
+
+CscdEvent* cscdEventNew(CscdSv type) {
+    CscdEvent* ev = CSCD_NEW(CscdEvent);
+    cscdEventInit(ev, type);
+    return ev;
+}
+void cscdEventFree(CscdEvent* ev) {
+    if (!ev) return;
+    cscdEventFini(ev);
+    cscdFree(ev);
+}
+void cscdEventStopPropagation(CscdEvent* ev) { ev->propagationStopped = true; }
+void cscdEventPreventDefault(CscdEvent* ev) { ev->defaultPrevented = true; }
+bool cscdEventDefaultPrevented(const CscdEvent* ev) { return ev->defaultPrevented; }
+CscdSv cscdEventType(const CscdEvent* ev) { return cscdStrSv(&ev->type); }
+CscdElement* cscdEventTarget(const CscdEvent* ev) { return ev->target; }
+CscdElement* cscdEventCurrentTarget(const CscdEvent* ev) { return ev->currentTarget; }
+CscdPoint cscdEventPosition(const CscdEvent* ev) { return cscdPoint(ev->x, ev->y); }
+CscdPoint cscdEventOffset(const CscdEvent* ev) { return cscdPoint(ev->offsetX, ev->offsetY); }
+CscdPoint cscdEventDelta(const CscdEvent* ev) { return cscdPoint(ev->deltaX, ev->deltaY); }
+int cscdEventButton(const CscdEvent* ev) { return ev->button; }
+int cscdEventButtons(const CscdEvent* ev) { return ev->buttons; }
+int cscdEventDetail(const CscdEvent* ev) { return ev->detail; }
+CscdSv cscdEventKey(const CscdEvent* ev) { return cscdStrSv(&ev->key); }
+CscdSv cscdEventPointerType(const CscdEvent* ev) { return cscdStrSv(&ev->pointerType); }
+CscdDataTransfer* cscdEventDataTransfer(const CscdEvent* ev) { return ev->dataTransfer; }
+const CscdTouchPoint* cscdEventTouches(const CscdEvent* ev, size_t* n) {
+    *n = ev->touches.len;
+    return ev->touches.items;
+}
+const CscdTouchPoint* cscdEventChangedTouches(const CscdEvent* ev, size_t* n) {
+    *n = ev->changedTouches.len;
+    return ev->changedTouches.items;
+}
+int cscdEventModifiers(const CscdEvent* ev) {
+    return (ev->ctrl ? CSCD_MOD_CTRL : 0) | (ev->shift ? CSCD_MOD_SHIFT : 0) | (ev->alt ? CSCD_MOD_ALT : 0) | (ev->meta ? CSCD_MOD_META : 0);
+}
+void cscdEventSetPosition(CscdEvent* ev, float x, float y) {
+    ev->x = x;
+    ev->y = y;
+}
+void cscdEventSetButton(CscdEvent* ev, int button, int buttons) {
+    ev->button = button;
+    ev->buttons = buttons;
+}
+void cscdEventSetKey(CscdEvent* ev, CscdSv key) {
+    cscdStrFree(&ev->key);
+    ev->key = cscdStrDup(key);
+}
+void cscdEventSetModifiers(CscdEvent* ev, int mods) {
+    ev->ctrl = (mods & CSCD_MOD_CTRL) != 0;
+    ev->shift = (mods & CSCD_MOD_SHIFT) != 0;
+    ev->alt = (mods & CSCD_MOD_ALT) != 0;
+    ev->meta = (mods & CSCD_MOD_META) != 0;
+}
+
+/* ---- elements, as the API has them ----------------------------------------------------------------- */
+
+CscdSv cscdElementTag(const CscdElement* e) { return cscdStrSv(&e->tag); }
+bool cscdElementIs(const CscdElement* e, const char* tag) { return cscdStrEqC(&e->tag, tag); }
+bool cscdElementChecked(const CscdElement* e) { return (e->state & CSCD_STATE_CHECKED) != 0; }
+bool cscdElementHasHighlighter(const CscdElement* e) { return e->highlighter_.fn != NULL; }
+void* cscdElementUserData(const CscdElement* e) { return e->userData; }
+void cscdElementSetUserData(CscdElement* e, void* data) { e->userData = data; }
+
 /* ---- nodes ----------------------------------------------------------------------------------------- */
 
 CscdText* cscdTextNew(CscdSv data) {
@@ -1026,8 +1092,13 @@ void cscdElementCallListeners(CscdElement* e, CscdEvent* ev, bool capture) {
     CscdListener* ls = (CscdListener*)cscdMalloc(n * sizeof(CscdListener));
     memcpy(ls, e->listeners.items, n * sizeof(CscdListener));
     CscdSv type = cscdStrSv(&ev->type);
+    /* (as dispatch has them at e: an event the program made has no target yet) */
+    CscdElement* const current = ev->currentTarget;
+    if (!ev->target) ev->target = e;
+    ev->currentTarget = e;
     for (size_t i = 0; i < n; ++i)
         if (ls[i].capture == capture && cscdSvEq(cscdStrSv(&ls[i].type), type)) ls[i].handler.fn(ls[i].handler.user, ev);
+    ev->currentTarget = current;
     cscdFree(ls);
 }
 

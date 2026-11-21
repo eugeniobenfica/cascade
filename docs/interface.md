@@ -175,7 +175,7 @@ snap->checkable = true;
 snap->checked = app->snapping;
 cscdMenuAdd(&menu, cscdMenuSeparator());
 
-cscdViewShowMenu(ui, menu, e->x, e->y, 0);          /* at the pointer (in a contextmenu handler) */
+cscdViewShowMenu(ui, menu, cscdEventPosition(e).x, cscdEventPosition(e).y, 0); /* at the pointer (in a contextmenu handler) */
 cscdViewShowMenuAt(ui, button, otherMenu);           /* under a button */
 cscdViewBindMenuBar(ui, fileEntry, fillFileMenu, app, NULL); /* a menu bar entry */
 ```
@@ -201,7 +201,7 @@ with the submitting button's value.
 
 ```c
 static void onAskClosed(void* user, CscdEvent* e) {
-    if (cscdSvEqC(cscdElementAttrC(e->currentTarget, "returnvalue"), "discard")) discard(user);
+    if (cscdSvEqC(cscdElementAttrC(cscdEventCurrentTarget(e), "returnvalue"), "discard")) discard(user);
 }
 
 CscdElement* ask = cscdViewGet(ui, CSCD_SV("#ask"));
@@ -310,7 +310,7 @@ A `<template>` holds a piece of interface that is not shown: its content stays o
 ```c
 CscdElement* copy = cscdTemplateInstantiate(cscdViewGet(ui, CSCD_SV("#row"))); /* the caller's */
 cscdElementFill(copy, CSCD_SV("name"), CSCD_SV("notes.txt"));                    /* every {{name}} */
-cscdNodeAppendChild(&cscdViewGet(ui, CSCD_SV("#files"))->node, &copy->node);
+cscdNodeAppendChild(cscdElementNode(cscdViewGet(ui, CSCD_SV("#files"))), cscdElementNode(copy));
 ```
 
 `cscdElementClone(e, deep)` copies any element (its tag and attributes, and with `deep` what it
@@ -333,7 +333,7 @@ cscdViewListRefresh(ui, list);                  /* the rows shown filled again *
 ```
 
 A row scrolled away is dropped, and the next item gets a fresh copy: handle the rows' events on the
-list itself (`event->target` is the row element), not on each row.
+list itself (`cscdEventTarget(event)` is the row element), not on each row.
 
 ## Data binding
 

@@ -45,6 +45,8 @@ option(CASCADE_BUILD_EXAMPLES "Build the examples" ${cascade_default_examples})
 option(CASCADE_BUILD_TOOLS "Build cascade-render (HTML to PNG)" ${cascade_default_tools})
 option(CASCADE_BUILD_TESTS "Build cascade-tests" ${cascade_default_tests})
 option(CASCADE_C_SHARED "Build cascade_c, a shared library of the handle API (for other languages)" OFF)
+# The engine as a shared library (libcascade.so, cascade.dll) instead of a static one: what CI's ABI check reads.
+option(CASCADE_SHARED "Build the engine as a shared library" OFF)
 option(CASCADE_INSTALL "Install the library, its headers and its CMake package" ${cascade_top})
 # Checks for development (GCC, Clang): -DCASCADE_SANITIZE=address,undefined builds the library and
 # what links it with those sanitizers; CASCADE_FUZZ builds cascade-fuzz-* (tests/fuzz.c), with
@@ -67,7 +69,12 @@ include(cmake/cascadeApp.cmake)
 
 # ---- the engine ----------------------------------------------------------------------------------------
 
-add_library(${BT} STATIC
+if(CASCADE_SHARED)
+  set(cascade_library_kind SHARED)
+else()
+  set(cascade_library_kind STATIC)
+endif()
+add_library(${BT} ${cascade_library_kind}
   # core: memory, strings, containers, files, threads
   src/core/base.c src/core/files.c
   # dom: the HTML parser, the DOM, data binding
@@ -90,6 +97,15 @@ add_library(${BT} STATIC
   src/capi/capi.c
 )
 add_library(cascade::cascade ALIAS ${BT})
+# The structs behind the API's handles (an element, an event, a layout box, a window's options) show their fields to
+# the library and to its own tests and tools only: the API reaches them through functions, so that the fields can
+# change without a program built on an earlier release noticing (the ABI check in CI holds it to that).
+target_compile_definitions(${BT} PRIVATE CASCADE_INTERNAL)
+if(CASCADE_SHARED)
+  # (every function: the tests reach the library's own too; the ABI check reads only what include/cascade declares)
+  set_target_properties(${BT} PROPERTIES POSITION_INDEPENDENT_CODE ON WINDOWS_EXPORT_ALL_SYMBOLS ON
+    VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
+endif()
 set_target_properties(${BT} PROPERTIES EXPORT_NAME cascade)
 target_include_directories(${BT}
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
@@ -217,7 +233,7 @@ if(CASCADE_C_SHARED)
   add_library(cascade_c SHARED src/capi/capi.c)
   target_link_libraries(cascade_c PRIVATE ${BT})
   target_include_directories(cascade_c PRIVATE src)
-  target_compile_definitions(cascade_c PRIVATE CASCADE_C_EXPORTS)
+  target_compile_definitions(cascade_c PRIVATE CASCADE_C_EXPORTS CASCADE_INTERNAL)
   # libcascade_c.so.1: a new major version is a new name, so programs keep the ABI they were built on
   set_target_properties(cascade_c PROPERTIES C_VISIBILITY_PRESET hidden PREFIX ""
     VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
@@ -237,12 +253,14 @@ endif()
 
 if(CASCADE_BUILD_TOOLS)
   add_executable(cascade-render tools/render.c)
+  target_compile_definitions(cascade-render PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-render PRIVATE ${BT})
   if(WIN32)
     target_link_libraries(cascade-render PRIVATE shell32) # (CommandLineToArgvW: the arguments as UTF-8)
   endif()
   cascade_release_link(cascade-render)
   add_executable(cascade-shape tools/shape.c) # (a font's shaping, glyph by glyph: tools/compareShaping.py)
+  target_compile_definitions(cascade-shape PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-shape PRIVATE ${BT})
 endif()
 
@@ -268,6 +286,7 @@ endif()
 if(CASCADE_BUILD_TESTS)
   enable_testing()
   add_executable(cascade-tests tests/tests.c)
+  target_compile_definitions(cascade-tests PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-tests PRIVATE ${BT})
   add_test(NAME cascade-tests COMMAND cascade-tests)
   # the handle API, from plain C99
@@ -277,30 +296,37 @@ if(CASCADE_BUILD_TESTS)
   add_test(NAME cascade-capi-tests COMMAND cascade-capi-tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   # random changes and input, for the sanitizers to watch
   add_executable(cascade-stress tests/stress.c)
+  target_compile_definitions(cascade-stress PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-stress PRIVATE ${BT})
   add_test(NAME cascade-stress COMMAND cascade-stress)
   # the program's allocator: blocks counted (nothing that grows), and requests made to fail and retried
   add_executable(cascade-memory-tests tests/memory.c)
+  target_compile_definitions(cascade-memory-tests PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-memory-tests PRIVATE ${BT})
   add_test(NAME cascade-memory-tests COMMAND cascade-memory-tests)
   # the light paths (hover, text, attributes, scrolling, damage) against the whole pipeline from scratch
   add_executable(cascade-incremental-tests tests/incremental.c)
+  target_compile_definitions(cascade-incremental-tests PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-incremental-tests PRIVATE ${BT})
   add_test(NAME cascade-incremental-tests COMMAND cascade-incremental-tests)
   # html5lib's tree construction tests, when CASCADE_HTML5LIB_TESTS names them (CI downloads them)
   add_executable(cascade-html5lib-tests tests/html5lib.c)
+  target_compile_definitions(cascade-html5lib-tests PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-html5lib-tests PRIVATE ${BT})
   add_test(NAME cascade-html5lib-tests COMMAND cascade-html5lib-tests --known ${CMAKE_CURRENT_SOURCE_DIR}/tests/html5lib.known)
   # cascade's CSS parsing as css-parsing-tests write theirs (tools/cssParsingTests.py runs them)
   add_executable(cascade-css-parsing tests/cssParsing.c)
+  target_compile_definitions(cascade-css-parsing PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-css-parsing PRIVATE ${BT})
   # web-platform-tests' CSS reftests, scored by folder (tests/wpt.score), when CASCADE_WPT names a checkout
   add_executable(cascade-wpt-tests tests/wpt.c)
+  target_compile_definitions(cascade-wpt-tests PRIVATE CASCADE_INTERNAL)
   target_link_libraries(cascade-wpt-tests PRIVATE ${BT})
   add_test(NAME cascade-wpt-tests COMMAND cascade-wpt-tests --score ${CMAKE_CURRENT_SOURCE_DIR}/tests/wpt.score)
   # a presenter of the app's in a real window (it opens one with CASCADE_TEST_WINDOW)
   if(cascade_window)
     add_executable(cascade-window-tests tests/window.c)
+    target_compile_definitions(cascade-window-tests PRIVATE CASCADE_INTERNAL)
     target_link_libraries(cascade-window-tests PRIVATE ${BT})
     add_test(NAME cascade-window-tests COMMAND cascade-window-tests)
   endif()
@@ -311,6 +337,7 @@ if(CASCADE_FUZZ)
   foreach(cascade_fuzz_target html css image font zlib)
     set(cascade_fuzz_program cascade-fuzz-${cascade_fuzz_target})
     add_executable(${cascade_fuzz_program} tests/fuzz.c)
+    target_compile_definitions(${cascade_fuzz_program} PRIVATE CASCADE_INTERNAL)
     target_link_libraries(${cascade_fuzz_program} PRIVATE ${BT})
     target_compile_definitions(${cascade_fuzz_program} PRIVATE CASCADE_FUZZ_TARGET=${cascade_fuzz_index})
     if(CMAKE_C_COMPILER_ID MATCHES "Clang")

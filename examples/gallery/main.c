@@ -39,7 +39,7 @@ static void setTextf(CscdElement* e, const char* fmt, ...) {
 
 static void onTab(void* user, CscdEvent* ev) {
     App* app = (App*)user;
-    CscdElement* tab = ev->currentTarget;
+    CscdElement* tab = cscdEventCurrentTarget(ev);
     CscdPtrVec all = {0};
     cscdViewQuerySelectorAll(app->ui, CSCD_SV(".tab"), &all);
     for (size_t i = 0; i < all.len; ++i) cscdElementSetClass(all.items[i], CSCD_SV("active"), all.items[i] == tab);
@@ -53,37 +53,37 @@ static void onTab(void* user, CscdEvent* ev) {
 
 static void onTheme(void* user, CscdEvent* ev) {
     App* app = (App*)user;
-    cscdElementSetClass(cscdDocumentBody(cscdViewDocument(app->ui)), CSCD_SV("dark"), cscdElementChecked(ev->currentTarget));
+    cscdElementSetClass(cscdDocumentBody(cscdViewDocument(app->ui)), CSCD_SV("dark"), cscdElementChecked(cscdEventCurrentTarget(ev)));
 }
 
 static void onClicker(void* user, CscdEvent* ev) {
     App* app = (App*)user;
     ++app->clicks;
-    setTextf(ev->currentTarget, "Clicked %d %s", app->clicks, app->clicks == 1 ? "time" : "times");
+    setTextf(cscdEventCurrentTarget(ev), "Clicked %d %s", app->clicks, app->clicks == 1 ? "time" : "times");
     cscdElementSetText(byId(app, "status"), CSCD_SV("Button clicked"));
 }
 
 static void onOpacity(void* user, CscdEvent* ev) {
     App* app = (App*)user;
-    CscdStr v = cscdElementValue(ev->currentTarget);
+    CscdStr v = cscdElementValue(cscdEventCurrentTarget(ev));
     setTextf(byId(app, "opacityValue"), "%s%%", cscdStrC(&v));
     cscdStrFree(&v);
 }
 
 static void onChip(void* user, CscdEvent* ev) {
     (void)user;
-    cscdElementToggleClass(ev->currentTarget, CSCD_SV("active"));
+    cscdElementToggleClass(cscdEventCurrentTarget(ev), CSCD_SV("active"));
 }
 
 static void onTreeItem(void* user, CscdEvent* ev) {
     App* app = (App*)user;
-    CscdElement* item = ev->currentTarget;
+    CscdElement* item = cscdEventCurrentTarget(ev);
     CscdPtrVec all = {0};
     cscdViewQuerySelectorAll(app->ui, CSCD_SV(".tree .item"), &all);
     for (size_t i = 0; i < all.len; ++i) cscdElementSetClass(all.items[i], CSCD_SV("selected"), all.items[i] == item);
     cscdVecFree(&all);
     CscdStr text = cscdStrDupC("Selected ");
-    cscdNodeTextContent(&item->node, &text);
+    cscdNodeTextContent(cscdElementNode(item), &text);
     cscdElementSetText(byId(app, "status"), cscdStrSv(&text));
     cscdStrFree(&text);
 }
@@ -99,7 +99,7 @@ static void refreshCount(App* app) {
 
 static void onTaskChecked(void* user, CscdEvent* ev) {
     CscdElement* li = (CscdElement*)user;
-    cscdElementSetClass(li, CSCD_SV("done"), cscdElementChecked(ev->currentTarget));
+    cscdElementSetClass(li, CSCD_SV("done"), cscdElementChecked(cscdEventCurrentTarget(ev)));
 }
 
 typedef struct RemoveTask { App* app; CscdElement* li; } RemoveTask;
@@ -114,7 +114,7 @@ static void onTaskRemove(void* user, CscdEvent* ev) {
     App* app = (App*)user;
     RemoveTask* r = CSCD_NEW(RemoveTask);
     r->app = app;
-    r->li = cscdNodeParentElement(&ev->currentTarget->node);
+    r->li = cscdNodeParentElement(cscdElementNode(cscdEventCurrentTarget(ev)));
     CscdAction a = {removeTask, r, cscdFree};
     cscdViewSetTimeout(app->ui, a, 0);
 }
@@ -141,7 +141,7 @@ static void addFromInput(App* app) {
 }
 
 static void onTaskKey(void* user, CscdEvent* ev) {
-    if (cscdStrEqC(&ev->key, "Enter")) addFromInput((App*)user);
+    if (cscdSvEqC(cscdEventKey(ev), "Enter")) addFromInput((App*)user);
 }
 
 static void onAddTask(void* user, CscdEvent* ev) {
@@ -254,16 +254,16 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--opengl")) backend = CSCD_BACKEND_OPENGL;
         else if (!strcmp(argv[i], "--software")) backend = CSCD_BACKEND_SOFTWARE;
     }
-    CscdWindowOptions opts = cscdWindowOptions();
-    opts.title = "";              /* the page's <title> */
-    opts.width = 1180;
-    opts.height = 760;
-    opts.backend = backend;
-    opts.darkTitleBar = true;
-    opts.page = "ui/index.html"; /* next to the program (in debug builds: in the sources, live reloaded) */
+    CscdWindowOptions* opts = cscdWindowOptionsNew();
+    cscdWindowOptionsSetTitle(opts, ""); /* the page's <title> */
+    cscdWindowOptionsSetSize(opts, 1180, 760);
+    cscdWindowOptionsSetBackend(opts, backend);
+    cscdWindowOptionsSetDarkTitleBar(opts, true);
+    cscdWindowOptionsSetPage(opts, "ui/index.html"); /* next to the program (in debug builds: in the sources, live reloaded) */
     App app;
     memset(&app, 0, sizeof app);
-    app.win = cscdWindowNew(&opts);
+    app.win = cscdWindowNew(opts);
+    cscdWindowOptionsFree(opts);
     app.ui = cscdWindowView(app.win);
 
     cscdElementSetText(byId(&app, "backend"), cscdSv(cscdWindowBackendDescription(app.win)));

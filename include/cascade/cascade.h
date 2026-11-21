@@ -1,8 +1,9 @@
 /* cascade — an HTML and CSS user interface renderer in plain C.
  *
- *   CscdWindowOptions opts = cscdWindowOptions();
- *   opts.page = "ui/index.html";
- *   CscdWindow* win = cscdWindowNew(&opts);
+ *   CscdWindowOptions* opts = cscdWindowOptionsNew();
+ *   cscdWindowOptionsSetPage(opts, "ui/index.html");
+ *   CscdWindow* win = cscdWindowNew(opts);
+ *   cscdWindowOptionsFree(opts);
  *   cscdElementOnClick(cscdViewGet(cscdWindowView(win), CSCD_SV("#save")), onSave, app);
  *   return cscdWindowRun(win);
  *

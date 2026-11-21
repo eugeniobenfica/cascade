@@ -52,7 +52,10 @@ typedef enum cscd_result {
 } cscd_result;
 
 /* Modifier keys, as a bit set. */
+#ifndef CSCD_MOD_DEFINED /* (dom.h has the same) */
+#define CSCD_MOD_DEFINED
 enum { CSCD_MOD_SHIFT = 1, CSCD_MOD_CTRL = 2, CSCD_MOD_ALT = 4, CSCD_MOD_META = 8 };
+#endif
 
 /* Keys: the values of CscdKey (view.h), which defines the same names when it comes first. */
 #ifdef CASCADE_VIEW_H

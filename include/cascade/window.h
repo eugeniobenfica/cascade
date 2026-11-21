@@ -37,7 +37,9 @@ extern "C" {
  * surface goes. NULL: cascade's own presenter. See cscdViewSetTransparent. */
 typedef CscdPresenter* (*CscdPresenterFn)(void* user, void* surface, int width, int height);
 
-typedef struct CscdWindowOptions {
+typedef struct CscdWindowOptions CscdWindowOptions;
+#ifdef CASCADE_INTERNAL /* (its fields: the library's own, not the API) */
+struct CscdWindowOptions {
     const char* title;   /* NULL or "": the page's <title> ("cascade" until there is one) */
     int width, height;   /* client size in CSS pixels */
     CscdBackend backend;
@@ -56,10 +58,35 @@ typedef struct CscdWindowOptions {
     /* NULL: cascade chooses by backend. Set: backend and CSCD_FEATURE_GPU no longer choose. */
     CscdPresenterFn presenter;
     void* presenterUser;
-} CscdWindowOptions;
-
-/* The defaults: "cascade", 1024 x 720, Auto, resizable, visible, minimum 200 x 150. */
+    char* ownTitle_; /* (the copies cscdWindowOptionsSetTitle and -Page made) */
+    char* ownPage_;
+};
+/* The defaults, by value (the library's own windows). */
 CscdWindowOptions cscdWindowOptions(void);
+#endif
+
+/* Options for a window, the defaults: "cascade", 1024 x 720, Auto, resizable, visible, minimum 200 x 150. The strings
+ * set are copied. */
+CscdWindowOptions* cscdWindowOptionsNew(void);
+void cscdWindowOptionsFree(CscdWindowOptions* o);
+/* NULL or "": the page's <title> ("cascade" until there is one) */
+void cscdWindowOptionsSetTitle(CscdWindowOptions* o, const char* title);
+void cscdWindowOptionsSetSize(CscdWindowOptions* o, int width, int height); /* client size in CSS pixels */
+void cscdWindowOptionsSetMinSize(CscdWindowOptions* o, int width, int height);
+void cscdWindowOptionsSetBackend(CscdWindowOptions* o, CscdBackend backend);
+void cscdWindowOptionsSetResizable(CscdWindowOptions* o, bool resizable);
+void cscdWindowOptionsSetDarkTitleBar(CscdWindowOptions* o, bool dark);
+/* false: the window stays hidden until cscdWindowShow or cscdWindowMaximize, so that the app can load its first page
+ * and the window never shows an empty one. */
+void cscdWindowOptionsSetVisible(CscdWindowOptions* o, bool visible);
+/* A page to load before the window shows ("ui/index.html": found from the working folder or next to the program). Its
+ * <title> becomes the window's title when the title is empty. */
+void cscdWindowOptionsSetPage(CscdWindowOptions* o, const char* page);
+/* Style sheet files read again when they change on disk: 1 on, 0 off, -1 (the default) on in debug builds of a program
+ * made with cascade_app() in CMake. */
+void cscdWindowOptionsSetLiveReload(CscdWindowOptions* o, int liveReload);
+/* The window's presenter made by the app (NULL: cascade chooses by backend). */
+void cscdWindowOptionsSetPresenter(CscdWindowOptions* o, CscdPresenterFn presenter, void* user);
 
 typedef struct CscdWindow CscdWindow;
 

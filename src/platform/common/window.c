@@ -32,6 +32,46 @@ CscdWindowOptions cscdWindowOptions(void) {
     return o;
 }
 
+CscdWindowOptions* cscdWindowOptionsNew(void) {
+    CscdWindowOptions* o = CSCD_NEW(CscdWindowOptions);
+    *o = cscdWindowOptions();
+    return o;
+}
+void cscdWindowOptionsFree(CscdWindowOptions* o) {
+    if (!o) return;
+    cscdFree(o->ownTitle_);
+    cscdFree(o->ownPage_);
+    cscdFree(o);
+}
+static char* optionsCopy(char** own, const char* s) {
+    cscdFree(*own);
+    *own = NULL;
+    if (!s) return NULL;
+    const size_t n = strlen(s) + 1;
+    *own = (char*)cscdMalloc(n);
+    memcpy(*own, s, n);
+    return *own;
+}
+void cscdWindowOptionsSetTitle(CscdWindowOptions* o, const char* title) { o->title = optionsCopy(&o->ownTitle_, title); }
+void cscdWindowOptionsSetSize(CscdWindowOptions* o, int width, int height) {
+    o->width = width;
+    o->height = height;
+}
+void cscdWindowOptionsSetMinSize(CscdWindowOptions* o, int width, int height) {
+    o->minWidth = width;
+    o->minHeight = height;
+}
+void cscdWindowOptionsSetBackend(CscdWindowOptions* o, CscdBackend backend) { o->backend = backend; }
+void cscdWindowOptionsSetResizable(CscdWindowOptions* o, bool resizable) { o->resizable = resizable; }
+void cscdWindowOptionsSetDarkTitleBar(CscdWindowOptions* o, bool dark) { o->darkTitleBar = dark; }
+void cscdWindowOptionsSetVisible(CscdWindowOptions* o, bool visible) { o->visible = visible; }
+void cscdWindowOptionsSetPage(CscdWindowOptions* o, const char* page) { o->page = optionsCopy(&o->ownPage_, page); }
+void cscdWindowOptionsSetLiveReload(CscdWindowOptions* o, int liveReload) { o->liveReload = liveReload; }
+void cscdWindowOptionsSetPresenter(CscdWindowOptions* o, CscdPresenterFn presenter, void* user) {
+    o->presenter = presenter;
+    o->presenterUser = user;
+}
+
 static void viewInvalidated(void* user) {
     /* invalidated from inside the loop (a drag, a timer, a resize the system runs itself): the loop
      * must come round, once a frame */

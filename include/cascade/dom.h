@@ -50,7 +50,9 @@ typedef struct CscdTouchPoint {
 } CscdTouchPoint;
 typedef CSCD_VEC(CscdTouchPoint) CscdTouchVec;
 
-typedef struct CscdEvent {
+typedef struct CscdEvent CscdEvent;
+#ifdef CASCADE_INTERNAL /* (its fields: the library's own, not the API) */
+struct CscdEvent {
     CscdStr type;                 /* "click", "mousedown", "input", "change", "keydown", ... */
     CscdElement* target;
     CscdElement* currentTarget;
@@ -68,13 +70,42 @@ typedef struct CscdEvent {
     bool ctrl, shift, alt, meta;
     bool propagationStopped;
     bool defaultPrevented;
-} CscdEvent;
-
-/* An event of that type, pointerType "mouse"; cscdEventFini frees what it holds. */
+};
+/* An event of that type on the stack, pointerType "mouse"; cscdEventFini frees what it holds. */
 void cscdEventInit(CscdEvent* ev, CscdSv type);
 void cscdEventFini(CscdEvent* ev);
-CSCD_INLINE void cscdEventStopPropagation(CscdEvent* ev) { ev->propagationStopped = true; }
-CSCD_INLINE void cscdEventPreventDefault(CscdEvent* ev) { ev->defaultPrevented = true; }
+#endif
+
+/* An event of that type (pointerType "mouse"), to dispatch; cscdEventFree frees it. */
+CscdEvent* cscdEventNew(CscdSv type);
+void cscdEventFree(CscdEvent* ev);
+void cscdEventStopPropagation(CscdEvent* ev);
+void cscdEventPreventDefault(CscdEvent* ev);
+bool cscdEventDefaultPrevented(const CscdEvent* ev);
+CscdSv cscdEventType(const CscdEvent* ev);               /* "click", "mousedown", "input", "change", "keydown", ... */
+CscdElement* cscdEventTarget(const CscdEvent* ev);
+CscdElement* cscdEventCurrentTarget(const CscdEvent* ev); /* the element whose listener runs */
+CscdPoint cscdEventPosition(const CscdEvent* ev);         /* CSS pixels, relative to the viewport */
+CscdPoint cscdEventOffset(const CscdEvent* ev);           /* relative to the current target's border box */
+CscdPoint cscdEventDelta(const CscdEvent* ev);            /* a wheel's */
+int cscdEventButton(const CscdEvent* ev);                 /* 0 left, 1 middle, 2 right */
+int cscdEventButtons(const CscdEvent* ev);
+int cscdEventDetail(const CscdEvent* ev);                 /* click, dblclick, mousedown: how many clicks in a row */
+CscdSv cscdEventKey(const CscdEvent* ev);                /* "a", "Enter", "Backspace", "ArrowLeft", ... */
+CscdSv cscdEventPointerType(const CscdEvent* ev);        /* "mouse", "touch" or "pen" */
+CscdDataTransfer* cscdEventDataTransfer(const CscdEvent* ev); /* drag and drop events */
+const CscdTouchPoint* cscdEventTouches(const CscdEvent* ev, size_t* n);        /* the fingers down */
+const CscdTouchPoint* cscdEventChangedTouches(const CscdEvent* ev, size_t* n); /* the fingers it is about */
+#ifndef CSCD_MOD_DEFINED /* (cascadeC.h has the same) */
+#define CSCD_MOD_DEFINED
+enum { CSCD_MOD_SHIFT = 1, CSCD_MOD_CTRL = 2, CSCD_MOD_ALT = 4, CSCD_MOD_META = 8 };
+#endif
+int cscdEventModifiers(const CscdEvent* ev); /* CSCD_MOD_* */
+/* (for an event the app makes: where, which button, which key, which modifiers) */
+void cscdEventSetPosition(CscdEvent* ev, float x, float y);
+void cscdEventSetButton(CscdEvent* ev, int button, int buttons);
+void cscdEventSetKey(CscdEvent* ev, CscdSv key);
+void cscdEventSetModifiers(CscdEvent* ev, int mods);
 
 /* Callbacks: a function, the user data it is given, and what frees that data when the callback is
  * dropped (NULL: nothing to free). */
@@ -160,6 +191,7 @@ enum {
 typedef struct CscdListener { CscdStr type; CscdEventHandler handler; bool capture; } CscdListener;
 typedef CSCD_VEC(CscdListener) CscdListenerVec;
 
+#ifdef CASCADE_INTERNAL /* (its fields: the library's own, not the API) */
 struct CscdElement {
     CscdNode node;
     CscdStr tag; /* lowercase */
@@ -185,9 +217,15 @@ struct CscdElement {
     CscdStr highlightFor_;
     CscdElement* templateContent_; /* a <template>'s content, out of the document */
 };
+#endif
 
 /* A detached element (lowercase tag); it joins a document when appended to one of its nodes. */
 CscdElement* cscdElementNew(CscdSv tag);
+/* An element is a node (its first part): what the cscdNode* functions take. */
+CSCD_INLINE CscdNode* cscdElementNode(CscdElement* e) { return (CscdNode*)e; }
+CscdSv cscdElementTag(const CscdElement* e); /* lowercase */
+void* cscdElementUserData(const CscdElement* e);
+void cscdElementSetUserData(CscdElement* e, void* data);
 
 /* attributes */
 const CscdStr* cscdElementGetAttribute(const CscdElement* e, CscdSv name);
@@ -198,7 +236,7 @@ CSCD_INLINE bool cscdElementHasAttributeC(const CscdElement* e, const char* name
 void cscdElementSetAttribute(CscdElement* e, CscdSv name, CscdSv value);
 void cscdElementRemoveAttribute(CscdElement* e, CscdSv name);
 CSCD_INLINE CscdSv cscdElementId(const CscdElement* e) { return cscdElementAttr(e, CSCD_SV("id")); }
-CSCD_INLINE bool cscdElementIs(const CscdElement* e, const char* tag) { return cscdStrEqC(&e->tag, tag); }
+bool cscdElementIs(const CscdElement* e, const char* tag);
 
 /* classes */
 const CscdStrVec* cscdElementClassList(const CscdElement* e);
@@ -236,7 +274,7 @@ void cscdElementRemove(CscdElement* e); /* takes it out of the document (and des
 /* form values (input, textarea, select) */
 CscdStr cscdElementValue(const CscdElement* e); /* the caller's */
 void cscdElementSetValue(CscdElement* e, CscdSv v);
-CSCD_INLINE bool cscdElementChecked(const CscdElement* e) { return (e->state & CSCD_STATE_CHECKED) != 0; }
+bool cscdElementChecked(const CscdElement* e);
 void cscdElementSetChecked(CscdElement* e, bool c);
 CSCD_INLINE bool cscdElementDisabled(const CscdElement* e) { return cscdElementHasAttributeC(e, "disabled"); }
 
@@ -267,11 +305,13 @@ void cscdElementCallListeners(CscdElement* e, CscdEvent* ev, bool capture);
 
 /* custom painting (the replacement for a QWidget::paintEvent / Skia canvas) */
 void cscdElementSetPainter(CscdElement* e, CscdPainter p);
+#ifdef CASCADE_INTERNAL
 CSCD_INLINE const CscdPainter* cscdElementPainter(const CscdElement* e) { return &e->painter_; }
+#endif
 /* Syntax highlighting for a <textarea> or text <input>: called when the value changes. */
 void cscdElementSetHighlighter(CscdElement* e, CscdHighlighter h);
 const CscdTextSpanVec* cscdElementHighlights(CscdElement* e, CscdSv text);
-CSCD_INLINE bool cscdElementHasHighlighter(const CscdElement* e) { return e->highlighter_.fn != NULL; }
+bool cscdElementHasHighlighter(const CscdElement* e);
 
 /* geometry after layout, in CSS pixels relative to the viewport */
 CscdRect cscdElementBoundingClientRect(const CscdElement* e);
@@ -299,6 +339,7 @@ typedef struct CscdNodeChange {
     int kind;
 } CscdNodeChange;
 
+#ifdef CASCADE_INTERNAL /* (its fields: the library's own, not the API) */
 struct CscdDocument {
     CscdNode node;
     CscdStr baseDir;   /* where relative URLs (stylesheets, images, fonts) resolve */
@@ -337,6 +378,7 @@ struct CscdDocument {
     CSCD_VEC(CscdNodeChange) nodeChanges;
     bool nodeChangesFull;
 };
+#endif
 
 CscdDocument* cscdDocumentNew(void);
 void cscdDocumentClearAttrChanges(CscdDocument* d); /* (the view, once it has restyled for them) */

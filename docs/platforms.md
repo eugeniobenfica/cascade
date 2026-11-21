@@ -184,9 +184,10 @@ there says why.
 ## Choosing a backend
 
 ```c
-CscdWindowOptions opts = cscdWindowOptions();
-opts.backend = CSCD_BACKEND_AUTO;                                     /* Vulkan, then OpenGL, then software */
-CscdWindow* win = cscdWindowNew(&opts);
+CscdWindowOptions* opts = cscdWindowOptionsNew();
+cscdWindowOptionsSetBackend(opts, CSCD_BACKEND_AUTO);                 /* Vulkan, then OpenGL, then software */
+CscdWindow* win = cscdWindowNew(opts);
+cscdWindowOptionsFree(opts);
 cscdWindowBackendDescription(win);                                    /* "Vulkan (NVIDIA GeForce …)" */
 ```
 
@@ -199,7 +200,7 @@ lost device), the window carries on with the software path.
 
 | | |
 | --- | --- |
-| `CscdWindowOptions` (`cscdWindowOptions()` for the defaults) | title, size (CSS pixels), backend, resizable, dark title bar, minimum size, `visible`, `page`, `liveReload` |
+| `CscdWindowOptions` (`cscdWindowOptionsNew()`, the defaults; `cscdWindowOptionsSet…`) | title, size (CSS pixels), backend, resizable, dark title bar, minimum size, visible, page, live reload, presenter |
 | `cscdWindowShow`, `Maximize`, `SetFullscreen`, `Resize`, `SetTitle`, `Close` | as named; `cscdWindowMaximize` also shows a window made hidden |
 | `cscdWindowOnClose` | the function returns `false` to keep the window open (to ask about unsaved work) |
 | `cscdWindowOnFrame` | runs once per frame before painting |

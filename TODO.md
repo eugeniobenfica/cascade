@@ -164,8 +164,12 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 
 ### Platform and API
 
-- [ ] Opaque or versioned public structs (`CscdElement`, `CscdEvent`, `CscdWindowOptions`, `CscdLayoutBox`,
-      `CscdDocument`), a shared build of the native API, and an ABI check in CI.
+- [x] Opaque public structs: `CscdElement`, `CscdDocument`, `CscdEvent`, `CscdLayoutBox` and `CscdWindowOptions`
+      show their fields only where `CASCADE_INTERNAL` is defined (the library, its tests and tools); programs use
+      functions (`cscdEventCurrentTarget`, `cscdEventKey`, `cscdElementNode`, `cscdWindowOptionsNew` and its setters...).
+      `CASCADE_SHARED` builds the engine as a shared library, and CI's ABI job compares what `include/cascade`
+      declares in it with `tests/abi/cascade.abi` (libabigail): a removal or a change fails, an addition passes. The
+      next release is 2.0.0.
 - [ ] Menus, tooltips and `<select>` lists as real windows (today clipped to the window).
 - [ ] IME on Wayland (`text-input-v3`), accelerators, drag out to other apps, rich clipboard formats.
 - [ ] UI Automation TextPattern and live regions; push accessibility updates per element instead of the whole tree.

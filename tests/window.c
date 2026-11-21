@@ -77,13 +77,32 @@ static bool waitFor(CscdWindow* w, const Host* h, int presented) {
 }
 
 static CscdWindow* openWindow(Host* h) {
-    CscdWindowOptions o = cscdWindowOptions();
-    o.title = "presenter";
-    o.width = 320;
-    o.height = 200;
-    o.presenter = makePresenter;
-    o.presenterUser = h;
-    return cscdWindowNew(&o);
+    CscdWindowOptions* o = cscdWindowOptionsNew();
+    cscdWindowOptionsSetTitle(o, "presenter");
+    cscdWindowOptionsSetSize(o, 320, 200);
+    cscdWindowOptionsSetPresenter(o, makePresenter, h);
+    CscdWindow* w = cscdWindowNew(o);
+    cscdWindowOptionsFree(o);
+    return w;
+}
+
+/* the options a program sets through functions (the struct is opaque to it): strings copied, NULL as NULL */
+static void testOptions(void) {
+    CscdWindowOptions* o = cscdWindowOptionsNew();
+    CHECK(!strcmp(o->title, "cascade") && o->width == 1024 && o->visible && o->liveReload == -1);
+    char title[16] = "Notes";
+    cscdWindowOptionsSetTitle(o, title);
+    title[0] = 'X';
+    cscdWindowOptionsSetPage(o, "ui/index.html");
+    cscdWindowOptionsSetPage(o, NULL);
+    cscdWindowOptionsSetSize(o, 960, 640);
+    cscdWindowOptionsSetMinSize(o, 300, 200);
+    cscdWindowOptionsSetVisible(o, false);
+    cscdWindowOptionsSetLiveReload(o, 0);
+    CHECK(!strcmp(o->title, "Notes") && !o->page && o->width == 960 && o->height == 640 && o->minWidth == 300 &&
+          o->minHeight == 200 && !o->visible && o->liveReload == 0);
+    cscdWindowOptionsFree(o);
+    cscdWindowOptionsFree(NULL);
 }
 
 static void testPresenter(void) {
@@ -137,9 +156,10 @@ static void testRefused(void) {
 }
 
 int main(void) {
+    testOptions();
     if (!getenv("CASCADE_TEST_WINDOW")) {
         puts("no window asked for (CASCADE_TEST_WINDOW)");
-        return 0;
+        return failures ? 1 : 0;
     }
     testPresenter();
     testRefused();

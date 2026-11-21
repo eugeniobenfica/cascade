@@ -7,6 +7,21 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Breaking (the next release is 2.0.0): the API's structs are opaque.** `CscdElement`, `CscdDocument`, `CscdEvent`,
+  `CscdLayoutBox` and `CscdWindowOptions` no longer show their fields, so that they can change without breaking a
+  program built against an earlier 2.x. In their place:
+  - events: `cscdEventType`, `Target`, `CurrentTarget`, `Position`, `Offset`, `Delta`, `Button`, `Buttons`,
+    `Detail`, `Key`, `PointerType`, `DataTransfer`, `Touches`, `ChangedTouches`, `Modifiers` (`CSCD_MOD_*`),
+    `DefaultPrevented`; `cscdEventNew` / `cscdEventFree` and the setters for an event the program sends;
+  - elements: `cscdElementNode(e)` for `&e->node`, `cscdElementTag`, `cscdElementUserData` / `SetUserData`;
+    `cscdElementIs`, `cscdElementChecked` and `cscdElementHasHighlighter` are functions now;
+  - windows: `cscdWindowOptionsNew()`, `cscdWindowOptionsSetTitle`, `SetSize`, `SetMinSize`, `SetBackend`,
+    `SetResizable`, `SetDarkTitleBar`, `SetVisible`, `SetPage`, `SetLiveReload`, `SetPresenter`, then
+    `cscdWindowOptionsFree` (`cscdWindowNew` copies what it needs), in place of `cscdWindowOptions()` and its fields;
+  - layout boxes: only through the view (`cscdViewElementRect` and the like).
+- `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
+- Fixed: a menu row whose `mouseenter` listener removed it was read after it was freed.
+
 - **Conformance suites in CI**: Unicode's bidi tests (all 861,948 cases), html5lib's tree construction tests and
   css-parsing-tests (known failures listed), 58 layout fixtures laid out by Chrome, and web-platform-tests' CSS
   reftests scored by folder (`tests/wpt.score`).

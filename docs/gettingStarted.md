@@ -126,7 +126,7 @@ typedef struct Notes { CscdElement* list; CscdElement* field; } Notes;
 static void onKey(void* user, CscdEvent* ev) {
     Notes* app = user;
     CscdStr text = cscdElementValue(app->field);
-    if (cscdStrEqC(&ev->key, "Enter") && text.len) {
+    if (cscdSvEqC(cscdEventKey(ev), "Enter") && text.len) {
         cscdElementSetText(cscdElementAppendElement(app->list, CSCD_SV("li")), cscdStrSv(&text));
         cscdElementSetValue(app->field, CSCD_SV(""));
     }
@@ -134,12 +134,12 @@ static void onKey(void* user, CscdEvent* ev) {
 }
 
 int main(void) {
-    CscdWindowOptions opts = cscdWindowOptions();
-    opts.title = "Notes";
-    opts.width = 960;
-    opts.height = 640;
-    opts.darkTitleBar = true;
-    CscdWindow* win = cscdWindowNew(&opts);
+    CscdWindowOptions* opts = cscdWindowOptionsNew();
+    cscdWindowOptionsSetTitle(opts, "Notes");
+    cscdWindowOptionsSetSize(opts, 960, 640);
+    cscdWindowOptionsSetDarkTitleBar(opts, true);
+    CscdWindow* win = cscdWindowNew(opts);
+    cscdWindowOptionsFree(opts);
 
     CscdView* ui = cscdWindowView(win);
     cscdViewLoadFile(ui, CSCD_SV("ui/notes.html"));
@@ -178,14 +178,15 @@ Give the window its page, and it loads it before it first shows, so it never sho
 frame:
 
 ```c
-CscdWindowOptions opts = cscdWindowOptions();
-opts.title = "";                 /* empty: the page's <title> */
-opts.page = "ui/index.html";
-CscdWindow* win = cscdWindowNew(&opts);
+CscdWindowOptions* opts = cscdWindowOptionsNew();
+cscdWindowOptionsSetTitle(opts, "");                /* empty: the page's <title> */
+cscdWindowOptionsSetPage(opts, "ui/index.html");
+CscdWindow* win = cscdWindowNew(opts);
+cscdWindowOptionsFree(opts);
 /* cscdViewGet(cscdWindowView(win), ...) — the page is there already */
 ```
 
-To show it later (maximized, say), make it with `opts.visible = false` and call
+To show it later (maximized, say), make it with `cscdWindowOptionsSetVisible(opts, false)` and call
 `cscdWindowMaximize(win)` or `cscdWindowShow(win)`.
 
 ### When something is missing
