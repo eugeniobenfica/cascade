@@ -422,9 +422,9 @@ sliders, and they hear about focus and value changes as they happen.
 A change reaches readers as small as it is: the element whose children changed, the one whose name
 did (a button's text), not the whole page again. Live regions (`aria-live="polite"` or `"assertive"`;
 `role="status"`, `"alert"`, `"log"`) are said when their text changes, as a UI Automation live
-region, a VoiceOver announcement or an AT-SPI announcement. On Windows a text field also has UI
-Automation's text pattern: readers go through its text by character, word and line, and read or
-move its selection (`cscdAccessibleTextSelection`, `TextRects`, `TextOffsetAt`, `SelectText` give
+region, a VoiceOver announcement or an AT-SPI announcement. A text field also has UI Automation's text
+pattern on Windows and NSAccessibility's text attributes on macOS: readers go through its text by
+character, word and line, and read or move its selection (`cscdAccessibleTextSelection`, `TextRects`, `TextOffsetAt`, `SelectText` give
 the same to a host of its own).
 
 Write the page as for the web and it reads well: real `<button>`s, `<label for>` on fields, `alt` on

@@ -4,6 +4,7 @@
 #include "platform/common/platformInternal.h"
 
 #import <AppKit/AppKit.h>
+#include <string.h>
 
 @interface CscdA11yLink : NSObject
 @property(nonatomic, assign) CscdWindow* window;
@@ -24,6 +25,36 @@ static NSString* text(CscdStr* s) {
 }
 
 static CscdA11yNode* nodeFor(CscdA11yLink* link, CscdElement* e);
+
+/* ---- a text field's text, as VoiceOver reads it: UTF-16 places (NSString's), bytes of the field's text (cascade's) ---- */
+
+static NSUInteger utf16At(NSString* s, size_t bytes) {
+    const char* u = s.UTF8String;
+    const size_t len = u ? strlen(u) : 0;
+    NSString* head = [[NSString alloc] initWithBytes:u length:bytes < len ? bytes : len encoding:NSUTF8StringEncoding];
+    return head.length;
+}
+
+static size_t bytesAt(NSString* s, NSUInteger utf16) {
+    if (utf16 > s.length) utf16 = s.length;
+    return [[s substringToIndex:utf16] lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+}
+
+/* the line (by line breaks) that holds place i, and its range */
+static NSRange lineRange(NSString* s, NSUInteger i, NSUInteger* line) {
+    NSUInteger start = 0, n = 0;
+    for (;;) {
+        const NSRange nl = [s rangeOfString:@"\n" options:0 range:NSMakeRange(start, s.length - start)];
+        const NSUInteger end = nl.location == NSNotFound ? s.length : nl.location + 1;
+        if (i < end || nl.location == NSNotFound) {
+            if (line) *line = n;
+            return NSMakeRange(start, end - start);
+        }
+        start = end;
+        ++n;
+    }
+}
+
 
 @implementation CscdA11yNode
 - (CscdView*)view { return self.link.window ? self.link.window->view : NULL; }
@@ -127,6 +158,111 @@ static CscdA11yNode* nodeFor(CscdA11yLink* link, CscdElement* e);
 - (BOOL)accessibilityPerformPress {
     CscdElement* e = self.element;
     return e && cscdAccessibleDo(self.view, e, CSCD_A11Y_ACTIVATE, CSCD_SV(""));
+}
+
+/* (a text field: its text by character and line, its selection) */
+- (BOOL)isTextField {
+    CscdElement* e = self.element;
+    return e && cscdAccessibleRole(e) == CSCD_ROLE_TEXTBOX;
+}
+
+- (NSString*)fieldText {
+    CscdElement* e = self.element;
+    if (!e || (cscdAccessibleState(self.view, e) & CSCD_A11Y_PASSWORD)) return @"";
+    CscdStr s = {0};
+    cscdAccessibleValue(self.view, e, &s);
+    return text(&s);
+}
+
+- (NSInteger)accessibilityNumberOfCharacters { return self.isTextField ? (NSInteger)self.fieldText.length : 0; }
+
+- (NSRange)accessibilitySelectedTextRange {
+    CscdElement* e = self.element;
+    size_t a = 0, z = 0;
+    if (!e || !cscdAccessibleTextSelection(e, &a, &z)) return NSMakeRange(0, 0);
+    NSString* s = self.fieldText;
+    const NSUInteger p = utf16At(s, a), q = utf16At(s, z);
+    return NSMakeRange(p, q - p);
+}
+
+- (void)setAccessibilitySelectedTextRange:(NSRange)range {
+    CscdElement* e = self.element;
+    if (!e || !self.isTextField) return;
+    NSString* s = self.fieldText;
+    cscdAccessibleSelectText(self.view, e, bytesAt(s, range.location), bytesAt(s, range.location + range.length));
+}
+
+- (NSString*)accessibilitySelectedText {
+    if (!self.isTextField) return nil;
+    NSString* s = self.fieldText;
+    const NSRange r = self.accessibilitySelectedTextRange;
+    return NSMaxRange(r) <= s.length ? [s substringWithRange:r] : @"";
+}
+
+- (NSRange)accessibilityVisibleCharacterRange { return self.isTextField ? NSMakeRange(0, self.fieldText.length) : NSMakeRange(0, 0); }
+
+- (NSInteger)accessibilityInsertionPointLineNumber {
+    if (!self.isTextField) return 0;
+    const NSRange sel = self.accessibilitySelectedTextRange;
+    NSUInteger line = 0;
+    lineRange(self.fieldText, NSMaxRange(sel), &line);
+    return (NSInteger)line;
+}
+
+- (NSInteger)accessibilityLineForIndex:(NSInteger)index {
+    NSUInteger line = 0;
+    if (self.isTextField && index >= 0) lineRange(self.fieldText, (NSUInteger)index, &line);
+    return (NSInteger)line;
+}
+
+- (NSRange)accessibilityRangeForLine:(NSInteger)line {
+    if (!self.isTextField || line < 0) return NSMakeRange(0, 0);
+    NSString* s = self.fieldText;
+    NSUInteger start = 0;
+    for (NSInteger k = 0; k < line; ++k) {
+        const NSRange nl = [s rangeOfString:@"\n" options:0 range:NSMakeRange(start, s.length - start)];
+        if (nl.location == NSNotFound) return NSMakeRange(s.length, 0);
+        start = nl.location + 1;
+    }
+    return lineRange(s, start, NULL);
+}
+
+- (NSString*)accessibilityStringForRange:(NSRange)range {
+    if (!self.isTextField) return nil;
+    NSString* s = self.fieldText;
+    return NSMaxRange(range) <= s.length ? [s substringWithRange:range] : nil;
+}
+
+- (NSRange)accessibilityRangeForIndex:(NSInteger)index {
+    if (!self.isTextField || index < 0) return NSMakeRange(0, 0);
+    NSString* s = self.fieldText;
+    return (NSUInteger)index < s.length ? [s rangeOfComposedCharacterSequenceAtIndex:(NSUInteger)index] : NSMakeRange(s.length, 0);
+}
+
+- (NSRect)accessibilityFrameForRange:(NSRange)range {
+    CscdElement* e = self.element;
+    CscdWindow* w = self.link.window;
+    if (!e || !w || !self.isTextField) return NSZeroRect;
+    NSString* s = self.fieldText;
+    CscdRectVec rects = {0};
+    cscdAccessibleTextRects(w->view, e, bytesAt(s, range.location), bytesAt(s, NSMaxRange(range)), &rects);
+    CscdRect all = rects.len ? rects.items[0] : cscdViewElementRect(w->view, e);
+    for (size_t i = 1; i < rects.len; ++i) all = cscdRectUnite(all, rects.items[i]);
+    cscdVecFree(&rects);
+    NSView* nsview = (__bridge NSView*)windowSurface(w); /* (flipped: y goes down, as in the page) */
+    const NSRect inWindow = [nsview convertRect:NSMakeRect(all.x, all.y, all.w, all.h) toView:nil];
+    return [nsview.window convertRectToScreen:inWindow];
+}
+
+- (NSRange)accessibilityRangeForPosition:(NSPoint)point {
+    CscdElement* e = self.element;
+    CscdWindow* w = self.link.window;
+    if (!e || !w || !self.isTextField) return NSMakeRange(0, 0);
+    NSView* nsview = (__bridge NSView*)windowSurface(w);
+    const NSPoint inWindow = [nsview.window convertPointFromScreen:point];
+    const NSPoint p = [nsview convertPoint:inWindow fromView:nil];
+    const NSUInteger at = utf16At(self.fieldText, cscdAccessibleTextOffsetAt(w->view, e, (float)p.x, (float)p.y));
+    return NSMakeRange(at, 0);
 }
 
 - (NSRect)accessibilityFrame {

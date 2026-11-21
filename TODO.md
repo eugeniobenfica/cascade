@@ -193,7 +193,11 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       AT-SPI's); accessibility updates element by element (`CSCD_A11Y_EVENT_STRUCTURE` with the element whose
       children changed, `CSCD_A11Y_EVENT_NAME` with the one whose text did), the whole tree only for a new page or
       many changes at once. A text-only change told readers nothing before.
-- [ ] The text interfaces of NSAccessibility (selected text ranges, line for index) and AT-SPI (Text) for fields.
+- [x] NSAccessibility's text attributes for fields: the number of characters, the selected text and its range (read
+      and set), the lines (line for index, range for line, the caret's line), the string and the frame of a range,
+      the place at a point.
+- [ ] AT-SPI's Text interface for fields (Orca reads their value today), and the selection's changes told to VoiceOver
+      and Orca as the caret moves (they hear the value's).
 - [x] A text field that scales to large documents: a textarea's lines are kept from edit to edit (only the paragraphs
       an edit touches are wrapped again; the line a place is on found by halves). In 20,000 lines (1.3 MB) a key
       takes 4.7 ms and an arrow 3 ms, from 2 s and 1.6 s.
