@@ -20,6 +20,9 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
     `cscdWindowOptionsFree` (`cscdWindowNew` copies what it needs), in place of `cscdWindowOptions()` and its fields;
   - layout boxes: only through the view (`cscdViewElementRect` and the like).
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
+- **Menus, `<select>` lists and tooltips go past the window's edges** on Windows, X11 and macOS, each in a window of
+  its own (still the page's elements and CSS). New: `cscdViewSetPopupArea`, `cscdViewPopups`, `cscdViewPaintPopup`
+  for a host that shows them itself.
 - Fixed: a menu row whose `mouseenter` listener removed it was read after it was freed.
 
 - **Conformance suites in CI**: Unicode's bidi tests (all 861,948 cases), html5lib's tree construction tests and

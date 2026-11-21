@@ -110,7 +110,20 @@ static void input(CscdImage* img) {
     case 13: cscdViewSetComposition(V, CSCD_SV("ka")); break;
     case 14: cscdViewEditAction(V, (CscdEditAction)(rnd() % 4)); break;
     case 15: cscdViewMouseLeave(V); break;
-    case 16: cscdViewUpdate(V); cscdViewPaint(V, img, rnd() % 2); break;
+    case 16: {
+        cscdViewUpdate(V);
+        cscdViewPaint(V, img, rnd() % 2);
+        /* (popups in windows of their own, where the view has an area for them) */
+        CscdPopup pops[4];
+        const size_t n = cscdViewPopups(V, pops, 4);
+        for (size_t i = 0; i < n && i < 4; ++i) {
+            CscdImage p;
+            cscdImageInit(&p, (int)pops[i].rect.w + 1, (int)pops[i].rect.h + 1);
+            cscdViewPaintPopup(V, pops[i].id, &p);
+            cscdImageFini(&p);
+        }
+        break;
+    }
     default: { CscdTextState t = {0}; if (cscdViewGetTextState(V, &t)) { t.selStart = rnd() % 9; cscdViewSetTextState(V, &t); cscdTextStateFini(&t); } break; }
     }
 }
@@ -120,6 +133,7 @@ static void run(uint64_t seed, int rounds, bool replaceInListeners) {
     V = cscdViewNew();
     cscdViewOnWarning(V, NULL, NULL);
     cscdViewSetViewport(V, 400, 300, 1);
+    if (seed % 3 == 0) cscdViewSetPopupArea(V, cscdRect(-200, -150, 800, 600)); /* (some seeds: popups apart) */
     cscdViewLoadHTML(V, cscdSv(kHtml), CSCD_SV("."));
     CscdImage img;
     cscdImageInit(&img, 400, 300);

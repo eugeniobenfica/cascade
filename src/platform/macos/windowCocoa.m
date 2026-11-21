@@ -922,6 +922,138 @@ bool platformHide(CscdWindow* w) {
     return true;
 }
 
+/* ---- popups in windows of their own: menus, <select> lists and tooltips past the window's edges ----------------
+ * A borderless panel that never becomes key (the keys stay with the window), a child of the window at the pop-up
+ * menu level; its view hands the pointer to the page at view coordinates. */
+
+@interface CascadePopupView : NSView
+@property(nonatomic, assign) CscdWindow* owner;
+@property(nonatomic, assign) CscdIRect rect; /* (device pixels from the owner's client area) */
+@end
+
+@implementation CascadePopupView {
+    NSTrackingArea* tracking_;
+}
+- (BOOL)isFlipped { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent*)e { return YES; }
+- (void)updateTrackingAreas {
+    if (tracking_) [self removeTrackingArea:tracking_];
+    tracking_ = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                               owner:self userInfo:nil];
+    [self addTrackingArea:tracking_];
+    [super updateTrackingAreas];
+}
+/* where e is in the page's view */
+- (NSPoint)viewPoint:(NSEvent*)e {
+    const NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    const float dpr = _owner->dpr > 0 ? _owner->dpr : 1;
+    return NSMakePoint(_rect.x / dpr + p.x, _rect.y / dpr + p.y);
+}
+- (void)press:(NSEvent*)e button:(int)button {
+    if (!_owner || !_owner->hwnd) return;
+    const NSPoint p = [self viewPoint:e];
+    cscdViewMouseDown(_owner->view, (float)p.x, (float)p.y, button, mods(e.modifierFlags), (int)(e.clickCount > 1 ? e.clickCount : 1));
+}
+- (void)release:(NSEvent*)e button:(int)button {
+    if (!_owner || !_owner->hwnd) return;
+    const NSPoint p = [self viewPoint:e];
+    cscdViewMouseUp(_owner->view, (float)p.x, (float)p.y, button, mods(e.modifierFlags));
+}
+- (void)move:(NSEvent*)e {
+    if (!_owner || !_owner->hwnd) return;
+    const NSPoint p = [self viewPoint:e];
+    cscdViewMouseMove(_owner->view, (float)p.x, (float)p.y, (int)(NSEvent.pressedMouseButtons & 7), mods(e.modifierFlags));
+}
+- (void)mouseDown:(NSEvent*)e { [self press:e button:0]; }
+- (void)rightMouseDown:(NSEvent*)e { [self press:e button:2]; }
+- (void)mouseUp:(NSEvent*)e { [self release:e button:0]; }
+- (void)rightMouseUp:(NSEvent*)e { [self release:e button:2]; }
+- (void)mouseMoved:(NSEvent*)e { [self move:e]; }
+- (void)mouseDragged:(NSEvent*)e { [self move:e]; }
+- (void)rightMouseDragged:(NSEvent*)e { [self move:e]; }
+@end
+
+@interface CascadePopupPanel : NSPanel
+@end
+@implementation CascadePopupPanel
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
+
+/* the window's client area on the screen, in points (AppKit's: from the bottom) */
+static NSRect clientOnScreen(CscdWindow* w) {
+    CscdWindowNative* n = w->native;
+    NSView* view = NSVIEW(n);
+    return [NSWIN(n) convertRectToScreen:[view convertRect:view.bounds toView:nil]];
+}
+
+bool platformPopupArea(CscdWindow* w, CscdIRect* area) {
+    CscdWindowNative* n = w->native;
+    if (!n || !w->hwnd || !w->shown) return false;
+    NSScreen* screen = NSWIN(n).screen;
+    if (!screen) return false;
+    const NSRect visible = screen.visibleFrame, client = clientOnScreen(w);
+    const float dpr = w->dpr > 0 ? w->dpr : 1;
+    *area = cscdIRect((int)lround((visible.origin.x - client.origin.x) * dpr), (int)lround((NSMaxY(client) - NSMaxY(visible)) * dpr),
+                      (int)lround(visible.size.width * dpr), (int)lround(visible.size.height * dpr));
+    return area->w > 0 && area->h > 0;
+}
+
+void* platformPopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    CscdWindowNative* n = w->native;
+    const float dpr = w->dpr > 0 ? w->dpr : 1;
+    const NSRect client = clientOnScreen(w);
+    const NSRect frame = NSMakeRect(client.origin.x + rect.x / dpr, NSMaxY(client) - (rect.y + rect.h) / dpr, rect.w / dpr, rect.h / dpr);
+    CascadePopupPanel* panel = (__bridge CascadePopupPanel*)popup;
+    if (!panel) {
+        panel = [[CascadePopupPanel alloc] initWithContentRect:frame
+                                                     styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                                                       backing:NSBackingStoreBuffered
+                                                         defer:NO];
+        panel.opaque = NO;
+        panel.backgroundColor = NSColor.clearColor;
+        panel.hasShadow = NO; /* (the page draws its own) */
+        panel.level = NSPopUpMenuWindowLevel;
+        panel.releasedWhenClosed = NO;
+        panel.ignoresMouseEvents = !input;
+        CascadePopupView* view = [[CascadePopupView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)];
+        view.wantsLayer = YES;
+        view.owner = w;
+        panel.contentView = view;
+        [NSWIN(n) addChildWindow:panel ordered:NSWindowAbove];
+        popup = (__bridge_retained void*)panel;
+    }
+    CascadePopupView* view = (CascadePopupView*)panel.contentView;
+    view.rect = rect;
+    [panel setFrame:frame display:NO];
+    NSData* data = [NSData dataWithBytes:image->pixels length:cscdImagePixelCount(image) * 4];
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGImageRef cg = CGImageCreate((size_t)image->width, (size_t)image->height, 8, 32, (size_t)image->width * 4, space,
+                                  (CGBitmapInfo)((uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaPremultipliedFirst), provider, NULL, false,
+                                  kCGRenderingIntentDefault);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    view.layer.contents = (__bridge id)cg;
+    view.layer.contentsScale = dpr;
+    view.layer.contentsGravity = kCAGravityResize;
+    [CATransaction commit];
+    CGImageRelease(cg);
+    CGColorSpaceRelease(space);
+    CGDataProviderRelease(provider);
+    if (!panel.visible) [panel orderFront:nil];
+    return popup;
+}
+
+void platformPopupHide(CscdWindow* w, void* popup) {
+    if (!popup) return;
+    CascadePopupPanel* panel = (__bridge_transfer CascadePopupPanel*)popup;
+    CscdWindowNative* n = w->native;
+    if (n && n->window) [NSWIN(n) removeChildWindow:panel];
+    ((CascadePopupView*)panel.contentView).owner = NULL;
+    [panel orderOut:nil];
+}
+
 /* ---- the system's menus: the menu bar's, the tray's ------------------------------------------------- */
 
 /* A shortcut as AppKit has it: "Ctrl+Shift+S" is Command-Shift-S (Ctrl and Cmd are both Command). */

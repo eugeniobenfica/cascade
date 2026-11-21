@@ -122,7 +122,10 @@ struct CscdWindow {
     CscdIRectVec sideDragRects;
     bool sideDragsTold;
     void* a11y; /* the platform's accessibility objects */
+    /* menus, <select> lists and tooltips in windows of their own (cscdViewPopups): the platform's window of each */
+    CSCD_VEC(struct WindowPopup) popups;
 };
+typedef struct WindowPopup { uint64_t id; void* native; CscdIRect rect; } WindowPopup;
 
 /* window.c: what every platform shares */
 void windowRender(CscdWindow* w);
@@ -194,6 +197,9 @@ void x11WindowWake(CscdWindow* w);
 void x11WindowPlaceInputMethod(CscdWindow* w);
 void x11WindowShow(CscdWindow* w);
 bool x11WindowHide(CscdWindow* w);
+bool x11PopupArea(CscdWindow* w, CscdIRect* area);
+void* x11PopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input);
+void x11PopupHide(CscdWindow* w, void* popup);
 void x11WindowResize(CscdWindow* w, int width, int height);
 void x11WindowMaximize(CscdWindow* w);
 void x11WindowSetFullscreen(CscdWindow* w, bool on);
@@ -230,6 +236,15 @@ bool platformPickFiles(CscdWindow* w, const char* accept, bool multiple); /* the
 bool platformSaveFile(CscdWindow* w, const char* name, const char* accept); /* the result: windowSaveChosen */
 void platformHaptic(CscdWindow* w, CscdHaptic kind);
 bool platformHide(CscdWindow* w);
+/* Popups in windows of their own (menus, <select> lists, tooltips; windowRender keeps them). The screen's work area
+ * around the window's client area, in device pixels from the client area's top left: false where the platform puts
+ * no windows of its own over the screen (popups then stay in the window). */
+bool platformPopupArea(CscdWindow* w, CscdIRect* area);
+/* Shows a popup at rect (device pixels from the client area's top left) with image's pixels (premultiplied; the
+ * size of rect): popup is the platform's window from the last call, NULL the first time; the window is returned.
+ * input: false lets the pointer through (a tooltip). Its pointer input goes to the view at view coordinates. */
+void* platformPopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input);
+void platformPopupHide(CscdWindow* w, void* popup);
 
 /* the system's menus and tray (cscdWindowSetMenuBar, cscdTray*): the platform builds its own
  * menus from CscdMenu and tells windowMenuChosen what was chosen */

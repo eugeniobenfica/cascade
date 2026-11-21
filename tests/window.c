@@ -4,10 +4,15 @@
 #include "cascade/cascade.h"
 #include "cascade/window.h"
 
+#include "platform/common/platformInternal.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static int failures = 0;
 #define CHECK(c) do { if (!(c)) { printf("%s:%d: %s\n", __FILE__, __LINE__, #c); ++failures; } } while (0)
@@ -145,6 +150,78 @@ static void testPresenter(void) {
     CHECK(h.made == h.freed); /* each one destroyed, with the window */
 }
 
+/* A menu at the window's corner, in a window of its own past the client area where the platform has them; a press
+ * in that window runs its row. */
+static int chosen;
+static void choose(void* user) { chosen = (int)(intptr_t)user; }
+
+static void testPopups(void) {
+    Host h = {0};
+    CscdWindow* w = openWindow(&h);
+    CscdView* v = cscdWindowView(w);
+    cscdViewLoadHTML(v, CSCD_SV("<style>body{margin:0;background:#fff}</style><p>page</p>"), CSCD_SV(""));
+    CHECK(waitFor(w, &h, 1));
+    CscdIRect area;
+    if (!platformPopupArea(w, &area)) {
+        puts("popups: the platform keeps them in the window");
+        cscdWindowFree(w);
+        return;
+    }
+    CscdMenu m = {0};
+    cscdMenuAdd(&m, cscdMenuItem(CSCD_SV("First"), choose, (void*)(intptr_t)1, CSCD_SV("")));
+    cscdMenuAdd(&m, cscdMenuItem(CSCD_SV("Second"), choose, (void*)(intptr_t)2, CSCD_SV("")));
+    cscdViewShowMenu(v, m, 300, 190, 0);
+    CHECK(waitFor(w, &h, h.presented + 1));
+    CHECK(w->popups.len == 1 && w->popups.items[0].native != NULL);
+    if (w->popups.len != 1) {
+        cscdWindowFree(w);
+        return;
+    }
+    const CscdIRect r = w->popups.items[0].rect;
+    CHECK(r.x + r.w > w->clientW && r.y + r.h > w->clientH); /* (past the client area, not pushed in) */
+    CscdElement* second = NULL;
+    CscdPtrVec rows = {0};
+    cscdViewQuerySelectorAll(v, CSCD_SV(".cscd-menu-item"), &rows);
+    CHECK(rows.len == 2);
+    second = rows.len == 2 ? (CscdElement*)rows.items[1] : NULL;
+    cscdVecFree(&rows);
+#ifdef _WIN32
+    HWND popup = FindWindowExW(NULL, NULL, L"cascade-popup", NULL);
+    CHECK(popup && IsWindowVisible(popup) && GetWindow(popup, GW_OWNER) == (HWND)cscdWindowNativeHandle(w));
+    RECT pr;
+    POINT origin = {0, 0};
+    ClientToScreen((HWND)cscdWindowNativeHandle(w), &origin);
+    CHECK(popup && GetWindowRect(popup, &pr) && pr.left == origin.x + r.x && pr.top == origin.y + r.y && pr.right - pr.left == r.w);
+    if (popup && second) {
+        /* a click on its second row, in the popup's own coordinates */
+        const CscdRect sr = cscdViewElementRect(v, second);
+        const int lx = (int)((sr.x + 10) * w->dpr) - r.x, ly = (int)((sr.y + sr.h / 2) * w->dpr) - r.y;
+        chosen = 0;
+        SendMessageW(popup, WM_MOUSEMOVE, 0, MAKELPARAM(lx, ly));
+        SendMessageW(popup, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(lx, ly));
+        SendMessageW(popup, WM_LBUTTONUP, 0, MAKELPARAM(lx, ly));
+        const time_t end = time(NULL) + 5;
+        while ((chosen == 0 || w->popups.len) && time(NULL) < end) {
+            cscdWindowPump(w, false);
+            cscdViewInvalidate(v);
+        }
+        CHECK(chosen == 2);
+        CHECK(w->popups.len == 0 && !IsWindow(popup)); /* (closed with the menu) */
+    }
+#else
+    /* (X11, macOS: the windows go with the menu) */
+    (void)second;
+    cscdViewCloseMenus(v);
+    const time_t end = time(NULL) + 5;
+    while (w->popups.len && time(NULL) < end) {
+        cscdWindowPump(w, false);
+        cscdViewInvalidate(v);
+    }
+    CHECK(w->popups.len == 0);
+#endif
+    cscdWindowFree(w);
+}
+
 static void testRefused(void) {
     Host h = {0};
     h.refuse = true;
@@ -162,6 +239,7 @@ int main(void) {
         return failures ? 1 : 0;
     }
     testPresenter();
+    testPopups();
     testRefused();
     if (!failures) puts("ok");
     return failures ? 1 : 0;

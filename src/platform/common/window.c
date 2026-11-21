@@ -116,8 +116,59 @@ CscdWindow* cscdWindowNew(const CscdWindowOptions* opts) {
     return w;
 }
 
+static void popupsHideAll(CscdWindow* w) {
+    for (size_t i = 0; i < w->popups.len; ++i) platformPopupHide(w, w->popups.items[i].native);
+    w->popups.len = 0;
+}
+
+/* The view's popups in windows of their own: the area they may take (the screen's), each painted and shown where it
+ * goes, those that closed hidden. */
+static void syncPopups(CscdWindow* w) {
+    CscdIRect area;
+    if (!platformPopupArea(w, &area) || w->dpr <= 0) {
+        if (w->popups.len) popupsHideAll(w);
+        cscdViewSetPopupArea(w->view, cscdRect(0, 0, 0, 0));
+        return;
+    }
+    const float dpr = w->dpr;
+    cscdViewSetPopupArea(w->view, cscdRect(area.x / dpr, area.y / dpr, area.w / dpr, area.h / dpr));
+    CscdPopup list[16];
+    const size_t n = cscdMinz(cscdViewPopups(w->view, list, 16), 16);
+    /* (those gone first) */
+    size_t keep = 0;
+    for (size_t i = 0; i < w->popups.len; ++i) {
+        bool open = false;
+        for (size_t j = 0; j < n; ++j) open = open || list[j].id == w->popups.items[i].id;
+        if (open) w->popups.items[keep++] = w->popups.items[i];
+        else platformPopupHide(w, w->popups.items[i].native);
+    }
+    w->popups.len = keep;
+    for (size_t j = 0; j < n; ++j) {
+        const CscdRect r = list[j].rect;
+        const int x = cscdIntOf(floorf(r.x * dpr)), y = cscdIntOf(floorf(r.y * dpr));
+        const CscdIRect at = cscdIRect(x, y, cscdIntOf(ceilf(cscdRectRight(r) * dpr)) - x, cscdIntOf(ceilf(cscdRectBottom(r) * dpr)) - y);
+        if (at.w <= 0 || at.h <= 0) continue;
+        CscdImage img;
+        cscdImageInit(&img, at.w, at.h);
+        if (cscdViewPaintPopup(w->view, list[j].id, &img)) {
+            WindowPopup* p = NULL;
+            for (size_t i = 0; i < w->popups.len; ++i) if (w->popups.items[i].id == list[j].id) p = &w->popups.items[i];
+            if (!p) {
+                WindowPopup fresh = {list[j].id, NULL, at};
+                cscdVecPush(&w->popups, fresh);
+                p = &w->popups.items[w->popups.len - 1];
+            }
+            p->rect = at;
+            p->native = platformPopupShow(w, p->native, at, &img, !list[j].tooltip);
+        }
+        cscdImageFini(&img);
+    }
+}
+
 void cscdWindowFree(CscdWindow* w) {
     if (!w) return;
+    popupsHideAll(w);
+    cscdVecFree(&w->popups);
     cscdPresenterFree(w->presenter);
     w->presenter = NULL;
     if (w->native) windowDestroyNative(w);
@@ -613,6 +664,7 @@ void windowRender(CscdWindow* w) {
         cscdImageInit(&w->frame, w->clientW, w->clientH);
     }
     cscdViewPaint(w->view, &w->frame, !fresh); /* (the frame keeps what was painted: only what changed is painted again) */
+    syncPopups(w);
 #ifdef CSCD_PLATFORM_MOBILE
     tellBackdrop(w);
 #endif

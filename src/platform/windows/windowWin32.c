@@ -780,6 +780,12 @@ static LRESULT handle(CscdWindow* wnd, CscdWindowNative* n, UINT msg, WPARAM wp,
             cscdViewHideTooltip(view);
         }
         break;
+    case WM_MOVE:
+    case WM_NCLBUTTONDOWN: case WM_NCRBUTTONDOWN:
+        /* nor its moving, nor a press on its frame (they may be in windows of their own, where the window was) */
+        cscdViewCloseMenus(view);
+        cscdViewHideTooltip(view);
+        break;
     case kPosted:
         windowRunPosted(wnd);
         /* repaint through WM_PAINT, which also comes while Windows runs its own loop (a resize) */
@@ -873,6 +879,134 @@ void platformHaptic(CscdWindow* w, CscdHaptic kind) { (void)w; (void)kind; }
 bool platformHide(CscdWindow* w) {
     ShowWindow((HWND)w->hwnd, SW_HIDE);
     return true;
+}
+
+/* ---- popups in windows of their own: menus, <select> lists and tooltips past the window's edges ----------------
+ * A layered tool window owned by the window (above it, never in the task bar), that never takes the focus: the keys
+ * stay with the window, its pointer input goes to the view at view coordinates. */
+
+typedef struct Win32Popup {
+    HWND hwnd;
+    CscdWindow* owner;
+    CscdIRect rect; /* (device pixels from the owner's client area) */
+} Win32Popup;
+
+static LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_NCCREATE) SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW*)lp)->lpCreateParams);
+    Win32Popup* p = (Win32Popup*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (msg == WM_NCDESTROY) SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    if (!p || !p->owner->hwnd || !p->owner->native) return DefWindowProcW(hwnd, msg, wp, lp);
+    CscdWindow* w = p->owner;
+    CscdView* view = w->view;
+    const float dpr = w->dpr;
+    /* (where in the owner's client area, then in the view) */
+    const int cx = p->rect.x + GET_X_LPARAM(lp), cy = p->rect.y + GET_Y_LPARAM(lp);
+    const float x = cx / dpr, y = cy / dpr;
+    switch (msg) {
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_SETCURSOR:
+        SetCursor(LoadCursorW(NULL, cursorId(cscdViewCursor(view))));
+        return TRUE;
+    case WM_MOUSEMOVE: {
+        const int buttons = ((wp & MK_LBUTTON) ? 1 : 0) | ((wp & MK_RBUTTON) ? 2 : 0) | ((wp & MK_MBUTTON) ? 4 : 0);
+        cscdViewMouseMove(view, x, y, buttons, mods());
+        return 0;
+    }
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
+    case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK: {
+        SetCapture(hwnd);
+        const int button = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK) ? 0 : (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONDBLCLK) ? 1 : 2;
+        const int count = clickPress(&w->native->clicks, (unsigned)GetMessageTime(), cx, cy, GetDoubleClickTime());
+        cscdViewMouseDown(view, x, y, button, mods(), count);
+        return 0;
+    }
+    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
+        ReleaseCapture();
+        cscdViewMouseUp(view, x, y, msg == WM_LBUTTONUP ? 0 : msg == WM_MBUTTONUP ? 1 : 2, mods());
+        return 0;
+    }
+    default: break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+bool platformPopupArea(CscdWindow* w, CscdIRect* area) {
+    HWND h = (HWND)w->hwnd;
+    if (!h || IsIconic(h)) return false;
+    MONITORINFO mi;
+    memset(&mi, 0, sizeof mi);
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi)) return false;
+    POINT o = {0, 0};
+    ClientToScreen(h, &o);
+    *area = cscdIRect(mi.rcWork.left - o.x, mi.rcWork.top - o.y, mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top);
+    return area->w > 0 && area->h > 0;
+}
+
+void* platformPopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    Win32Popup* p = (Win32Popup*)popup;
+    HINSTANCE inst = GetModuleHandleW(NULL);
+    if (!p) {
+        static bool registered;
+        if (!registered) {
+            WNDCLASSEXW wc;
+            memset(&wc, 0, sizeof wc);
+            wc.cbSize = sizeof wc;
+            wc.style = CS_DBLCLKS;
+            wc.lpfnWndProc = popupProc;
+            wc.hInstance = inst;
+            wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+            wc.lpszClassName = L"cascade-popup";
+            registered = RegisterClassExW(&wc) != 0;
+        }
+        p = CSCD_NEW(Win32Popup);
+        p->owner = w;
+        const DWORD ex = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | (input ? 0 : WS_EX_TRANSPARENT);
+        p->hwnd = CreateWindowExW(ex, L"cascade-popup", L"", WS_POPUP, 0, 0, 1, 1, (HWND)w->hwnd, NULL, inst, p);
+        if (!p->hwnd) {
+            cscdFree(p);
+            return NULL;
+        }
+    }
+    p->rect = rect;
+    POINT at = {rect.x, rect.y};
+    ClientToScreen((HWND)w->hwnd, &at);
+    /* its pixels, premultiplied BGRA as the image has them */
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = rect.w;
+    bi.bmiHeader.biHeight = -rect.h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    HDC screen = GetDC(NULL);
+    HDC mem = CreateCompatibleDC(screen);
+    void* bits = NULL;
+    HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (bmp && bits) {
+        for (int y = 0; y < rect.h && y < image->height; ++y)
+            memcpy((uint32_t*)bits + (size_t)y * (size_t)rect.w, cscdImageRow(image, y), (size_t)cscdMini(rect.w, image->width) * 4);
+        HGDIOBJ old = SelectObject(mem, bmp);
+        SIZE size = {rect.w, rect.h};
+        POINT src = {0, 0};
+        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(p->hwnd, screen, &at, &size, mem, &src, 0, &blend, ULW_ALPHA);
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+    }
+    DeleteDC(mem);
+    ReleaseDC(NULL, screen);
+    if (!IsWindowVisible(p->hwnd)) ShowWindow(p->hwnd, SW_SHOWNOACTIVATE);
+    return p;
+}
+
+void platformPopupHide(CscdWindow* w, void* popup) {
+    (void)w;
+    Win32Popup* p = (Win32Popup*)popup;
+    if (!p) return;
+    if (IsWindow(p->hwnd)) DestroyWindow(p->hwnd); /* (gone already with the window that owned it) */
+    cscdFree(p);
 }
 
 /* ---- the tray: the notification area's icon, with a hidden window of its own for its messages ------- */

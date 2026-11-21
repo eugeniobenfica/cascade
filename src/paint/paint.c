@@ -32,6 +32,7 @@ typedef struct Painter {
     const CscdShader* textShader;
     bool rootPropagated;
     const Projection* projection;
+    bool popupsApart; /* (the page's paint: popups in windows of their own are left to cscdViewPaintPopup) */
 } Painter;
 
 static Painter painter(CscdView* v, CscdCanvas* c) {
@@ -2586,6 +2587,7 @@ static int byZIndex(const void* a, const void* b, void* ctx) {
 
 /* re-applies the clips of the ancestors between b and d (overflow and scroll), then paints d */
 static void paintDescendant(Painter* P, CscdLayoutBox* b, CscdLayoutBox* d) {
+    if (P->popupsApart && d->element && viewIsPopupWindow(P->view, d->element)) return;
     CscdPtrVec chain = {0};
     for (CscdLayoutBox* p = d->parent; p && p != b; p = p->parent) cscdVecPush(&chain, p);
     int pushed = 0;
@@ -2663,10 +2665,17 @@ CscdColor cscdViewCanvasColor(CscdView* v) {
     return cscdRgb((c.r * a + under.r * (255 - a)) / 255, (c.g * a + under.g * (255 - a)) / 255, (c.b * a + under.b * (255 - a)) / 255);
 }
 
+void paintPopup(CscdView* v, CscdCanvas* canvas, CscdLayoutBox* b) {
+    inkPrepare(v, v->root);
+    Painter Pv = painter(v, canvas);
+    paintLayer(&Pv, b);
+}
+
 void paintRoot(CscdView* v, CscdCanvas* canvas, CscdLayoutBox* root) {
     inkPrepare(v, root);
     Painter Pv = painter(v, canvas);
     Painter* P = &Pv;
+    P->popupsApart = v->popupWindows;
     /* the canvas background comes from the root, or from body when the root has none */
     const CscdComputedStyle* bg = root->style;
     CscdLayoutBox* bgBox = root;

@@ -12,6 +12,7 @@ typedef struct OpenMenu {
     CscdPtrVec rows;     /* CscdElement*, one per item, separators too */
     int highlighted;
     int parentRow;     /* the row one level up that opened this one */
+    uint64_t popupId;  /* (cscdViewPopups) */
     CscdElement* owner;  /* the menu bar entry it belongs to */
     bool ownsItems;    /* (a submenu's items belong to the item that opened it) */
 } OpenMenu;
@@ -73,6 +74,7 @@ typedef struct CscdHitItem {
     float h[9];
 } CscdHitItem;
 typedef CSCD_VEC(CscdHitItem) CscdHitVec;
+typedef struct PopupHits { uint64_t id; CscdHitVec hits; } PopupHits;
 
 /* (a layer kept from one frame to the next: what an element holds, drawn into img where the frame draws it) */
 typedef struct KeptLayer {
@@ -208,6 +210,12 @@ struct CscdView {
     CscdElement* tipFor;
     CscdElement* tip;
     int tipTimer;
+    uint64_t tipId;
+    /* popups in windows of the host's (cscdViewSetPopupArea): the area, and the hit areas of each as last painted */
+    CscdRect popupArea;
+    bool popupWindows;
+    uint64_t popupSerial;
+    CSCD_VEC(struct PopupHits) popupHits;
     /* drag and drop */
     CscdElement* dragSource;
     CscdElement* dragOver;
@@ -270,6 +278,12 @@ void viewWatch(CscdView* v, CscdElement** e);
 size_t viewWatchMark(const CscdView* v);
 void viewUnwatch(CscdView* v, size_t mark);
 void viewClearHits(CscdView* v);
+/* popups (widgets.c): the area menus and tooltips are placed in (the view's, without popup windows); whether e is
+ * a popup drawn apart from the page (in a window of the host's) */
+CscdRect viewPopupBounds(const CscdView* v);
+bool viewIsPopupWindow(const CscdView* v, const CscdElement* e);
+void viewPopupsFree(CscdView* v);
+void viewPopupHitsSweep(CscdView* v); /* (the hit areas of popups that closed go) */
 void viewNotifyInvalidate(CscdView* v);
 CscdRect viewPaintArea(CscdView* v, CscdElement* e);
 void viewAddDamage(CscdView* v, CscdRect r);
@@ -430,6 +444,7 @@ size_t nextWord(CscdSv s, size_t i);
 
 /* paint.c: paints the page's boxes (and records the hit areas when v->recordHits) */
 void paintRoot(CscdView* v, CscdCanvas* c, CscdLayoutBox* root);
+void paintPopup(CscdView* v, CscdCanvas* c, CscdLayoutBox* b); /* (b alone: a popup in a window of its own) */
 /* b's style changed in place (a hover): its ink worked out again, and its ancestors' grown to hold it */
 void paintInkChanged(CscdView* v, CscdLayoutBox* b);
 void paintFreeRuns(CscdView* v);

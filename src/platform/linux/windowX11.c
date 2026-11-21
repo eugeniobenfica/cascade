@@ -685,6 +685,131 @@ void cscdWindowShow(CscdWindow* w) {
     XIfEvent(n->dpy, &ev, isMapOf, (XPointer)&n->win);
 }
 
+/* ---- popups in windows of their own: menus, <select> lists and tooltips past the window's edges ----------------
+ * Override-redirect windows (the window manager leaves them where they are put), with a visual that has alpha where
+ * the server has one, for the shadow; without a compositing manager they are made opaque over white. Their pointer
+ * events come through the window's loop, moved to where they are in the client area. */
+
+typedef struct X11Popup {
+    Window win;
+    GC gc;
+    Visual* visual;
+    int depth;
+    Colormap colormap;
+    int width, height;
+} X11Popup;
+
+bool x11PopupArea(CscdWindow* w, CscdIRect* area) {
+    CscdWindowNative* n = w->native;
+    if (!n || !n->dpy || !w->hwnd || !w->shown) return false;
+    int ox, oy;
+    x11WindowOrigin(w, &ox, &oy);
+    const int screen = DefaultScreen(n->dpy);
+    *area = cscdIRect(-ox, -oy, DisplayWidth(n->dpy, screen), DisplayHeight(n->dpy, screen));
+    return area->w > 0 && area->h > 0;
+}
+
+void* x11PopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    (void)input; /* (a tooltip's events go to the view too, which finds the page under it) */
+    CscdWindowNative* n = w->native;
+    Display* dpy = n->dpy;
+    X11Popup* p = (X11Popup*)popup;
+    const int screen = DefaultScreen(dpy);
+    if (!p) {
+        p = CSCD_NEW(X11Popup);
+        XVisualInfo vi;
+        if (XMatchVisualInfo(dpy, screen, 32, TrueColor, &vi)) {
+            p->visual = vi.visual;
+            p->depth = 32;
+        } else {
+            p->visual = DefaultVisual(dpy, screen);
+            p->depth = DefaultDepth(dpy, screen);
+        }
+        p->colormap = XCreateColormap(dpy, n->root, p->visual, AllocNone);
+        XSetWindowAttributes swa;
+        memset(&swa, 0, sizeof swa);
+        swa.override_redirect = True;
+        swa.colormap = p->colormap;
+        swa.border_pixel = 0;
+        swa.background_pixel = 0;
+        swa.save_under = True;
+        swa.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | EnterWindowMask | LeaveWindowMask;
+        p->win = XCreateWindow(dpy, n->root, 0, 0, 1, 1, 0, p->depth, InputOutput, p->visual,
+                               CWOverrideRedirect | CWColormap | CWBorderPixel | CWBackPixel | CWSaveUnder | CWEventMask, &swa);
+        if (!p->win) {
+            XFreeColormap(dpy, p->colormap);
+            cscdFree(p);
+            return NULL;
+        }
+        XSetTransientForHint(dpy, p->win, n->win);
+        p->gc = XCreateGC(dpy, p->win, 0, NULL);
+    }
+    int ox, oy;
+    x11WindowOrigin(w, &ox, &oy);
+    XMoveResizeWindow(dpy, p->win, ox + rect.x, oy + rect.y, (unsigned)rect.w, (unsigned)rect.h);
+    if (p->width == 0) XMapRaised(dpy, p->win);
+    p->width = rect.w;
+    p->height = rect.h;
+    /* its pixels: premultiplied BGRA as X's 32-bit ARGB has them; over white where nothing composites them */
+    char* data = (char*)malloc((size_t)rect.w * (size_t)rect.h * 4);
+    if (data) {
+        char cm[32];
+        snprintf(cm, sizeof cm, "_NET_WM_CM_S%d", screen);
+        const bool composited = p->depth == 32 && XGetSelectionOwner(dpy, XInternAtom(dpy, cm, False)) != XNONE;
+        for (int y = 0; y < rect.h; ++y) {
+            uint32_t* to = (uint32_t*)data + (size_t)y * (size_t)rect.w;
+            const uint32_t* from = y < image->height ? cscdImageRow(image, y) : NULL;
+            for (int x = 0; x < rect.w; ++x) {
+                uint32_t px = from && x < image->width ? from[x] : 0;
+                if (!composited) {
+                    const uint32_t a = px >> 24, k = 255 - a; /* (premultiplied over white) */
+                    px = 0xFF000000u | (((px >> 16 & 255) + k) << 16) | (((px >> 8 & 255) + k) << 8) | ((px & 255) + k);
+                }
+                to[x] = px;
+            }
+        }
+        XImage* img = XCreateImage(dpy, p->visual, (unsigned)p->depth, ZPixmap, 0, data, (unsigned)rect.w, (unsigned)rect.h, 32, 0);
+        if (img) {
+            XPutImage(dpy, p->win, p->gc, img, 0, 0, 0, 0, (unsigned)rect.w, (unsigned)rect.h);
+            XDestroyImage(img); /* (frees data) */
+        } else {
+            free(data);
+        }
+    }
+    XFlush(dpy);
+    return p;
+}
+
+void x11PopupHide(CscdWindow* w, void* popup) {
+    X11Popup* p = (X11Popup*)popup;
+    if (!p) return;
+    CscdWindowNative* n = w->native;
+    if (n && n->dpy) {
+        XFreeGC(n->dpy, p->gc);
+        XDestroyWindow(n->dpy, p->win);
+        XFreeColormap(n->dpy, p->colormap);
+        XFlush(n->dpy);
+    }
+    cscdFree(p);
+}
+
+/* An event in one of the popups' windows: its pointer's place moved to the client area's (true); false for another. */
+static bool fromPopup(CscdWindow* w, XEvent* e) {
+    for (size_t i = 0; i < w->popups.len; ++i) {
+        const X11Popup* p = (const X11Popup*)w->popups.items[i].native;
+        if (!p || p->win != e->xany.window) continue;
+        const int dx = w->popups.items[i].rect.x, dy = w->popups.items[i].rect.y;
+        switch (e->type) {
+        case MotionNotify: e->xmotion.x += dx; e->xmotion.y += dy; break;
+        case ButtonPress: case ButtonRelease: e->xbutton.x += dx; e->xbutton.y += dy; break;
+        case EnterNotify: case LeaveNotify: e->xcrossing.x += dx; e->xcrossing.y += dy; break;
+        default: break;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool x11WindowHide(CscdWindow* w) {
     CscdWindowNative* n = w->native;
     XUnmapWindow(n->dpy, n->win);
@@ -851,6 +976,11 @@ bool cscdWindowPump(CscdWindow* w, bool wait) {
         XEvent e;
         XNextEvent(dpy, &e);
         if (XFilterEvent(&e, XNONE)) continue; /* the input method's */
+        if (w->popups.len && fromPopup(w, &e)) {
+            /* (a popup's: the pointer's events as the client area's; it leaving is nothing to the page) */
+            if (e.type == Expose) w->dirty = true;
+            if (e.type == Expose || e.type == LeaveNotify || e.type == EnterNotify) continue;
+        }
         switch (e.type) {
         case Expose:
             if (e.xexpose.count == 0) w->dirty = true;

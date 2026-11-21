@@ -1463,6 +1463,13 @@ bool platformTrayCreate(CscdTray* t, const CscdImage* icon, const char* tooltip)
 void platformTraySet(CscdTray* t, const CscdImage* icon, const char* tooltip) { (void)t; (void)icon; (void)tooltip; }
 void platformTrayDestroy(CscdTray* t) { (void)t; }
 bool platformHide(CscdWindow* w) { (void)w; return false; }
+/* (popups stay in the window: the system puts no windows of the app's over the screen here) */
+bool platformPopupArea(CscdWindow* w, CscdIRect* area) { (void)w; (void)area; return false; }
+void* platformPopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    (void)w; (void)rect; (void)image; (void)input;
+    return popup;
+}
+void platformPopupHide(CscdWindow* w, void* popup) { (void)w; (void)popup; }
 
 bool platformPickFiles(CscdWindow* w, const char* accept, bool multiple) {
     CscdWindowNative* n = w->native;

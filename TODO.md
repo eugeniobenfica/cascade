@@ -170,7 +170,13 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       `CASCADE_SHARED` builds the engine as a shared library, and CI's ABI job compares what `include/cascade`
       declares in it with `tests/abi/cascade.abi` (libabigail): a removal or a change fails, an addition passes. The
       next release is 2.0.0.
-- [ ] Menus, tooltips and `<select>` lists as real windows (today clipped to the window).
+- [x] Menus, tooltips and `<select>` lists as real windows: with a popup area (`cscdViewSetPopupArea`, the screen's
+      work area around the view) the view places them past its edges and paints each apart from the page
+      (`cscdViewPopups`, `cscdViewPaintPopup`, their hit areas at view coordinates); the window shows each in a window
+      of its own: a layered tool window on Windows, an override-redirect one on X11 (a 32-bit visual where there is
+      one), a non-activating child panel on macOS. The keys stay with the window. Wayland (an `xdg_popup` with its
+      positioner) and the phones keep them inside the window.
+- [ ] Popups on Wayland through `xdg_popup` (the compositor places them; no screen coordinates there).
 - [ ] IME on Wayland (`text-input-v3`), accelerators, drag out to other apps, rich clipboard formats.
 - [ ] UI Automation TextPattern and live regions; push accessibility updates per element instead of the whole tree.
 - [ ] `contenteditable` / rich text, and a text field that scales to large documents.

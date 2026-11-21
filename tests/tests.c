@@ -736,6 +736,68 @@ static void testAccessors(void) {
     cscdNodeDestroy(cscdElementNode(e));
 }
 
+/* Popups in windows of the host's: placed past the view's edges, drawn apart from the page, input at view coordinates. */
+static void testPopupWindows(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    layoutViewWH(v, "<style>body{margin:0;background:#fff}</style><div style='height:300px'></div>", 200, 120);
+    CscdImage page, pop = {0};
+    cscdImageInit(&page, 200, 120);
+    frame(v, &page);
+    CscdPopup list[4];
+    CHECK(cscdViewPopups(v, list, 4) == 0); /* (no area: none) */
+
+    /* no area: a menu at the corner is pushed inside the view */
+    CscdMenu inside = {0};
+    cscdMenuAdd(&inside, item("One", "one"));
+    cscdMenuAdd(&inside, item("Two", "two"));
+    cscdViewShowMenu(v, inside, 150, 100, 0);
+    frame(v, &page);
+    CscdRect in = viewRect(v, query(v, ".cscd-menu"));
+    CHECK(cscdRectRight(in) <= 200.5f && cscdRectBottom(in) <= 120.5f);
+    cscdViewCloseMenus(v);
+
+    /* with an area (the screen around the view): it stays where it was asked for, past the edges */
+    cscdViewSetPopupArea(v, cscdRect(-300, -200, 1000, 800));
+    CscdMenu out = {0};
+    cscdMenuAdd(&out, item("One", "one"));
+    cscdMenuAdd(&out, item("Two", "two"));
+    cscdViewShowMenu(v, out, 150, 100, 0);
+    frame(v, &page);
+    const uint32_t pagePixel = cscdImageRow(&page, 110)[190];
+    CHECK(cscdViewPopups(v, list, 4) == 1);
+    CscdRect r = list[0].rect;
+    CscdRect box = viewRect(v, query(v, ".cscd-menu"));
+    CHECK(box.x >= 149.5f && box.y >= 99.5f && cscdRectBottom(box) > 120); /* (not moved in) */
+    CHECK(r.x <= box.x && r.y <= box.y && cscdRectRight(r) >= cscdRectRight(box)); /* (its shadow in it) */
+    CHECK(pagePixel == 0xFFFFFFFFu); /* the page under it: not drawn there */
+    /* drawn on its own */
+    cscdImageInit(&pop, (int)r.w, (int)r.h);
+    CHECK(cscdViewPaintPopup(v, list[0].id, &pop));
+    const int bx = (int)(box.x - r.x) + 10, by = (int)(box.y - r.y) + 4;
+    CHECK((cscdImageRow(&pop, by)[bx] >> 24) == 255);  /* the menu, opaque */
+    CHECK((cscdImageRow(&pop, 0)[0] >> 24) < 255);      /* around it, its shadow at most */
+    /* the second row, below the view: a click there runs it */
+    CscdElement* two = nth(v, ".cscd-menu .cscd-menu-item", 1);
+    CscdRect tr = viewRect(v, two);
+    CHECK(tr.y > 120);
+    CHECK(cscdViewElementAt(v, tr.x + 10, tr.y + 4) == two || cscdNodeParentElement(cscdElementNode(cscdViewElementAt(v, tr.x + 10, tr.y + 4))) == two);
+    ran[0] = 0;
+    moveTo(v, tr.x + 10, tr.y + 4);
+    down(v, tr.x + 10, tr.y + 4);
+    up(v, tr.x + 10, tr.y + 4);
+    frame(v, &page);
+    CHECK(!cscdViewMenuOpen(v) && eq(ran, "two"));
+    CHECK(cscdViewPopups(v, list, 4) == 0);
+    CHECK(!cscdViewPaintPopup(v, list[0].id, &pop));
+    /* what was under it is the page again */
+    CHECK(cscdViewElementAt(v, 190, 110) != two);
+    cscdViewSetPopupArea(v, cscdRect(0, 0, 0, 0));
+    cscdImageFini(&pop);
+    cscdImageFini(&page);
+    cscdViewFree(v);
+}
+
 static void testMenus(void) {
     CscdView* v = cscdViewNew();
     menuView = v;
@@ -4921,6 +4983,7 @@ int main(void) {
     testBinding();
     testAccessors();
     testMenus();
+    testPopupWindows();
     testDragDrop();
     testTouch();
     testTouchSelection();

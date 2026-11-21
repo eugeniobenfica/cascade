@@ -750,6 +750,7 @@ static void openMenuEx(CscdView* v, CscdMenu items, bool owned, CscdRect anchor,
     if (!icons) cscdElementAddClass(box, CSCD_SV("no-icons"));
     if (!checks) cscdElementAddClass(box, CSCD_SV("no-checks"));
     m->box = box;
+    m->popupId = ++v->popupSerial;
     cscdVecPush(&v->menus, m); /* (in the list before the layout: removals during it find it) */
     viewLayoutNow(v);
     if (!m->box) {
@@ -758,21 +759,24 @@ static void openMenuEx(CscdView* v, CscdMenu items, bool owned, CscdRect anchor,
     }
     CscdRect r = cscdViewElementRect(v, box);
     float w = r.w, h = r.h, nx, ny;
+    /* (inside the view; with popup windows, inside the screen's area around it) */
+    const CscdRect B = viewPopupBounds(v);
+    const float right = cscdRectRight(B), bottom = cscdRectBottom(B);
     if (beside) {
         nx = cscdRectRight(anchor) - 2;
         ny = anchor.y - (box->layout ? box->layout->padding[0] + box->layout->border[0] : 0);
-        if (nx + w > v->vw) nx = cscdMaxf(0.f, anchor.x - w + 2);
-        if (ny + h > v->vh) ny = cscdMaxf(0.f, v->vh - h);
+        if (nx + w > right) nx = cscdMaxf(B.x, anchor.x - w + 2);
+        if (ny + h > bottom) ny = cscdMaxf(B.y, bottom - h);
     } else {
         nx = anchor.x;
         ny = cscdRectBottom(anchor);
-        if (nx + w > v->vw) nx = cscdMaxf(0.f, v->vw - w);
-        if (ny + h > v->vh) ny = anchor.y - h >= 0 ? anchor.y - h : cscdMaxf(0.f, v->vh - h);
+        if (nx + w > right) nx = cscdMaxf(B.x, right - w);
+        if (ny + h > bottom) ny = anchor.y - h >= B.y ? anchor.y - h : cscdMaxf(B.y, bottom - h);
     }
-    if (h > v->vh) {
-        setPx(box, "max-height", v->vh);
+    if (h > B.h) {
+        setPx(box, "max-height", B.h);
         cscdElementSetStyle(box, CSCD_SV("overflow-y"), CSCD_SV("auto"));
-        ny = 0;
+        ny = B.y;
     }
     setPx(box, "left", nx);
     setPx(box, "top", ny);
@@ -1180,12 +1184,14 @@ static void showTooltip(void* user) {
     cscdElementSetStyle(tip, CSCD_SV("left"), CSCD_SV("0px"));
     cscdElementSetStyle(tip, CSCD_SV("top"), CSCD_SV("0px"));
     v->tip = tip;
+    v->tipId = ++v->popupSerial;
     viewLayoutNow(v);
     if (!v->tip) return;
     CscdRect r = cscdViewElementRect(v, tip);
+    const CscdRect B = viewPopupBounds(v);
     float x = v->mouseX + 2, y = v->mouseY + 22;
-    if (x + r.w > v->vw - 2) x = cscdMaxf(2.f, v->vw - 2 - r.w);
-    if (y + r.h > v->vh - 2) y = cscdMaxf(2.f, v->mouseY - r.h - 6);
+    if (x + r.w > cscdRectRight(B) - 2) x = cscdMaxf(B.x + 2, cscdRectRight(B) - 2 - r.w);
+    if (y + r.h > cscdRectBottom(B) - 2) y = cscdMaxf(B.y + 2, v->mouseY - r.h - 6);
     setPx(tip, "left", x);
     setPx(tip, "top", y);
     cscdViewInvalidate(v);
@@ -1673,4 +1679,136 @@ void viewNodeRemoved(CscdView* v, CscdNode* n) {
         ++i;
     }
     if (v->onNodeRemoved) v->onNodeRemoved(v->onNodeRemovedUser, n);
+}
+
+/* ---- popups in windows of the host's ---------------------------------------------------------------- */
+
+CscdRect viewPopupBounds(const CscdView* v) { return v->popupWindows ? v->popupArea : cscdRect(0, 0, v->vw, v->vh); }
+
+/* the element of popup id (a menu's box, the tooltip), NULL once it closed */
+static CscdElement* popupElement(const CscdView* v, uint64_t id, bool* tooltip) {
+    if (tooltip) *tooltip = false;
+    for (size_t i = 0; i < v->menus.len; ++i) {
+        const OpenMenu* m = (const OpenMenu*)v->menus.items[i];
+        if (m->popupId == id) return m->box;
+    }
+    if (v->tip && v->tipId == id) {
+        if (tooltip) *tooltip = true;
+        return v->tip;
+    }
+    return NULL;
+}
+
+bool viewIsPopupWindow(const CscdView* v, const CscdElement* e) {
+    if (!v->popupWindows || !e) return false;
+    if (e == v->tip) return true;
+    for (size_t i = 0; i < v->menus.len; ++i)
+        if (((const OpenMenu*)v->menus.items[i])->box == e) return true;
+    return false;
+}
+
+void viewPopupsFree(CscdView* v) {
+    for (size_t i = 0; i < v->popupHits.len; ++i) cscdVecFree(&v->popupHits.items[i].hits);
+    cscdVecFree(&v->popupHits);
+}
+
+/* forgets the hit areas of popups that closed */
+void viewPopupHitsSweep(CscdView* v) {
+    size_t w = 0;
+    for (size_t i = 0; i < v->popupHits.len; ++i) {
+        if (popupElement(v, v->popupHits.items[i].id, NULL)) v->popupHits.items[w++] = v->popupHits.items[i];
+        else cscdVecFree(&v->popupHits.items[i].hits);
+    }
+    v->popupHits.len = w;
+}
+
+void cscdViewSetPopupArea(CscdView* v, CscdRect area) {
+    const bool on = !cscdRectEmpty(area);
+    if (on != v->popupWindows) {
+        /* (what is open was placed for the other way) */
+        cscdViewCloseMenus(v);
+        cscdViewHideTooltip(v);
+        v->fullPaint = true;
+        cscdViewInvalidate(v);
+    }
+    v->popupWindows = on;
+    v->popupArea = area;
+}
+
+/* where popup e goes, in view coordinates: its border box and what it draws around it (its shadow), on whole pixels */
+static CscdRect popupRect(CscdView* v, CscdElement* e) {
+    CscdRect r = cscdViewElementRect(v, e);
+    if (e->layout) {
+        const CscdRect box = cscdBoxBorderBox(e->layout), ink = cscdRectUnite(box, cscdBoxOwnInk(e->layout));
+        r = cscdRect(r.x + ink.x - box.x, r.y + ink.y - box.y, ink.w, ink.h);
+    }
+    const float x0 = floorf(r.x), y0 = floorf(r.y);
+    return cscdRect(x0, y0, ceilf(cscdRectRight(r)) - x0, ceilf(cscdRectBottom(r)) - y0);
+}
+
+size_t cscdViewPopups(CscdView* v, CscdPopup* out, size_t max) {
+    if (!v->popupWindows) return 0;
+    cscdViewUpdate(v);
+    viewPopupHitsSweep(v);
+    size_t n = 0;
+    for (size_t i = 0; i < v->menus.len; ++i) {
+        const OpenMenu* m = (const OpenMenu*)v->menus.items[i];
+        if (!m->box || !m->box->layout) continue;
+        if (n < max) {
+            out[n].id = m->popupId;
+            out[n].rect = popupRect(v, m->box);
+            out[n].tooltip = false;
+        }
+        ++n;
+    }
+    if (v->tip && v->tip->layout) {
+        if (n < max) {
+            out[n].id = v->tipId;
+            out[n].rect = popupRect(v, v->tip);
+            out[n].tooltip = true;
+        }
+        ++n;
+    }
+    return n;
+}
+
+bool cscdViewPaintPopup(CscdView* v, uint64_t id, CscdImage* target) {
+    if (!v->popupWindows) return false;
+    cscdViewUpdate(v);
+    bool tooltip;
+    CscdElement* e = popupElement(v, id, &tooltip);
+    if (!e || !e->layout) return false;
+    const CscdRect r = popupRect(v, e);
+    const float dpr = v->dpr;
+    CscdCanvas* c = cscdCanvasNew(target);
+    cscdCanvasClear(c, cscdRgba(0, 0, 0, 0));
+    cscdCanvasScale(c, dpr, dpr);
+    /* (as the page's paint has it, the popup's corner at the image's) */
+    cscdCanvasTranslate(c, -r.x - v->scrollX, -r.y - v->scrollY);
+    /* its hit areas, at view coordinates: where the input the host's window gets goes */
+    CscdHitVec pageHits = v->hits, own = {0};
+    v->hits = own;
+    const bool recording = v->recordHits;
+    v->recordHits = !tooltip;
+    paintPopup(v, c, e->layout);
+    v->recordHits = recording;
+    own = v->hits;
+    v->hits = pageHits;
+    cscdCanvasFree(c);
+    for (size_t i = 0; i < own.len; ++i) {
+        CscdHitItem* h = &own.items[i];
+        h->m.e += r.x * dpr;
+        h->m.f += r.y * dpr;
+        h->clip = cscdRectTranslated(h->clip, r.x * dpr, r.y * dpr);
+    }
+    size_t at = CSCD_NPOS;
+    for (size_t i = 0; i < v->popupHits.len; ++i) if (v->popupHits.items[i].id == id) at = i;
+    if (at == CSCD_NPOS) {
+        PopupHits p = {id, {0}};
+        cscdVecPush(&v->popupHits, p);
+        at = v->popupHits.len - 1;
+    }
+    cscdVecFree(&v->popupHits.items[at].hits);
+    v->popupHits.items[at].hits = own;
+    return true;
 }

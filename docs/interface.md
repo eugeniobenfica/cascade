@@ -182,6 +182,12 @@ cscdViewBindMenuBar(ui, fileEntry, fillFileMenu, app, NULL); /* a menu bar entry
 
 `cscdViewOnMenuItem` decorates each row as it is made: paint its icon slot, for example.
 
+In a desktop window (Windows, X11, macOS) menus, `<select>` lists and tooltips go past the window's edges: each
+shows in a window of its own, placed in the screen's work area as the system's menus are, and still made of the
+page's elements, styled by its CSS. On Wayland and on phones they stay inside the window. A host with windows of
+its own does the same with `cscdViewSetPopupArea` (where they may go), `cscdViewPopups` (where each one is) and
+`cscdViewPaintPopup` (its pixels), sending the input its popup windows get to the view at view coordinates.
+
 ## Dialogs
 
 `<dialog>` works as on the web. `cscdViewShowModal` centers it over a dimmed page that takes no

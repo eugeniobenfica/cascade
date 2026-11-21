@@ -248,6 +248,7 @@ void cscdViewFree(CscdView* v) {
     cscdVecFree(&v->paintDamage);
     viewUnhookDocument(v);
     viewClearMenus(v);
+    viewPopupsFree(v);
     cscdVecFree(&v->menus);
     cscdVecFree(&v->menuBar);
     clearTimers(v);
@@ -720,10 +721,9 @@ float cscdViewContentHeight(const CscdView* v) {
 
 /* ---- queries ------------------------------------------------------------------------------------- */
 
-CscdElement* cscdViewElementAt(CscdView* v, float x, float y) {
-    CscdPoint d = {x * v->dpr, y * v->dpr};
-    for (size_t i = v->hits.len; i-- > 0;) {
-        const CscdHitItem* it = &v->hits.items[i];
+static CscdElement* hitIn(CscdView* v, const CscdHitVec* hits, CscdPoint d) {
+    for (size_t i = hits->len; i-- > 0;) {
+        const CscdHitItem* it = &hits->items[i];
         if (!cscdRectContains(it->clip, d.x, d.y)) continue;
         CscdPoint p = d;
         if (it->projective) { /* back through the perspective, onto the image the box was painted in */
@@ -744,6 +744,18 @@ CscdElement* cscdViewElementAt(CscdView* v, float x, float y) {
         if (!cscdRectContains(it->rect, l.x, l.y)) continue;
         if (!cscdU64MapGet(&v->hitsGone, CSCD_PKEY(it->element))) return it->element;
     }
+    return NULL;
+}
+
+CscdElement* cscdViewElementAt(CscdView* v, float x, float y) {
+    const CscdPoint d = {x * v->dpr, y * v->dpr};
+    if (v->popupHits.len) viewPopupHitsSweep(v); /* (a closed popup's areas, with the elements it had, go) */
+    for (size_t i = v->popupWindows ? v->popupHits.len : 0; i-- > 0;) {
+        CscdElement* e = hitIn(v, &v->popupHits.items[i].hits, d);
+        if (e) return e;
+    }
+    CscdElement* e = hitIn(v, &v->hits, d);
+    if (e) return e;
     CscdElement* body = cscdDocumentBody(v->doc);
     return body ? body : cscdDocumentElement(v->doc);
 }

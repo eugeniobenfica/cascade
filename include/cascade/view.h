@@ -246,6 +246,24 @@ bool cscdViewPopoverOpen(const CscdView* v, const CscdElement* popover);
 void cscdViewSetTooltipDelay(CscdView* v, int ms); /* (650) */
 void cscdViewHideTooltip(CscdView* v);
 
+/* Popups in windows of their own. A host that can put windows of its own over the screen (a desktop window does)
+ * gives the view the area they may take, in CSS pixels from the view's top left: the screen's work area around it.
+ * Menus, <select> lists and tooltips are then placed in that area, past the view's edges when they need to be,
+ * and each is drawn apart from the page, for the host to show in a window of its own; the input the host's popup
+ * window gets goes to the view as any other, at view coordinates (the popup's rect.x + x). An empty area (the
+ * default): they stay inside the view, drawn with the page. */
+void cscdViewSetPopupArea(CscdView* v, CscdRect area);
+typedef struct CscdPopup {
+    uint64_t id;    /* the same while it is open */
+    CscdRect rect;  /* where it goes, in view coordinates (CSS pixels), its shadow included */
+    bool tooltip;   /* (a tooltip takes no input: the host's window lets it through) */
+} CscdPopup;
+/* The popups open now, bottom first (up to max of them; the count of all); the view's layout is brought up to date. */
+size_t cscdViewPopups(CscdView* v, CscdPopup* out, size_t max);
+/* Paints popup id into target (rect's size times the device pixel ratio; premultiplied, transparent around the
+ * popup); false when it is no longer open. */
+bool cscdViewPaintPopup(CscdView* v, uint64_t id, CscdImage* target);
+
 /* Drag and drop. Elements with draggable="true" start a drag (dragstart, drag, dragend on the
  * source; dragenter, dragover, dragleave, drop on the targets; a target accepts by calling
  * cscdEventPreventDefault in dragover). The window feeds drags from the system here. */

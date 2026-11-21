@@ -143,6 +143,15 @@ void platformTrayDestroy(CscdTray* t) { (void)t; }
 
 bool platformHide(CscdWindow* w) { return !wayland() && x11WindowHide(w); }
 
+/* (Wayland: popups stay in the window, which knows nothing of where it is on the screen) */
+bool platformPopupArea(CscdWindow* w, CscdIRect* area) { return !wayland() && x11PopupArea(w, area); }
+void* platformPopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    return wayland() ? popup : x11PopupShow(w, popup, rect, image, input);
+}
+void platformPopupHide(CscdWindow* w, void* popup) {
+    if (!wayland()) x11PopupHide(w, popup);
+}
+
 bool platformOpenUrl(CscdWindow* w, const char* url) {
     (void)w;
     if (!inPath("xdg-open")) return false;
