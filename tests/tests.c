@@ -4243,6 +4243,22 @@ static void testElementsGone(void) {
     paintOnce(v);
     cscdViewShowPopover(v, query(v, ".cscd-menu-item"), NULL);
 
+    /* a menu row that removes itself as the pointer comes onto it (then the tooltip looked at it) */
+    CscdMenu fourth = {0};
+    cscdMenuAdd(&fourth, cscdMenuItem(CSCD_SV("d"), NULL, NULL, CSCD_SV("")));
+    cscdViewShowMenu(v, fourth, 5, 5, 0);
+    paintOnce(v);
+    CscdElement* goes = query(v, ".cscd-menu-item");
+    CHECK(goes != NULL);
+    if (goes) {
+        cscdElementOn(goes, CSCD_SV("mouseenter"), removeTarget, NULL);
+        const CscdRect gr = viewRect(v, goes);
+        cscdViewMouseMove(v, gr.x + 4, gr.y + 4, 0, none);
+        CHECK(!query(v, ".cscd-menu-item"));
+        paintOnce(v);
+    }
+    cscdViewCloseMenus(v);
+
     /* a box whose scroll is on its way leaves the page */
     cscdViewLoadHTML(v, CSCD_SV("<style>body{margin:0}#s{height:60px;overflow:auto}#s div{height:400px}</style><div id=s><div></div></div>"), CSCD_SV("."));
     paintOnce(v);

@@ -892,9 +892,15 @@ bool viewMenuMouse(CscdView* v, int kind, float x, float y, int button) {
     v->cursor = CSCD_CURSOR_DEFAULT;
     if (kind == 0) {
         if (level >= 0) {
+            /* (mouseenter and mouseleave listeners may remove the element, or close the menus) */
+            const size_t mark = viewWatchMark(v);
+            viewWatch(v, &hit);
             viewSetHover(v, hit);
             viewTooltipMove(v, hit);
-            if (row >= 0) viewHighlightMenuRow(v, (size_t)level, row, true);
+            viewUnwatch(v, mark);
+            /* (the row holds hit: gone with it) */
+            if (row >= 0 && hit && (size_t)level < v->menus.len && (size_t)row < menuAt(v, (size_t)level)->rows.len)
+                viewHighlightMenuRow(v, (size_t)level, row, true);
         } else if (entry && v->menuBarOpen && entry != v->menuBarOpen) {
             viewOpenMenuBar(v, entry);
         } else {
