@@ -25,6 +25,7 @@ typedef struct CscdCssToken {
     char delim;
     bool integer;
     bool hashId;   /* a hash that is a valid identifier (#id vs #fff) */
+    bool sign;     /* a number (percentage, dimension) written with its sign, + or - */
 } CscdCssToken;
 typedef CSCD_VEC(CscdCssToken) CscdCssTokenVec;
 

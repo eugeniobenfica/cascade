@@ -177,7 +177,8 @@ double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
             bool scroll = row ? cs->overflowX != CSCD_OVERFLOW_VISIBLE : cs->overflowY != CSCD_OVERFLOW_VISIBLE;
             if (scroll) it->minMain = edgesMain;
             else {
-                double content = row ? layMinContent(L, c) : CONTENT_SIZE();
+                /* (the content size suggestion: what it holds asks for, its own width aside; then the specified size) */
+                double content = row ? layContentsMinContent(L, c) : CONTENT_SIZE();
                 const CscdLength spec = row ? cs->width : cs->height;
                 if (!cscdLenIsAuto(spec) && !cscdLenHasPercent(spec) && !cscdLenIsIntrinsic(spec)) content = layMin(content, spec.px + adj);
                 it->minMain = content;
@@ -616,10 +617,12 @@ static void placeItems(CscdLayoutBox* b, GridItemVec* items, int* outCols, int* 
     }
     for (size_t i = 0; i < n; ++i) if (fixedR[i] && fixedC[i]) mark(&P, &items->items[i]);
     bool columnFlow = s->gridAutoFlow == CSCD_GRID_COLUMN || s->gridAutoFlow == CSCD_GRID_COLUMN_DENSE;
+    const bool dense = s->gridAutoFlow == CSCD_GRID_ROW_DENSE || s->gridAutoFlow == CSCD_GRID_COLUMN_DENSE;
     int curR = 0, curC = 0;
     for (size_t i = 0; i < n; ++i) {
         if (fixedR[i] && fixedC[i]) continue;
         GridItem* it = &items->items[i];
+        if (dense) curR = curC = 0; /* (dense: each from the grid's start, into the first hole it fits) */
         int rs = spanR[i], cs = cscdMini(spanC[i], cscdMaxi(P.cols, spanC[i]));
         if (fixedC[i] && !columnFlow) {
             /* a definite column: the cursor moves to it (a row down when that is behind it), then
@@ -712,6 +715,7 @@ static void sizeTracks(Layouter* L, TrackVec* tracksV, const GridItemVec* items,
             if (fixedOf(sp->min, avail, &v)) t->base = v;
             if (sp->max->kind == CSCD_TRACK_FR) { t->flexible = true; t->fr = sp->max->fr; }
             else if (fixedOf(sp->max, avail, &v)) t->limit = layMax(v, t->base);
+            else if (isIntrinsicMax(sp)) t->limit = 0; /* (an intrinsic maximum: the contributions set it, or its base) */
             break;
         default: t->base = 0; t->limit = 0; break;
         }

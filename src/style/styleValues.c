@@ -652,6 +652,23 @@ static CscdColor oklab(float L, float a, float b, float alpha) {
     return cscdColorFromFloat(srgbFromLinear(r), srgbFromLinear(g), srgbFromLinear(bb), alpha);
 }
 
+/* CIE Lab (D50, L 0..100) as sRGB: to XYZ, adapted to D65 (Bradford), to linear sRGB (clipped to its gamut) */
+static CscdColor cieLab(double L, double a, double b, float alpha) {
+    const double k = 24389.0 / 27, e = 216.0 / 24389;
+    const double fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+    const double x = fx * fx * fx > e ? fx * fx * fx : (116 * fx - 16) / k;
+    const double y = L > k * e ? fy * fy * fy : L / k;
+    const double z = fz * fz * fz > e ? fz * fz * fz : (116 * fz - 16) / k;
+    const double X = x * 0.3457 / 0.3585, Y = y, Z = z * (1 - 0.3457 - 0.3585) / 0.3585;
+    const double X65 = 0.9554734527042182 * X - 0.023098536874261423 * Y + 0.0632593086610217 * Z;
+    const double Y65 = -0.028369706963208136 * X + 1.0099954580058226 * Y + 0.021041398966943008 * Z;
+    const double Z65 = 0.012314001688319899 * X - 0.020507696433477912 * Y + 1.3303659366080753 * Z;
+    const double r = 3.2409699419045226 * X65 - 1.537383177570094 * Y65 - 0.4986107602930034 * Z65;
+    const double g = -0.9692436362808796 * X65 + 1.8759675015077202 * Y65 + 0.04155505740717559 * Z65;
+    const double bb = 0.05563007969699366 * X65 - 0.20397695888897652 * Y65 + 1.0569715142428786 * Z65;
+    return cscdColorFromFloat(srgbFromLinear((float)r), srgbFromLinear((float)g), srgbFromLinear((float)bb), alpha);
+}
+
 /* arguments of rgb()/hsl()...: comma or space separated, optional "/ alpha" */
 static bool colorArgs(const CscdCssValueVec* args, const CscdCssValue** out, const CscdCssValue** alpha) {
     *alpha = NULL;
@@ -780,9 +797,9 @@ bool cscdParseColor(const CscdCssValueVec* v, size_t* i, CscdColor* out, CscdCol
     }
     if (cscdCssIsFunction(x, "oklab") || cscdCssIsFunction(x, "oklch") || cscdCssIsFunction(x, "lab") || cscdCssIsFunction(x, "lch")) {
         if (!colorArgs(&x->args, a, &alpha)) return false;
-        bool ok = cscdCssIsFunction(x, "oklab") || cscdCssIsFunction(x, "oklch");
-        float L = a[0]->tok.type == CSCD_TOK_PERCENTAGE ? (float)a[0]->tok.num / 100.f : colorNum(a[0], 1, &c);
-        if (!ok) L /= 100.f;
+        const bool ok = cscdCssIsFunction(x, "oklab") || cscdCssIsFunction(x, "oklch");
+        /* (L: Oklab's 0..1, Lab's 0..100; 100% the most of either) */
+        float L = a[0]->tok.type == CSCD_TOK_PERCENTAGE ? (float)a[0]->tok.num / 100.f * (ok ? 1.f : 100.f) : colorNum(a[0], 1, &c);
         float A, B;
         if (cscdCssIsFunction(x, "oklch") || cscdCssIsFunction(x, "lch")) {
             float C = a[1]->tok.type == CSCD_TOK_PERCENTAGE ? (float)a[1]->tok.num / 100.f * (ok ? 0.4f : 150.f) : colorNum(a[1], 1, &c);
@@ -793,8 +810,38 @@ bool cscdParseColor(const CscdCssValueVec* v, size_t* i, CscdColor* out, CscdCol
             A = a[1]->tok.type == CSCD_TOK_PERCENTAGE ? (float)a[1]->tok.num / 100.f * (ok ? 0.4f : 125.f) : colorNum(a[1], 1, &c);
             B = a[2]->tok.type == CSCD_TOK_PERCENTAGE ? (float)a[2]->tok.num / 100.f * (ok ? 0.4f : 125.f) : colorNum(a[2], 1, &c);
         }
-        if (!ok) { A /= 400.f; B /= 400.f; } /* CIE Lab approximated through Oklab */
-        *out = oklab(L, A, B, alphaValue(alpha));
+        *out = ok ? oklab(L, A, B, alphaValue(alpha)) : cieLab(L, A, B, alphaValue(alpha));
+        ++*i;
+        return true;
+    }
+    if (cscdCssIsFunction(x, "color")) { /* color(srgb r g b [/ alpha]), color(srgb-linear ...) */
+        const CscdCssValue* p[4] = {NULL, NULL, NULL, NULL};
+        const CscdCssValue* space = NULL;
+        size_t n = 0;
+        bool slash = false, bad = false;
+        for (size_t k = 0; k < x->args.len && !bad; ++k) {
+            const CscdCssValue* q = &x->args.items[k];
+            if (q->tok.type == CSCD_TOK_WHITESPACE) continue;
+            if (!space) {
+                space = q;
+                bad = !(cscdCssIsIdent(q, "srgb") || cscdCssIsIdent(q, "srgb-linear"));
+            } else if (cscdCssIsDelim(q, '/') && n == 3 && !slash) slash = true;
+            else if (n < 3 && !slash) p[n++] = q;
+            else if (slash && !p[3]) p[3] = q;
+            else bad = true;
+        }
+        if (bad || !space || n != 3 || (slash && !p[3])) return false;
+        float ch[3];
+        for (int k = 0; k < 3; ++k) {
+            const CscdCssToken* t = &p[k]->tok;
+            if (t->type == CSCD_TOK_PERCENTAGE) ch[k] = (float)t->num / 100.f;
+            else if (t->type == CSCD_TOK_NUMBER) ch[k] = (float)t->num;
+            else if (cscdCssIsIdent(p[k], "none")) ch[k] = 0;
+            else return false;
+            ch[k] = cscdClampf(ch[k], 0.f, 1.f);
+            if (cscdCssIsIdent(space, "srgb-linear")) ch[k] = srgbFromLinear(ch[k]);
+        }
+        *out = cscdColorFromFloat(ch[0], ch[1], ch[2], alphaValue(p[3]));
         ++*i;
         return true;
     }

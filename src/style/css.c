@@ -58,7 +58,8 @@ static void lexName(Lexer* L, CscdStr* out) {
 static void lexNumber(Lexer* L, CscdCssToken* t) {
     size_t start = L->i;
     t->integer = true;
-    if (peek(L, 0) == '+' || peek(L, 0) == '-') ++L->i;
+    t->sign = peek(L, 0) == '+' || peek(L, 0) == '-';
+    if (t->sign) ++L->i;
     while (cscdIsDigit(peek(L, 0))) ++L->i;
     if (peek(L, 0) == '.' && cscdIsDigit(peek(L, 1))) {
         t->integer = false;
@@ -442,45 +443,92 @@ static void computeSpecificity(CscdSelector* s) {
     s->specificity = (a << 16) | (b << 8) | c;
 }
 
-static void parseNth(const CscdCssToken* toks, size_t n, CscdSimpleSelector* ss) {
-    CscdStr txt = {0};
+/* An+B (CSS Syntax 6.2) from the tokens of :nth-child()'s argument; false when they are not one. */
+static bool nthInteger(const CscdCssToken* t, bool signedOk, bool signlessOk, int* out) {
+    if (!t || t->type != CSCD_TOK_NUMBER || !t->integer) return false;
+    if (t->sign ? !signedOk : !signlessOk) return false;
+    *out = cscdIntOfDouble(t->num);
+    return true;
+}
+
+/* digits after "n-" in an identifier or a unit ("n-3": -3); false when there are none or other characters */
+static bool dashDigits(CscdSv s, int* out) {
+    if (s.len < 2 || s.ptr[0] != '-') return false;
+    long v = 0;
+    for (size_t i = 1; i < s.len; ++i) {
+        if (!cscdIsDigit((unsigned char)s.ptr[i])) return false;
+        v = v * 10 + (s.ptr[i] - '0');
+        if (v > 1000000000) v = 1000000000;
+    }
+    *out = -(int)v;
+    return true;
+}
+
+static bool parseNth(const CscdCssToken* toks, size_t n, CscdSimpleSelector* ss) {
+    /* the tokens, whitespace left out but known (a sign must touch what it signs) */
+    const CscdCssToken* t[8];
+    bool spaceBefore[8];
+    size_t m = 0;
+    bool space = false;
     for (size_t k = 0; k < n; ++k) {
-        const CscdCssToken* t = &toks[k];
-        char b[32];
-        if (t->type == CSCD_TOK_WHITESPACE) continue;
-        if (t->type == CSCD_TOK_IDENT) { CscdStr l = cscdLower(cscdStrSv(&t->text)); cscdStrAppend(&txt, cscdStrSv(&l)); cscdStrFree(&l); }
-        else if (t->type == CSCD_TOK_NUMBER) {
-            snprintf(b, 32, "%d", cscdIntOfDouble(t->num));
-            if (t->num >= 0 && txt.len) cscdStrAppendChar(&txt, '+');
-            cscdStrAppendC(&txt, b);
-        } else if (t->type == CSCD_TOK_DIMENSION) {
-            snprintf(b, 32, "%d", cscdIntOfDouble(t->num));
-            if (t->num >= 0 && txt.len) cscdStrAppendChar(&txt, '+');
-            cscdStrAppendC(&txt, b);
-            CscdStr l = cscdLower(cscdStrSv(&t->text));
-            cscdStrAppend(&txt, cscdStrSv(&l));
-            cscdStrFree(&l);
-        } else if (t->type == CSCD_TOK_DELIM) cscdStrAppendChar(&txt, t->delim);
+        if (toks[k].type == CSCD_TOK_WHITESPACE) { space = true; continue; }
+        if (m == 8) return false;
+        spaceBefore[m] = space;
+        t[m++] = &toks[k];
+        space = false;
     }
-    CscdSv s = cscdStrSv(&txt);
-    if (cscdSvEqC(s, "odd")) { ss->nthA = 2; ss->nthB = 1; }
-    else if (cscdSvEqC(s, "even")) { ss->nthA = 2; ss->nthB = 0; }
-    else {
-        size_t np = cscdSvFindChar(s, 'n', 0);
-        if (np == CSCD_NPOS) { ss->nthA = 0; ss->nthB = atoi(cscdStrC(&txt)); }
-        else {
-            CscdSv as = cscdSvSub(s, 0, np), bs = cscdSvFrom(s, np + 1);
-            if (as.len == 0 || cscdSvEqC(as, "+")) ss->nthA = 1;
-            else if (cscdSvEqC(as, "-")) ss->nthA = -1;
-            else { char* a = cscdSvDupC(as); ss->nthA = atoi(a); cscdFree(a); }
-            /* "n-of-type" style suffixes are not expected here; bs is like "+1" or "-2" */
-            size_t k = 0;
-            while (k < bs.len && (bs.ptr[k] == '+' || bs.ptr[k] == '-') && k + 1 < bs.len && (bs.ptr[k + 1] == '+' || bs.ptr[k + 1] == '-')) ++k;
-            if (!bs.len) ss->nthB = 0;
-            else { char* b = cscdSvDupC(cscdSvFrom(bs, k)); ss->nthB = atoi(b); cscdFree(b); }
+    if (!m) return false;
+    int a = 0, b = 0;
+    size_t i = 0;
+    const CscdCssToken* x = t[0];
+    CscdStr low = cscdLower(cscdStrSv(&x->text));
+    CscdSv id = cscdStrSv(&low);
+    bool ok = false;
+    /* what may follow An: nothing, a signed integer, or + / - and a signless one */
+    bool tail = false; /* (B still to read after An) */
+    if (x->type == CSCD_TOK_IDENT && cscdSvEqC(id, "odd") && m == 1) { a = 2; b = 1; ok = true; }
+    else if (x->type == CSCD_TOK_IDENT && cscdSvEqC(id, "even") && m == 1) { a = 2; b = 0; ok = true; }
+    else if (x->type == CSCD_TOK_NUMBER && m == 1) ok = nthInteger(x, true, true, &b);
+    else if (x->type == CSCD_TOK_DIMENSION && x->integer) {
+        a = cscdIntOfDouble(x->num);
+        if (cscdSvEqC(id, "n")) { i = 1; tail = true; ok = true; }
+        else if (cscdSvEqC(id, "n-")) {
+            ok = m == 2 && nthInteger(t[1], false, true, &b);
+            b = -b;
+        } else if (cscdSvStartsC(id, "n-") && m == 1) ok = dashDigits(cscdSvFrom(id, 1), &b);
+    } else {
+        /* +n, n, -n, with what follows: the + a delim touching an ident */
+        size_t at = 0;
+        int sign = 1;
+        if (x->type == CSCD_TOK_DELIM && x->delim == '+' && m > 1 && !spaceBefore[1] && t[1]->type == CSCD_TOK_IDENT) at = 1;
+        const CscdCssToken* y = t[at];
+        CscdStr l2 = cscdLower(cscdStrSv(&y->text));
+        CscdSv s = cscdStrSv(&l2);
+        if (y->type == CSCD_TOK_IDENT && !(at == 1 && s.len && s.ptr[0] == '-')) {
+            if (at == 0 && s.len && s.ptr[0] == '-') { sign = -1; s = cscdSvFrom(s, 1); }
+            a = sign;
+            if (cscdSvEqC(s, "n")) { i = at + 1; tail = true; ok = true; }
+            else if (cscdSvEqC(s, "n-")) {
+                ok = m == at + 2 && nthInteger(t[at + 1], false, true, &b);
+                b = -b;
+            } else if (cscdSvStartsC(s, "n-") && m == at + 1) ok = dashDigits(cscdSvFrom(s, 1), &b);
         }
+        cscdStrFree(&l2);
     }
-    cscdStrFree(&txt);
+    if (ok && tail) {
+        if (i == m) b = 0;
+        else if (i + 1 == m) ok = nthInteger(t[i], true, false, &b);
+        else if (i + 2 == m && t[i]->type == CSCD_TOK_DELIM && (t[i]->delim == '+' || t[i]->delim == '-')) {
+            ok = nthInteger(t[i + 1], false, true, &b);
+            if (t[i]->delim == '-') b = -b;
+        } else ok = false;
+    }
+    cscdStrFree(&low);
+    if (ok) {
+        ss->nthA = a;
+        ss->nthB = b;
+    }
+    return ok;
 }
 
 /* collects the raw tokens of a function argument up to its matching ')' (copies) */
@@ -600,7 +648,11 @@ static bool compound(SelParser* p, CscdCompound* c, CscdSelector* sel) {
                     /* "An+B of S" is accepted without the "of S" part */
                     size_t k = 0;
                     while (k < args.len && !(args.items[k].type == CSCD_TOK_IDENT && cscdSvIEqC(cscdStrSv(&args.items[k].text), "of"))) ++k;
-                    parseNth(args.items, k, &ss);
+                    if (!parseNth(args.items, k, &ss)) { /* (not An+B: the selector is invalid) */
+                        simpleFree(&ss);
+                        cscdCssTokenVecFree(&args);
+                        return false;
+                    }
                 } else {
                     for (size_t k = 0; k < args.len; ++k)
                         if (args.items[k].type == CSCD_TOK_IDENT || args.items[k].type == CSCD_TOK_STRING) cscdStrAppend(&ss.value, cscdStrSv(&args.items[k].text));
@@ -1118,7 +1170,20 @@ void cscdParseDeclarations(CscdSv block, CscdDeclVec* out) {
             }
             continue;
         }
-        CscdSv name = cscdSvTrim(cscdSvSub(block, i, colon - i));
+        /* the name: one identifier, comments and white space around it (anything else: no declaration) */
+        CscdCssTokenVec nameToks = {0};
+        cscdCssTokenize(cscdSvSub(block, i, colon - i), &nameToks);
+        const CscdCssToken* ident = NULL;
+        bool badName = false;
+        for (size_t k = 0; k < nameToks.len; ++k) {
+            const CscdCssToken* t = &nameToks.items[k];
+            if (t->type == CSCD_TOK_WHITESPACE || t->type == CSCD_TOK_EOF) continue;
+            if (!ident && t->type == CSCD_TOK_IDENT) ident = t;
+            else badName = true;
+        }
+        CscdStr nameText = ident && !badName ? cscdStrDup(cscdStrSv(&ident->text)) : (CscdStr){0};
+        cscdCssTokenVecFree(&nameToks);
+        const CscdSv name = cscdStrSv(&nameText);
         /* value: up to ';' outside of strings and parentheses */
         size_t j = colon + 1;
         int depth = 0;
@@ -1138,14 +1203,19 @@ void cscdParseDeclarations(CscdSv block, CscdDeclVec* out) {
             ++j;
         }
         if (j > n) j = n;
-        CscdStr value = cscdStrDup(cscdSvTrim(cscdSvSub(block, colon + 1, j - colon - 1)));
         i = j + 1;
+        if (!name.len) {
+            cscdStrFree(&nameText);
+            continue;
+        }
+        CscdStr value = cscdStrDup(cscdSvTrim(cscdSvSub(block, colon + 1, j - colon - 1)));
         /* strip comments inside the value */
         stripComments(&value);
         CscdDeclaration d;
         memset(&d, 0, sizeof d);
         bool custom = cscdSvStartsC(name, "--");
         d.property = custom ? cscdStrDup(name) : cscdLower(name);
+        cscdStrFree(&nameText);
         size_t bang = cscdSvRFindChar(cscdStrSv(&value), '!');
         if (bang != CSCD_NPOS && cscdSvIEqC(cscdSvTrim(cscdSvFrom(cscdStrSv(&value), bang + 1)), "important")) {
             d.important = true;

@@ -7,6 +7,17 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Conformance suites in CI**: Unicode's bidi tests (all 861,948 cases), html5lib's tree construction tests and
+  css-parsing-tests (known failures listed), 58 layout fixtures laid out by Chrome, and web-platform-tests' CSS
+  reftests scored by folder (`tests/wpt.score`).
+- **Lines of text are whole pixels high**: a font's ascent, descent and line gap are rounded at each size, as browsers
+  round them, so boxes after text stay on the pixel grid (2,054 WPT reftests pass instead of 846).
+- Fixed: the bidi algorithm took sos and eos from resolved levels; `lab()` and `lch()` were approximated through
+  Oklab, and `lab(100% 0 0)` was black; `:nth-child(3n - 1)` matched as 3n+1, and invalid An+B was accepted; a
+  declaration's name could be anything before its colon; a flex item with a width did not shrink below it; a relative
+  offset moved the boxes after it; `grid-auto-flow: dense` did not fill holes; `minmax(x, auto)` rows ignored their
+  contents. New: `color(srgb ...)` and `color(srgb-linear ...)`.
+
 - **Transform animations keep their image**: an element whose transform animates by moving (and scaling) is drawn
   through an image of its own placed on whole device pixels, in a frame and in a page painted from scratch alike;
   a frame that only moves it places the image again. 24 cards sliding: ~3.6 → ~0.3 ms a frame at dpr 2.

@@ -146,6 +146,11 @@ static void testSelectors(void) {
     CscdPtrVec all = {0};
     CHECK(ALL("li:nth-child(odd)") == 2);
     CHECK(ALL("li:nth-child(2n+2)") == 2);
+    /* An+B by CSS Syntax: a minus apart from its number still counts (3n - 1: 2 and 5, not 1 and 4); what is not An+B
+     * makes the selector invalid (none matched, not every child) */
+    CHECK(ALL("li:nth-child(3n - 1)") == 1 && eq(textOf(ONE("li:nth-child(3n - 1)")), "2"));
+    CHECK(ALL("li:nth-child(-n+ 2)") == 2);
+    CHECK(ALL("li:nth-child(3 n)") == 0 && ALL("li:nth-child(+ 2)") == 0 && ALL("li:nth-child(2.5)") == 0);
     CHECK(eq(textOf(ONE("li:first-child")), "1"));
     CHECK(eq(textOf(ONE("li:last-child")), "4"));
     CHECK(eq(textOf(ONE(".k + li")), "3"));
@@ -3134,6 +3139,221 @@ static const char* bidiOf(const char* textUtf8, int level) {
     return keep(out);
 }
 
+/* Pages of boxes laid out as Chrome lays them out (tools/layoutFixtures.py wrote where it put each element): every
+ * element's border box within half a pixel. The fixtures cascade lays out otherwise are listed with why. */
+typedef struct LayoutFixture { const char* name; const char* page; int count; const float* rects; } LayoutFixture;
+static const LayoutFixture kLayoutFixtures[] = {
+#include "layoutFixtures.inc"
+};
+static const char* const kLayoutKnown[] = {
+    "",
+};
+
+static void elementsIn(CscdNode* n, CscdPtrVec* out) {
+    for (size_t i = 0; i < n->children.len; ++i) {
+        CscdNode* c = cscdNodeChild(n, i);
+        if (!cscdNodeIsElement(c)) continue;
+        cscdVecPush(out, c);
+        elementsIn(c, out);
+    }
+}
+
+static void testLayoutFixtures(void) {
+    int passed = 0, failed = 0, stale = 0;
+    for (size_t f = 0; f < CSCD_COUNT(kLayoutFixtures); ++f) {
+        const LayoutFixture* x = &kLayoutFixtures[f];
+        CscdView* v = cscdViewNew();
+        cscdViewOnWarning(v, NULL, NULL);
+        cscdViewSetViewport(v, 800, 600, 1);
+        cscdViewLoadHTML(v, cscdSv(x->page), CSCD_SV("."));
+        cscdViewUpdate(v);
+        CscdPtrVec els = {0};
+        CscdElement* body = cscdDocumentBody(cscdViewDocument(v));
+        if (body) elementsIn(&body->node, &els);
+        bool ok = (int)els.len == x->count;
+        CscdStr why = {0};
+        for (size_t i = 0; ok && i < els.len; ++i) {
+            const CscdRect r = cscdViewElementRect(v, (CscdElement*)els.items[i]);
+            const float* w = x->rects + 4 * i;
+            if (fabsf(r.x - w[0]) > 0.5f || fabsf(r.y - w[1]) > 0.5f || fabsf(r.w - w[2]) > 0.5f || fabsf(r.h - w[3]) > 0.5f) {
+                ok = false;
+                why = cscdStrf("element %u at %g,%g %gx%g, Chrome %g,%g %gx%g", (unsigned)i, r.x, r.y, r.w, r.h, w[0], w[1], w[2], w[3]);
+            }
+        }
+        bool known = false;
+        for (size_t k = 0; k < CSCD_COUNT(kLayoutKnown); ++k) known = known || !strcmp(kLayoutKnown[k], x->name);
+        if (ok) {
+            ++passed;
+            if (known) {
+                printf("  layout fixture %s: listed as laid out otherwise, but passes\n", x->name);
+                ++stale;
+            }
+        } else if (!known) {
+            ++failed;
+            printf("  layout fixture %s: %s\n", x->name, why.len ? cscdStrC(&why) : "not as many elements");
+        }
+        cscdStrFree(&why);
+        cscdVecFree(&els);
+        cscdViewFree(v);
+    }
+    CHECK(failed == 0 && stale == 0);
+    (void)passed;
+}
+
+/* The bidirectional algorithm on one paragraph, one line (as UAX #9's conformance files take it): the levels after L1
+ * ('x' for the characters X9 removes) and the visual order of the others. dir: 0 LTR, 1 RTL, 2 auto. */
+static bool bidiMatches(const uint32_t* cps, size_t n, int dir, int wantLevel, const int* wantLevels, const int* wantOrder, size_t nOrder) {
+    uint8_t levels[256];
+    const int para = dir == 2 ? cscdBidiParagraphLevel(cps, n, 0) : dir;
+    if (wantLevel >= 0 && para != wantLevel) return false;
+    cscdBidiLevels(cps, n, para, levels);
+    cscdBidiLineLevels(cps, n, para, levels);
+    for (size_t i = 0; i < n; ++i)
+        if (wantLevels[i] >= 0 && levels[i] != wantLevels[i]) return false;
+    CscdSizeVec order = {0};
+    cscdBidiVisualOrder(levels, n, &order);
+    size_t k = 0;
+    bool ok = true;
+    for (size_t i = 0; i < order.len && ok; ++i) {
+        if (wantLevels[order.items[i]] < 0) continue; /* (removed: not in the order) */
+        ok = k < nOrder && (int)order.items[i] == wantOrder[k];
+        ++k;
+    }
+    cscdVecFree(&order);
+    return ok && k == nOrder;
+}
+
+/* Unicode's two conformance files of the bidirectional algorithm, when CASCADE_BIDI_TEST and CASCADE_BIDI_CHARACTER_TEST
+ * name them (CI downloads them): BidiTest.txt (sequences of classes, each paragraph direction its bits ask for) and
+ * BidiCharacterTest.txt (code points, with the paragraph level resolved), every line. */
+static void testBidiConformance(void) {
+    /* (a character of each class, for BidiTest's class names) */
+    static const struct { const char* name; uint32_t cp; } kClasses[] = {
+        {"L", 0x61}, {"R", 0x5D0}, {"AL", 0x627}, {"EN", 0x30}, {"ES", 0x2B}, {"ET", 0x24}, {"AN", 0x660}, {"CS", 0x2C},
+        {"NSM", 0x300}, {"BN", 0xAD}, {"B", 0x2029}, {"S", 0x09}, {"WS", 0x20}, {"ON", 0x21}, {"LRE", 0x202A}, {"LRO", 0x202D},
+        {"RLE", 0x202B}, {"RLO", 0x202E}, {"PDF", 0x202C}, {"LRI", 0x2066}, {"RLI", 0x2067}, {"FSI", 0x2068}, {"PDI", 0x2069},
+    };
+    /* (an NSM opening an embedding takes its sos from the levels the embeddings give, not from the Arabic digit before
+     * it as I2 raised it: AN RLE NSM, left to right, is 2 x 1) */
+    const uint32_t anNsm[] = {0x660, 0x202B, 0x300};
+    const int anNsmLevels[] = {2, -1, 1}, anNsmOrder[] = {2, 0};
+    CHECK(bidiMatches(anNsm, 3, 0, -1, anNsmLevels, anNsmOrder, 2));
+    const char* path = getenv("CASCADE_BIDI_TEST");
+    if (path && *path) {
+        FILE* f = fopen(path, "rb");
+        CHECK(f != NULL);
+        static char line[8192];
+        int levels[256], order[256];
+        size_t nLevels = 0, nOrder = 0;
+        long cases = 0, failed = 0;
+        while (f && fgets(line, sizeof line, f)) {
+            char* hash = strchr(line, '#');
+            if (hash) *hash = 0;
+            if (!strncmp(line, "@Levels:", 8)) {
+                nLevels = 0;
+                for (char* p = line + 8; nLevels < 256;) {
+                    while (*p == ' ' || *p == '\t') ++p;
+                    if (*p == 'x') { levels[nLevels++] = -1; ++p; continue; }
+                    char* end;
+                    const long v = strtol(p, &end, 10);
+                    if (end == p) break;
+                    levels[nLevels++] = (int)v;
+                    p = end;
+                }
+                continue;
+            }
+            if (!strncmp(line, "@Reorder:", 9)) {
+                nOrder = 0;
+                for (char* p = line + 9; nOrder < 256;) {
+                    char* end;
+                    const long v = strtol(p, &end, 10);
+                    if (end == p) break;
+                    order[nOrder++] = (int)v;
+                    p = end;
+                }
+                continue;
+            }
+            char* semi = strchr(line, ';');
+            if (!semi) continue;
+            *semi = 0;
+            uint32_t cps[256];
+            size_t n = 0;
+            for (char* tok = strtok(line, " \t"); tok && n < 256; tok = strtok(NULL, " \t")) {
+                uint32_t cp = 0;
+                for (size_t k = 0; k < CSCD_COUNT(kClasses) && !cp; ++k)
+                    if (!strcmp(tok, kClasses[k].name)) cp = kClasses[k].cp;
+                cps[n++] = cp;
+            }
+            const int bits = atoi(semi + 1);
+            if (n != nLevels) continue;
+            for (int dir = 0; dir < 3; ++dir) {
+                if (!(bits & (dir == 2 ? 1 : dir == 0 ? 2 : 4))) continue;
+                ++cases;
+                if (!bidiMatches(cps, n, dir == 2 ? 2 : dir, -1, levels, order, nOrder) && ++failed <= 6) {
+                    printf("  BidiTest:");
+                    for (size_t i = 0; i < n; ++i) printf(" %04X", (unsigned)cps[i]);
+                    printf(" (direction %d)\n", dir);
+                }
+            }
+        }
+        if (f) fclose(f);
+        if (failed) printf("  BidiTest: %ld of %ld cases fail\n", failed, cases);
+        CHECK(cases > 400000 && failed == 0);
+    }
+    path = getenv("CASCADE_BIDI_CHARACTER_TEST");
+    if (path && *path) {
+        FILE* f = fopen(path, "rb");
+        CHECK(f != NULL);
+        static char line[8192];
+        long cases = 0, failed = 0;
+        while (f && fgets(line, sizeof line, f)) {
+            char* hash = strchr(line, '#');
+            if (hash) *hash = 0;
+            char* field[5];
+            int nf = 0;
+            for (char* p = line; nf < 5 && p;) {
+                field[nf++] = p;
+                p = strchr(p, ';');
+                if (p) *p++ = 0;
+            }
+            if (nf < 5) continue;
+            uint32_t cps[256];
+            int levels[256], order[256];
+            size_t n = 0, nl = 0, no = 0;
+            for (char* p = field[0]; n < 256;) {
+                char* end;
+                const unsigned long v = strtoul(p, &end, 16);
+                if (end == p) break;
+                cps[n++] = (uint32_t)v;
+                p = end;
+            }
+            for (char* p = field[3]; nl < 256;) {
+                while (*p == ' ') ++p;
+                if (*p == 'x') { levels[nl++] = -1; ++p; continue; }
+                char* end;
+                const long v = strtol(p, &end, 10);
+                if (end == p) break;
+                levels[nl++] = (int)v;
+                p = end;
+            }
+            for (char* p = field[4]; no < 256;) {
+                char* end;
+                const long v = strtol(p, &end, 10);
+                if (end == p) break;
+                order[no++] = (int)v;
+                p = end;
+            }
+            if (!n || nl != n) continue;
+            ++cases;
+            if (!bidiMatches(cps, n, atoi(field[1]), atoi(field[2]), levels, order, no) && ++failed <= 6)
+                printf("  BidiCharacterTest: %s; %s\n", field[0], field[1]);
+        }
+        if (f) fclose(f);
+        if (failed) printf("  BidiCharacterTest: %ld of %ld cases fail\n", failed, cases);
+        CHECK(cases > 90000 && failed == 0);
+    }
+}
+
 /* Line breaking: a few cases always, and Unicode's conformance file when CASCADE_LINEBREAK_TEST names it (CI downloads
  * LineBreakTest.txt of the Unicode version lineBreakData.inc was made from): every boundary of its 16,000 lines. */
 static bool breaksMatch(const uint32_t* cps, size_t n, const char* want) {
@@ -4644,6 +4864,8 @@ int main(void) {
     testOpenType();
     testArabicShaping();
     testScriptShapers();
+    testBidiConformance();
+    testLayoutFixtures();
     testBidiFields();
     testMoreCss();
     testBinding();

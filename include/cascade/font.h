@@ -6,6 +6,8 @@
 
 #include "cascade/core.h"
 
+#include <math.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -89,9 +91,11 @@ typedef struct CscdFont {
 
 CSCD_INLINE CscdFont cscdFontDefault(void) { CscdFont f = {NULL, 16, false, false, false, false, NULL}; return f; }
 CSCD_INLINE float cscdFontScale(const CscdFont* f) { return f->face ? f->size / f->face->unitsPerEm : 0; }
-CSCD_INLINE float cscdFontAscent(const CscdFont* f) { return f->face ? f->face->ascender * cscdFontScale(f) : f->size * 0.8f; }
-CSCD_INLINE float cscdFontDescent(const CscdFont* f) { return f->face ? -f->face->descender * cscdFontScale(f) : f->size * 0.2f; } /* positive */
-CSCD_INLINE float cscdFontLineGap(const CscdFont* f) { return f->face ? f->face->lineGap * cscdFontScale(f) : 0; }
+/* The font's ascent, descent (positive) and line gap at its size, each rounded to a whole pixel as browsers round them:
+ * a line of text is then whole pixels high, and what is laid out after it stays on the pixel grid. */
+CSCD_INLINE float cscdFontAscent(const CscdFont* f) { return roundf(f->face ? f->face->ascender * cscdFontScale(f) : f->size * 0.8f); }
+CSCD_INLINE float cscdFontDescent(const CscdFont* f) { return roundf(f->face ? -f->face->descender * cscdFontScale(f) : f->size * 0.2f); }
+CSCD_INLINE float cscdFontLineGap(const CscdFont* f) { return roundf(f->face ? f->face->lineGap * cscdFontScale(f) : 0); }
 CSCD_INLINE float cscdFontXHeight(const CscdFont* f) { return f->face ? f->face->xHeight * cscdFontScale(f) : f->size * 0.5f; }
 CSCD_INLINE bool cscdFontEq(const CscdFont* a, const CscdFont* b) {
     return a->face == b->face && a->size == b->size && a->fakeBold == b->fakeBold && a->fakeItalic == b->fakeItalic &&

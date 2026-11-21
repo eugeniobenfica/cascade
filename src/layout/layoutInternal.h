@@ -129,6 +129,8 @@ void layAtomicInline(Layouter* L, CscdLayoutBox* b, double cbW, double cbH);
 /* sizes */
 void layResolveEdges(CscdLayoutBox* b, double cbW);
 double layMinContent(Layouter* L, CscdLayoutBox* b); /* border-box width */
+/* The min-content width of what b holds, its own width and min-width left out (a flex item's automatic minimum). */
+double layContentsMinContent(Layouter* L, CscdLayoutBox* b);
 double layMaxContent(Layouter* L, CscdLayoutBox* b);
 double layIntrinsicInline(Layouter* L, CscdLayoutBox* b, bool min);
 double layIntrinsicFlex(Layouter* L, CscdLayoutBox* b, bool min);

@@ -1,0 +1,44 @@
+# css-parsing-tests cases cascade's parsing answers otherwise (tools/cssParsingTests.py --known):
+# - one_declaration: the suite reads the whole input as one declaration (its ';' in the value); cascade reads a list
+# - white space around a value: cascade's declarations keep their values trimmed
+# - the tokenizer: no <!-- and --> tokens, at-keywords lowercased, a string cut by a newline kept (not a bad-string),
+#   CR LF after an escape, U+0000, escapes past U+10FFFF
+component_value_list.json:5
+component_value_list.json:7
+component_value_list.json:8
+component_value_list.json:11
+component_value_list.json:12
+component_value_list.json:14
+component_value_list.json:15
+component_value_list.json:16
+component_value_list.json:17
+component_value_list.json:18
+component_value_list.json:19
+component_value_list.json:20
+component_value_list.json:21
+component_value_list.json:24
+component_value_list.json:25
+component_value_list.json:26
+component_value_list.json:27
+component_value_list.json:38
+component_value_list.json:39
+component_value_list.json:40
+component_value_list.json:41
+component_value_list.json:42
+component_value_list.json:43
+component_value_list.json:44
+component_value_list.json:45
+component_value_list.json:46
+component_value_list.json:47
+component_value_list.json:48
+component_value_list.json:49
+component_value_list.json:50
+one_component_value.json:9
+one_declaration.json:12
+one_declaration.json:13
+one_declaration.json:15
+one_declaration.json:16
+one_declaration.json:17
+one_declaration.json:18
+one_declaration.json:19
+one_declaration.json:20

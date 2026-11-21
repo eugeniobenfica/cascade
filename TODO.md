@@ -173,13 +173,32 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 
 ### Conformance
 
-- [ ] Layout fixtures compared with Chrome (Taffy's gentest approach).
-- [ ] A JS-free runner for WPT reftests in `css/`, scored per release.
-- [ ] html5lib tree-construction tests, css-parsing-tests, BidiTest / BidiCharacterTest.
+- [x] Layout fixtures compared with Chrome (Taffy's gentest approach): `tools/layoutFixtures.py` lays out 58 pages of
+      boxes (block, positioning, flex, grid) in headless Edge and writes where each element went into
+      `tests/layoutFixtures.inc`; cascade-tests lays them out the same, every element within half a pixel. On the way:
+      a flex item's automatic minimum took its own width (it did not shrink), a relative offset moved what followed it,
+      `grid-auto-flow: dense` did not go back for holes, `minmax(x, auto)` rows did not grow to their contents.
+- [x] A JS-free runner for WPT reftests in `css/` (`tests/wpt.c`): ten folders of a pinned commit (flexbox, grid,
+      CSS2 margins, positioning, normal flow, floats, backgrounds), each test and its reference painted at 800x600 and
+      compared within the test's fuzzy allowance; pages with scripts passed over, XHTML's self-closed elements and
+      CDATA read as XML would. The score of each folder is in `tests/wpt.score` (2,054 of 3,307 run, from 846: a
+      line of text is now whole pixels high, its font's ascent and descent rounded as browsers round them); CI fails
+      when a folder passes fewer.
+- [x] html5lib tree-construction tests (`tests/html5lib.c`: 857 of 1,645, the rest in `tests/html5lib.known`),
+      css-parsing-tests (`tools/cssParsingTests.py`: 2,645 of 2,684; fixed on the way: lab() and lch() as CIE Lab,
+      An+B by CSS Syntax, `3n - 1` was 3n+1, declarations named by an identifier only, `color(srgb ...)`), BidiTest
+      and BidiCharacterTest (every one of their 861,948 cases; fixed: sos and eos from the levels X1 to X8 give, not
+      from those already resolved). CI runs each on a pinned download.
+- [ ] HTML's tree builder as the specification has it (the adoption agency, foster parenting, the insertion modes of
+      template, frameset, select and foreign content, fragments in their context): 788 html5lib cases fail.
+- [ ] The WPT reftests that still fail, folder by folder (`cascade-wpt-tests` with `CASCADE_WPT_LIST=1` lists them,
+      `CASCADE_WPT_DUMP=1` saves the first's two pictures).
 
 ## How to check a change
 
-- `ctest` (cascade-tests, -capi-tests, -stress, -memory-tests, -incremental-tests, -window-tests).
+- `ctest` (cascade-tests, -capi-tests, -stress, -memory-tests, -incremental-tests, -window-tests, -html5lib-tests,
+  -wpt-tests; the conformance suites when their environment variables name them: CASCADE_LINEBREAK_TEST,
+  CASCADE_GRAPHEME_TEST, CASCADE_BIDI_TEST, CASCADE_BIDI_CHARACTER_TEST, CASCADE_HTML5LIB_TESTS, CASCADE_WPT).
 - `cascade-incremental-tests 1 300 300` for anything that touches restyle, layout or damage; plant the bug you fear
   and see it fail before trusting a pass.
 - An AddressSanitizer build (`-DCASCADE_SANITIZE=address`; on Windows with clang64) with

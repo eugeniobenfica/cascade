@@ -39,21 +39,48 @@ jobs:
             mesa-vulkan-drivers libxcursor1 python3-fonttools
       - name: Build
         run: cmake -S . -B build -G Ninja -DCASCADE_WERROR=ON && cmake --build build
-      - name: Unicode's conformance files for line breaks and grapheme clusters (the version src/text/*Data.inc were made from)
+      - name: Unicode's conformance files for line breaks, grapheme clusters and the bidirectional algorithm (the version src/text/*Data.inc were made from)
         run: |
           curl -sSfL -o "$RUNNER_TEMP/LineBreakTest.txt" https://www.unicode.org/Public/16.0.0/ucd/auxiliary/LineBreakTest.txt
           curl -sSfL -o "$RUNNER_TEMP/GraphemeBreakTest.txt" https://www.unicode.org/Public/16.0.0/ucd/auxiliary/GraphemeBreakTest.txt
+          curl -sSfL -o "$RUNNER_TEMP/BidiTest.txt" https://www.unicode.org/Public/16.0.0/ucd/BidiTest.txt
+          curl -sSfL -o "$RUNNER_TEMP/BidiCharacterTest.txt" https://www.unicode.org/Public/16.0.0/ucd/BidiCharacterTest.txt
       - name: Test
         run: ctest --test-dir build --output-on-failure
         env:
           CASCADE_LINEBREAK_TEST: ${{ runner.temp }}/LineBreakTest.txt
           CASCADE_GRAPHEME_TEST: ${{ runner.temp }}/GraphemeBreakTest.txt
+          CASCADE_BIDI_TEST: ${{ runner.temp }}/BidiTest.txt
+          CASCADE_BIDI_CHARACTER_TEST: ${{ runner.temp }}/BidiCharacterTest.txt
       - name: Unicode's text rendering tests (each case's glyphs and places; the failures tests/textRenderingTests.known lists, and no others)
         run: |
           trt=26cfb96d094befc3c8b08228577bf400b04b83a1
           curl -sSfL -o "$RUNNER_TEMP/trt.zip" https://github.com/unicode-org/text-rendering-tests/archive/$trt.zip
           unzip -q "$RUNNER_TEMP/trt.zip" -d "$RUNNER_TEMP"
           python3 tools/textRenderingTests.py build/cascade-shape "$RUNNER_TEMP/text-rendering-tests-$trt" --known tests/textRenderingTests.known
+      - name: html5lib's tree construction tests and css-parsing-tests (the failures their .known files list, and no others)
+        run: |
+          h5=9329e64694e7835d0dcff9811e22856ef6ad16f9
+          css=203ce36bffd617db7f118c551e32794561fb273d
+          curl -sSfL -o "$RUNNER_TEMP/h5.zip" https://github.com/html5lib/html5lib-tests/archive/$h5.zip
+          curl -sSfL -o "$RUNNER_TEMP/css.zip" https://github.com/SimonSapin/css-parsing-tests/archive/$css.zip
+          unzip -q "$RUNNER_TEMP/h5.zip" -d "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP/css.zip" -d "$RUNNER_TEMP"
+          build/cascade-html5lib-tests "$RUNNER_TEMP/html5lib-tests-$h5/tree-construction" --known tests/html5lib.known
+          python3 tools/cssParsingTests.py build/cascade-css-parsing "$RUNNER_TEMP/css-parsing-tests-$css" --known tests/cssParsing.known
+      - name: web-platform-tests' CSS reftests (each folder's score, no fewer than tests/wpt.score records)
+        run: |
+          wpt=9986bb32c9e97707eff870ab284ebc5cc7ae8d21
+          git init -q "$RUNNER_TEMP/wpt"
+          cd "$RUNNER_TEMP/wpt"
+          git remote add origin https://github.com/web-platform-tests/wpt.git
+          git sparse-checkout set css/css-flexbox css/css-grid/grid-items css/css-grid/alignment css/css-grid/grid-definition \
+            css/CSS2/margin-padding-clear css/CSS2/positioning css/CSS2/normal-flow css/CSS2/box-display css/CSS2/floats \
+            css/css-backgrounds css/support css/reference fonts
+          git fetch -q --depth 1 --filter=blob:none origin $wpt
+          git checkout -q FETCH_HEAD
+          cd "$GITHUB_WORKSPACE"
+          build/cascade-wpt-tests "$RUNNER_TEMP/wpt" --score tests/wpt.score
       - name: Minimal build (software only, no screen readers)
         run: |
           cmake -S . -B build-min -G Ninja -DCASCADE_WERROR=ON -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF

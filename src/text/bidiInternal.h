@@ -17,6 +17,9 @@ uint32_t cscdBidiMirror(uint32_t cp);
 /* Whether text with these code points needs the algorithm at all at paragraph level 0 (it has a
  * right-to-left letter, an Arabic digit or an explicit embedding). */
 bool cscdBidiNeeded(const uint32_t* cps, size_t n);
+/* Rules P2 and P3: the paragraph's level from its first strong character outside isolates (1: R or AL), otherwise when
+ * it has none. */
+int cscdBidiParagraphLevel(const uint32_t* cps, size_t n, int otherwise);
 
 /* The embedding level of each code point of a paragraph (rules P1 to I2; X9's removed characters
  * take the level before them). paragraphLevel: 0 left to right, 1 right to left. */

@@ -1227,7 +1227,8 @@ void layReplaced(Layouter* L, CscdLayoutBox* b, double cbW, double cbH, double* 
 
 static bool isAbsPos(const CscdLayoutBox* c) { return c->style && (c->style->position == CSCD_POS_ABSOLUTE || c->style->position == CSCD_POS_FIXED); }
 
-static double intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min);
+static double intrinsicWidthOf(Layouter* L, CscdLayoutBox* b, bool min, bool contentsOnly);
+static double intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) { return intrinsicWidthOf(L, b, min, false); }
 
 /* A vertical box's width as content: how deep its lines go, laid out at the viewport's height. */
 static double verticalIntrinsicWidth(Layouter* L, CscdLayoutBox* b) {
@@ -1239,13 +1240,14 @@ static double verticalIntrinsicWidth(Layouter* L, CscdLayoutBox* b) {
     return b->w;
 }
 
-static double intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) {
+/* (contentsOnly: what its contents ask for, its own width and min-width left out, its max-width still a limit) */
+static double intrinsicWidthOf(Layouter* L, CscdLayoutBox* b, bool min, bool contentsOnly) {
     if (cscdStackLow()) return 0; /* (as layBlock: too deep for the thread's stack) */
     double v = 0;
     const CscdComputedStyle* s = b->style;
     layResolveEdges(b, 0);
     double edges = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
-    if (cscdLenIsFixed(s->width) && !cscdLenIsAuto(s->width) && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
+    if (!contentsOnly && cscdLenIsFixed(s->width) && !cscdLenIsAuto(s->width) && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
         v = s->boxSizing == CSCD_BOX_CONTENT ? s->width.px + edges : layMax(s->width.px, edges);
     } else if (b->kind == CSCD_BOX_REPLACED) {
         double cw, ch;
@@ -1271,7 +1273,8 @@ static double intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) {
     }
     if (b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
         if (!cscdLenIsNone(s->maxWidth) && cscdLenIsFixed(s->maxWidth)) v = layMin(v, s->maxWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
-        if (!cscdLenIsAuto(s->minWidth) && cscdLenIsFixed(s->minWidth)) v = layMax(v, s->minWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
+        if (!contentsOnly && !cscdLenIsAuto(s->minWidth) && cscdLenIsFixed(s->minWidth))
+            v = layMax(v, s->minWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
     }
     return v;
 }
@@ -1282,6 +1285,8 @@ double layMinContent(Layouter* L, CscdLayoutBox* b) {
     b->minContent = (float)v;
     return v;
 }
+
+double layContentsMinContent(Layouter* L, CscdLayoutBox* b) { return intrinsicWidthOf(L, b, true, true); }
 
 double layMaxContent(Layouter* L, CscdLayoutBox* b) {
     if (b->maxContent >= 0) return b->maxContent;
@@ -2690,15 +2695,21 @@ void layAtomicInline(Layouter* L, CscdLayoutBox* b, double cbW, double cbH) {
     cscdBoxShift(b, -b->x + b->margin[3], -b->y + b->margin[0]);
 }
 
-void layApplyRelative(CscdLayoutBox* b, double cbW, double cbH) {
+/* how far a relatively positioned box is moved from where the flow put it (0, 0 for another) */
+static void relativeOffset(const CscdLayoutBox* b, double cbW, double cbH, double* dx, double* dy) {
     const CscdComputedStyle* s = b->style;
-    if (s->position != CSCD_POS_RELATIVE) return;
-    double dx = 0, dy = 0;
-    if (!cscdLenIsAuto(s->left)) dx = layLen(s->left, cbW, 0);
-    else if (!cscdLenIsAuto(s->right)) dx = -layLen(s->right, cbW, 0);
-    if (!cscdLenIsAuto(s->top) && !(cscdLenHasPercent(s->top) && cbH < 0)) dy = layLen(s->top, cbH, 0);
-    else if (!cscdLenIsAuto(s->bottom) && !(cscdLenHasPercent(s->bottom) && cbH < 0)) dy = -layLen(s->bottom, cbH, 0);
-    cscdBoxShift(b, dx, dy);
+    *dx = *dy = 0;
+    if (!s || s->position != CSCD_POS_RELATIVE) return;
+    if (!cscdLenIsAuto(s->left)) *dx = layLen(s->left, cbW, 0);
+    else if (!cscdLenIsAuto(s->right)) *dx = -layLen(s->right, cbW, 0);
+    if (!cscdLenIsAuto(s->top) && !(cscdLenHasPercent(s->top) && cbH < 0)) *dy = layLen(s->top, cbH, 0);
+    else if (!cscdLenIsAuto(s->bottom) && !(cscdLenHasPercent(s->bottom) && cbH < 0)) *dy = -layLen(s->bottom, cbH, 0);
+}
+
+void layApplyRelative(CscdLayoutBox* b, double cbW, double cbH) {
+    double dx, dy;
+    relativeOffset(b, cbW, cbH, &dx, &dy);
+    if (dx != 0 || dy != 0) cscdBoxShift(b, dx, dy);
 }
 
 void layComputeOverflow(CscdLayoutBox* b) {
@@ -2794,7 +2805,10 @@ static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, doub
             pending = ms;
             msAddSet(&pending, bottom);
         } else {
-            cursor = c->y + c->h;
+            /* (where the flow put it: a relative offset moves it alone, not what follows) */
+            double rdx, rdy;
+            relativeOffset(c, in.cbW, in.cbH, &rdx, &rdy);
+            cursor = c->y + c->h - rdy;
             pending = bottom;
             first = false;
             if (!firstBaselineSet && c->hasBaseline) { b->baseline = c->baseline; b->hasBaseline = true; firstBaselineSet = true; }

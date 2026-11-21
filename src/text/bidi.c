@@ -2,6 +2,8 @@
  * overrides and isolates, isolating run sequences, the weak, bracket pair, neutral and implicit
  * rules, and the line rules L1 and L2. */
 #include "text/bidiInternal.h"
+
+#include <string.h>
 #include "core/thread.h"
 
 typedef struct BidiRange {
@@ -86,6 +88,7 @@ typedef struct Paragraph {
     uint8_t* initial; /* CscdBidiClass each */
     uint8_t* types;
     uint8_t* levels;
+    uint8_t* explicitLv; /* (the levels X1 to X8 give, which sos and eos are taken from) */
     size_t* matchingPDI;
     size_t* matchingInit;
 } Paragraph;
@@ -178,14 +181,14 @@ static void explicitLevels(Paragraph* p) {
 
 /* sos and eos: from the higher of this level and the one on the other side */
 static int levelBefore(const Paragraph* p, size_t i) {
-    for (size_t k = i; k-- > 0;) if (!isRemoved((C)p->initial[k])) return p->levels[k];
+    for (size_t k = i; k-- > 0;) if (!isRemoved((C)p->initial[k])) return p->explicitLv[k];
     return p->paraLevel;
 }
 
 static int levelAfter(const Paragraph* p, size_t i) {
     if (isIsolateInit((C)p->types[i]) && p->matchingPDI[i] == NONE) return p->paraLevel; /* (an unmatched initiator: to the paragraph's end) */
     if (isIsolateInit((C)p->initial[i])) return p->paraLevel;
-    for (size_t k = i + 1; k < p->n; ++k) if (!isRemoved((C)p->initial[k])) return p->levels[k];
+    for (size_t k = i + 1; k < p->n; ++k) if (!isRemoved((C)p->initial[k])) return p->explicitLv[k];
     return p->paraLevel;
 }
 
@@ -334,6 +337,7 @@ static void runParagraph(Paragraph* p) {
     const size_t n = p->n;
     matchIsolates(p);
     explicitLevels(p);
+    memcpy(p->explicitLv, p->levels, n);
     /* X9: the explicit formatting characters and BN are left out; level runs of the rest */
     CscdSizeVec kept = {0};
     cscdVecReserve(&kept, n);
@@ -408,6 +412,18 @@ uint32_t cscdBidiMirror(uint32_t cp) {
     return cp;
 }
 
+int cscdBidiParagraphLevel(const uint32_t* cps, size_t n, int otherwise) {
+    int depth = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const C t = cscdBidiClass(cps[i]);
+        if (t == CSCD_BIDI_B) break;
+        if (isIsolateInit(t)) ++depth;
+        else if (t == CSCD_BIDI_PDI) { if (depth > 0) --depth; }
+        else if (depth == 0 && isStrong(t)) return t == CSCD_BIDI_L ? 0 : 1;
+    }
+    return otherwise;
+}
+
 bool cscdBidiNeeded(const uint32_t* cps, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         if (cps[i] < 0x0590) continue; /* (Latin, Greek, Cyrillic...: nothing right to left) */
@@ -426,6 +442,7 @@ void cscdBidiLevels(const uint32_t* cps, size_t n, int paragraphLevel, uint8_t* 
     p.initial = (uint8_t*)cscdMalloc(n);
     p.types = (uint8_t*)cscdMalloc(n);
     p.levels = levels;
+    p.explicitLv = (uint8_t*)cscdMalloc(n);
     p.matchingPDI = (size_t*)cscdMalloc(n * sizeof(size_t));
     p.matchingInit = (size_t*)cscdMalloc(n * sizeof(size_t));
     for (size_t i = 0; i < n; ++i) {
@@ -435,6 +452,7 @@ void cscdBidiLevels(const uint32_t* cps, size_t n, int paragraphLevel, uint8_t* 
     runParagraph(&p);
     cscdFree(p.initial);
     cscdFree(p.types);
+    cscdFree(p.explicitLv);
     cscdFree(p.matchingPDI);
     cscdFree(p.matchingInit);
 }
