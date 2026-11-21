@@ -1049,7 +1049,7 @@ static void testContentEditable(void) {
     frame(v, &img);
     const CscdRect caret = cscdViewCaretRect(v);
     CHECK(caret.h > 10 && caret.x > er.x + 60 && caret.x < er.x + 120);
-    CHECK(cscdImageRow(&img, (int)(caret.y + caret.h / 2))[(int)caret.x] != 0xFFFFFFFFu); /* (the caret drawn) */
+    CHECK(cscdImageRow(&img, (int)(caret.y + caret.h / 2))[(int)roundf(caret.x)] != 0xFFFFFFFFu); /* (the caret drawn, at its x rounded) */
     /* the arrows, a word at a time with Ctrl; Shift selects */
     ceKey(v, CSCD_KEY_LEFT, ctrl, "ArrowLeft");
     CHECK(ceSel(v, 6, 6));
