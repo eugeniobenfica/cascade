@@ -457,14 +457,22 @@ static bool gsubMultiple(Ctx* c, uint32_t st, size_t pos, size_t* next) {
         *next = pos;
         return true;
     }
+    /* (the glyphs it adds cost work as subtables do: deletions between would let it grow again and again) */
+    if (*c->work < n) return false;
+    *c->work -= n;
     const CscdOtGlyph proto = c->buf->items[pos];
     setGlyph(c, pos, u16(c->b + seq + 2));
+    /* (room for all of them at once: one move of what follows, not one a glyph) */
+    const size_t tail = c->buf->len - pos - 1;
+    cscdVecReserve(c->buf, c->buf->len + n - 1);
+    memmove(c->buf->items + pos + n, c->buf->items + pos + 1, tail * sizeof *c->buf->items);
+    c->buf->len += n - 1u;
     for (uint16_t k = 1; k < n; ++k) {
         CscdOtGlyph g = proto;
         g.glyph = u16(c->b + seq + 2 + 2 * k);
         g.substituted = true;
         refreshClass(c, &g);
-        cscdVecInsert(c->buf, pos + k, g);
+        c->buf->items[pos + k] = g;
     }
     *next = pos + n;
     return true;
@@ -786,7 +794,15 @@ static void run(const CscdFontFace* face, bool gpos, uint32_t script, CscdOtBuff
     if (!table || !buf->len) return;
     const PlanLookupVec* plan = planFor(face, table, script, feats, n);
     size_t work = cscdMaxz(buf->len * WORK_PER_GLYPH, MIN_WORK);
-    Ctx c = {face, m, m->base, table + u16(m->base + table + 8), gpos, buf, 0, 0, 1, 0, cscdMaxz(buf->len * MAX_GROWTH, MIN_MAX_GLYPHS), &work};
+    /* how long it may grow: from the text it came from (its clusters' span), not from its length now, which the runs
+     * before this one may have made longer (one run after another, each 64 times the last, made millions) */
+    uint32_t lo = UINT32_MAX, hi = 0;
+    for (size_t i = 0; i < buf->len; ++i) {
+        if (buf->items[i].cluster < lo) lo = buf->items[i].cluster;
+        if (buf->items[i].cluster > hi) hi = buf->items[i].cluster;
+    }
+    const size_t span = (size_t)(hi - lo) + 1;
+    Ctx c = {face, m, m->base, table + u16(m->base + table + 8), gpos, buf, 0, 0, 1, 0, cscdMaxz(span * MAX_GROWTH, MIN_MAX_GLYPHS), &work};
     c.rtl = rtl;
     for (size_t i = 0; i < buf->len; ++i) if (!buf->items[i].gclass) refreshClass(&c, &buf->items[i]);
     if (gpos)
