@@ -50,6 +50,8 @@ typedef struct CscdTouchPoint {
 } CscdTouchPoint;
 typedef CSCD_VEC(CscdTouchPoint) CscdTouchVec;
 
+/* (an element's namespace, as the HTML parser sets it) */
+enum { CSCD_NS_HTML = 0, CSCD_NS_SVG = 1, CSCD_NS_MATHML = 2 };
 typedef struct CscdEvent CscdEvent;
 #ifdef CASCADE_INTERNAL /* (its fields: the library's own, not the API) */
 struct CscdEvent {
@@ -216,6 +218,7 @@ struct CscdElement {
     CscdTextSpanVec spans_;
     CscdStr highlightFor_;
     CscdElement* templateContent_; /* a <template>'s content, out of the document */
+    uint8_t ns_;                   /* its namespace, as the HTML parser put it: CSCD_NS_HTML, _SVG, _MATHML */
 };
 #endif
 
@@ -401,9 +404,12 @@ CscdStr cscdDocumentTitle(const CscdDocument* d); /* the caller's */
 void cscdDocumentBeginDispatch(CscdDocument* d);
 void cscdDocumentEndDispatch(CscdDocument* d);
 
-/* Builds a document from HTML source (HTML5 tokenizer and a tree builder that handles implied and
- * optional tags the way browsers do). */
+/* Builds a document from HTML source, as the HTML specification parses it (its tokenizer and its tree construction:
+ * implied and optional tags, misnested formatting, tables, templates, SVG and MathML, as browsers build them). */
 CscdDocument* cscdParseHTML(CscdSv html);
+/* A page in XHTML's syntax (XML: .xht, .xhtml): its elements as it writes them, none implied or moved, each in its
+ * xmlns's namespace. One that is not well formed is taken as far as it can be. */
+CscdDocument* cscdParseXHTML(CscdSv xhtml);
 /* Parses a fragment and appends its nodes to parent. */
 void cscdParseHTMLFragment(CscdSv html, CscdElement* parent);
 void cscdDomAdoptTemplates(CscdNode* root); /* (the parser moves template contents out of the tree) */

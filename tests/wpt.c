@@ -3,8 +3,8 @@
  *
  *     cascade-wpt-tests path/to/wpt [--score FILE] [--write-score] [DIR ...]
  *
- * DIRs are folders of the checkout (css/css-flexbox...), walked down (an XHTML page's self-closed elements closed, as XML
- * would: cascade parses HTML only); a page with a script (cascade runs none) or a
+ * DIRs are folders of the checkout (css/css-flexbox...), walked down (an XHTML page parsed as XML, as browsers
+ * take it: cscdViewLoadXHTML); a page with a script (cascade runs none) or a
  * reftest-wait class is passed over, as are support and reference folders and the references themselves. Prints the
  * score of each folder; with --score, fails when a folder passes fewer tests than the file records (--write-score
  * writes the file from this run instead: the score of a release). With no checkout (CASCADE_WPT names it; CI fetches a
@@ -175,63 +175,10 @@ static bool parseTest(const char* text, Ref* ref) {
     return found;
 }
 
-/* An XHTML page as HTML: its self-closed elements (<div/>, which XML closes and HTML does not) written as an empty
- * pair, the void ones left as they are. (Browsers parse .xht as XML; cascade has the HTML parser only.) */
-static void xhtmlAsHtml(char** text, size_t* len) {
-    static const char* const kVoid[] = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"};
-    CscdStr out = {0};
-    const char* p = *text;
-    const char* end = *text + *len;
-    while (p < end) {
-        /* (CDATA sections: their text, as XML gives it, without the markers HTML would leave in a style sheet) */
-        if (end - p >= 9 && !strncmp(p, "<![CDATA[", 9)) {
-            p += 9;
-            continue;
-        }
-        if (end - p >= 3 && !strncmp(p, "]]>", 3)) {
-            p += 3;
-            continue;
-        }
-        if (p[0] == '<' && p + 1 < end && ((p[1] >= 'a' && p[1] <= 'z') || (p[1] >= 'A' && p[1] <= 'Z'))) {
-            const char* q = p + 1;
-            while (q < end && *q != ' ' && *q != '\t' && *q != '\n' && *q != '\r' && *q != '/' && *q != '>') ++q;
-            const CscdSv name = {p + 1, (size_t)(q - p - 1)};
-            char quote = 0;
-            while (q < end && (quote || *q != '>')) {
-                if (quote && *q == quote) quote = 0;
-                else if (!quote && (*q == '"' || *q == '\'')) quote = *q;
-                ++q;
-            }
-            if (q < end && q[-1] == '/') {
-                bool isVoid = false;
-                for (size_t k = 0; k < CSCD_COUNT(kVoid) && !isVoid; ++k) isVoid = cscdSvIEqC(name, kVoid[k]);
-                if (!isVoid) {
-                    cscdStrAppend(&out, (CscdSv){p, (size_t)(q - 1 - p)});
-                    cscdStrAppendf(&out, "></%.*s>", (int)name.len, name.ptr);
-                    p = q + 1;
-                    continue;
-                }
-            }
-            if (q < end) ++q;
-            cscdStrAppend(&out, (CscdSv){p, (size_t)(q - p)});
-            p = q;
-            continue;
-        }
-        cscdStrAppend(&out, (CscdSv){p, 1});
-        ++p;
-    }
-    free(*text);
-    *len = out.len;
-    *text = (char*)malloc(out.len + 1);
-    memcpy(*text, out.ptr ? out.ptr : "", out.len);
-    (*text)[out.len] = 0;
-    cscdStrFree(&out);
-}
-
 static void render(const char* path, CscdImage* img) {
     size_t len;
     char* text = readFile(path, &len);
-    if (text && (cscdSvEndsC(cscdSv(path), ".xht") || cscdSvEndsC(cscdSv(path), ".xhtml"))) xhtmlAsHtml(&text, &len);
+    const bool xhtml = cscdSvEndsC(cscdSv(path), ".xht") || cscdSvEndsC(cscdSv(path), ".xhtml"); /* (XML, as browsers take it) */
     CscdView* v = cscdViewNew();
     cscdViewOnWarning(v, NULL, NULL);
     cscdViewSetViewport(v, 800, 600, 1);
@@ -241,7 +188,8 @@ static void render(const char* path, CscdImage* img) {
     cscdStrFree(&ahem);
     const char* slash = strrchr(path, '/');
     CscdStr dir = slash ? cscdStrDup((CscdSv){path, (size_t)(slash - path)}) : cscdStrDup(CSCD_SV("."));
-    cscdViewLoadHTML(v, (CscdSv){text ? text : "", text ? len : 0}, cscdStrSv(&dir));
+    if (xhtml) cscdViewLoadXHTML(v, (CscdSv){text ? text : "", text ? len : 0}, cscdStrSv(&dir));
+    else cscdViewLoadHTML(v, (CscdSv){text ? text : "", text ? len : 0}, cscdStrSv(&dir));
     cscdViewUpdate(v);
     cscdViewPaint(v, img, false);
     cscdViewFree(v);

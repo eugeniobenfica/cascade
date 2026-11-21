@@ -100,9 +100,11 @@ CscdView* cscdViewNew(void);
 void cscdViewFree(CscdView* v);
 
 /* content. A relative path that is not found from the working folder is looked for next to the
- * program (cscdAppFindFile), so "ui/index.html" works wherever the program is started from. */
+ * program (cscdAppFindFile), so "ui/index.html" works wherever the program is started from. A .xht or .xhtml file is
+ * XHTML (cscdViewLoadXHTML). */
 bool cscdViewLoadFile(CscdView* v, CscdSv path);
 void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir);
+void cscdViewLoadXHTML(CscdView* v, CscdSv xhtml, CscdSv baseDir); /* (XML's syntax: cscdParseXHTML) */
 void cscdViewAddStyleSheet(CscdView* v, CscdSv css, CscdSv baseDir); /* baseDir "": the document's */
 /* The sheet under the document's own, for what a program's pages share: it stays when the view loads another page. */
 void cscdViewSetBaseStyleSheet(CscdView* v, CscdSv css, CscdSv baseDir);

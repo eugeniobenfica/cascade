@@ -1511,12 +1511,12 @@ static void paintSvg(Painter* P, CscdLayoutBox* b) {
     cscdCanvasSave(canvas);
     cscdCanvasClipRect(canvas, cb);
     cscdCanvasTranslate(canvas, cb.x, cb.y);
-    if (cscdElementHasAttributeC(svg, "viewbox")) {
+    if (cscdElementHasAttributeC(svg, "viewBox")) {
         CscdFloatVec n = {0};
-        numbers(cscdElementAttrC(svg, "viewbox"), &n);
+        numbers(cscdElementAttrC(svg, "viewBox"), &n);
         if (n.len >= 4 && n.items[2] > 0 && n.items[3] > 0) {
             float sx = cb.w / n.items[2], sy = cb.h / n.items[3];
-            CscdSv par = attrOr(svg, "preserveaspectratio", CSCD_SV("xMidYMid meet"));
+            CscdSv par = attrOr(svg, "preserveAspectRatio", CSCD_SV("xMidYMid meet"));
             if (cscdSvFind(par, CSCD_SV("none"), 0) == CSCD_NPOS) {
                 bool slice = cscdSvFind(par, CSCD_SV("slice"), 0) != CSCD_NPOS;
                 float sc = slice ? cscdMaxf(sx, sy) : cscdMinf(sx, sy);

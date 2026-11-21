@@ -19,6 +19,15 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
     `SetResizable`, `SetDarkTitleBar`, `SetVisible`, `SetPage`, `SetLiveReload`, `SetPresenter`, then
     `cscdWindowOptionsFree` (`cscdWindowNew` copies what it needs), in place of `cscdWindowOptions()` and its fields;
   - layout boxes: only through the view (`cscdViewElementRect` and the like).
+- **HTML's parser is the specification's**: its tokenizer and its tree construction, mode by mode (misnested
+  formatting by the adoption agency, foster parenting in tables, templates, framesets, select, SVG and MathML,
+  fragments in their context). html5lib's tree-construction tests: every case but the 8 that need scripting (857 of
+  1,645 before). An SVG attribute keeps its case (`viewBox`, as SVG names it).
+- **XHTML**: `cscdParseXHTML` and `cscdViewLoadXHTML` parse a page as XML; `cscdViewLoadFile` takes `.xht` and
+  `.xhtml` files so.
+- **Tables**: CSS 2.1's anonymous table objects. Text in a `display: table` element was dropped; now it goes in an
+  anonymous row and cell, as does whatever else sits between a table's parts, and a row or a cell outside a table
+  gets an anonymous table. WPT reftests passed: 2,113 (2,054 before).
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

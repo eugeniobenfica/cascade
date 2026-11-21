@@ -320,7 +320,8 @@ bool cscdViewLoadFile(CscdView* v, CscdSv path) {
         return false;
     }
     CscdStr dir = cscdDirName(cscdStrSv(&found));
-    cscdViewLoadHTML(v, cscdStrSv(&html), cscdStrSv(&dir));
+    if (cscdSvEndsC(cscdStrSv(&found), ".xht") || cscdSvEndsC(cscdStrSv(&found), ".xhtml")) cscdViewLoadXHTML(v, cscdStrSv(&html), cscdStrSv(&dir));
+    else cscdViewLoadHTML(v, cscdStrSv(&html), cscdStrSv(&dir));
     cscdStrFree(&dir);
     cscdStrFree(&found);
     cscdStrFree(&html);
@@ -477,7 +478,7 @@ void viewSetLiveReload(CscdView* v, bool on) {
 }
 
 
-void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir) {
+static void loadDocument(CscdView* v, CscdSv source, bool xhtml, CscdSv baseDir) {
     if (v->onDocumentReplaced) v->onDocumentReplaced(v->onDocumentReplacedUser);
     /* (a listener may be replacing the page it is called from: what its callers watch is gone) */
     for (size_t i = 0; i < v->watched.len; ++i) *v->watched.items[i] = NULL;
@@ -522,7 +523,7 @@ void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir) {
     v->tabPlace = 0; /* (a new page: Tab starts from its top) */
     viewBindingsClear(v); /* (bound to the old page) */
     CscdDocument* old = v->doc;
-    v->doc = cscdParseHTML(html);
+    v->doc = xhtml ? cscdParseXHTML(source) : cscdParseHTML(source);
     cscdDocumentFree(old);
     cscdStrSet(&v->doc->baseDir, baseDir);
     viewHookDocument(v);
@@ -533,6 +534,9 @@ void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir) {
     v->styledVersion = 0;
     cscdViewInvalidate(v);
 }
+
+void cscdViewLoadHTML(CscdView* v, CscdSv html, CscdSv baseDir) { loadDocument(v, html, false, baseDir); }
+void cscdViewLoadXHTML(CscdView* v, CscdSv xhtml, CscdSv baseDir) { loadDocument(v, xhtml, true, baseDir); }
 
 static void addSheetFile(CscdView* v, CscdSv file) { cscdVecPush(&v->authorSheetFiles, cscdStrDup(file)); }
 

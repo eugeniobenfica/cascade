@@ -670,10 +670,107 @@ static void buildChildren(Layouter* L, CscdElement* e, CscdLayoutBox* parent) {
     layEndCounterScope(L, e); /* (the counters its children reset) */
 }
 
+/* ---- the table fixup (CSS 2.1 17.2.1): what is between a table's parts goes in anonymous ones ------------------------ */
+
+static CscdLayoutBox* anonymousPart(CscdLayoutBox* parent, CscdBoxKind kind, CscdDisplay d) {
+    CscdLayoutBox* a = cscdLayoutBoxNew();
+    a->kind = kind;
+    a->anonymous = true;
+    a->style = anonymousStyle(parent->style, d);
+    a->element = parent->element;
+    a->parent = parent;
+    return a;
+}
+
+static bool isTablePart(const CscdLayoutBox* c) {
+    if (c->kind == CSCD_BOX_TABLE_ROW_GROUP || c->kind == CSCD_BOX_TABLE_ROW || c->kind == CSCD_BOX_TABLE_CELL) return true;
+    if (c->kind == CSCD_BOX_TEXT || c->kind == CSCD_BOX_LINE_BREAK || c->anonymous) return false; /* (their style is their parent's) */
+    const uint8_t d = c->style ? c->style->display : 0;
+    return d == CSCD_DISPLAY_TABLE_CAPTION || d == CSCD_DISPLAY_TABLE_COLUMN || d == CSCD_DISPLAY_TABLE_COLUMN_GROUP;
+}
+
+/* a child that has its place in a table, a row group or a row as it is (an out-of-flow one goes in an anonymous cell,
+ * which lays it out) */
+static bool properChild(const CscdLayoutBox* parent, const CscdLayoutBox* c) {
+    if (parent->kind == CSCD_BOX_TABLE_ROW) return c->kind == CSCD_BOX_TABLE_CELL;
+    if (parent->kind == CSCD_BOX_TABLE_ROW_GROUP) return c->kind == CSCD_BOX_TABLE_ROW;
+    if (c->kind == CSCD_BOX_TEXT || c->kind == CSCD_BOX_LINE_BREAK || c->anonymous) return c->kind == CSCD_BOX_TABLE_ROW;
+    const uint8_t d = c->style ? c->style->display : 0;
+    return c->kind == CSCD_BOX_TABLE_ROW_GROUP || c->kind == CSCD_BOX_TABLE_ROW || d == CSCD_DISPLAY_TABLE_CAPTION ||
+           d == CSCD_DISPLAY_TABLE_COLUMN || d == CSCD_DISPLAY_TABLE_COLUMN_GROUP;
+}
+
+/* A table's, a row group's or a row's children: white space between its parts goes; a run of anything else goes in an
+ * anonymous row (in a table or a row group: its cells in turn in an anonymous cell) or cell (in a row). */
+static void fixupTablePart(Layouter* L, CscdLayoutBox* b) {
+    CscdPtrVec* ch = &b->children;
+    CscdPtrVec out = {0}, run = {0};
+    for (size_t i = 0; i <= ch->len; ++i) {
+        CscdLayoutBox* c = i < ch->len ? cscdBoxChild(b, i) : NULL;
+        if (c && !properChild(b, c)) {
+            cscdVecPush(&run, c);
+            continue;
+        }
+        /* the run so far: its white space at either end dropped, the rest wrapped */
+        size_t from = 0, to = run.len;
+        while (from < to && isCollapsibleWhitespace((CscdLayoutBox*)run.items[from])) cscdLayoutBoxFree((CscdLayoutBox*)run.items[from++]);
+        while (to > from && isCollapsibleWhitespace((CscdLayoutBox*)run.items[to - 1])) cscdLayoutBoxFree((CscdLayoutBox*)run.items[--to]);
+        if (from < to) {
+            const bool cell = b->kind == CSCD_BOX_TABLE_ROW;
+            CscdLayoutBox* a = cell ? anonymousPart(b, CSCD_BOX_TABLE_CELL, CSCD_DISPLAY_TABLE_CELL) : anonymousPart(b, CSCD_BOX_TABLE_ROW, CSCD_DISPLAY_TABLE_ROW);
+            for (size_t r = from; r < to; ++r) appendChild(a, (CscdLayoutBox*)run.items[r]);
+            layFixupChildren(L, a);
+            cscdVecPush(&out, a);
+        }
+        run.len = 0;
+        if (c) cscdVecPush(&out, c);
+    }
+    cscdVecFree(&run);
+    cscdVecFree(ch);
+    *ch = out;
+    for (size_t i = 0; i < ch->len; ++i) cscdBoxChild(b, i)->parent = b;
+}
+
+/* A table's parts that are not in a table (a row or a cell in a block): each run of them goes in an anonymous table
+ * (inline-level in an inline box), white space between them in it too. In a flex or grid container they are its items
+ * (blockified). */
+static void wrapTableParts(Layouter* L, CscdLayoutBox* b) {
+    if (b->kind == CSCD_BOX_FLEX || b->kind == CSCD_BOX_GRID) return;
+    CscdPtrVec* ch = &b->children;
+    bool any = false;
+    for (size_t i = 0; i < ch->len && !any; ++i) any = isTablePart(cscdBoxChild(b, i)) && !layIsOutOfFlow(cscdBoxChild(b, i));
+    if (!any) return;
+    CscdPtrVec out = {0}, run = {0};
+    for (size_t i = 0; i <= ch->len; ++i) {
+        CscdLayoutBox* c = i < ch->len ? cscdBoxChild(b, i) : NULL;
+        if (c && ((isTablePart(c) && !layIsOutOfFlow(c)) || (run.len && isCollapsibleWhitespace(c)))) {
+            cscdVecPush(&run, c);
+            continue;
+        }
+        size_t to = run.len; /* (white space after the last part: not the table's) */
+        while (to > 0 && isCollapsibleWhitespace((CscdLayoutBox*)run.items[to - 1])) --to;
+        if (to) {
+            CscdLayoutBox* t = anonymousPart(b, CSCD_BOX_TABLE, b->kind == CSCD_BOX_INLINE ? CSCD_DISPLAY_INLINE_TABLE : CSCD_DISPLAY_TABLE);
+            t->atomicInline = b->kind == CSCD_BOX_INLINE;
+            for (size_t r = 0; r < to; ++r) appendChild(t, (CscdLayoutBox*)run.items[r]);
+            fixupTablePart(L, t);
+            cscdVecPush(&out, t);
+        }
+        for (size_t r = to; r < run.len; ++r) cscdVecPush(&out, run.items[r]);
+        run.len = 0;
+        if (c) cscdVecPush(&out, c);
+    }
+    cscdVecFree(&run);
+    cscdVecFree(ch);
+    *ch = out;
+    for (size_t i = 0; i < ch->len; ++i) cscdBoxChild(b, i)->parent = b;
+}
+
 void layFixupChildren(Layouter* L, CscdLayoutBox* b) {
     (void)L;
     CscdPtrVec* ch = &b->children;
     if (b->kind == CSCD_BOX_TEXT || b->kind == CSCD_BOX_REPLACED || b->kind == CSCD_BOX_LINE_BREAK) return;
+    if (b->kind != CSCD_BOX_TABLE && b->kind != CSCD_BOX_TABLE_ROW_GROUP && b->kind != CSCD_BOX_TABLE_ROW) wrapTableParts(L, b);
     if (b->kind == CSCD_BOX_INLINE) {
         /* an inline containing blocks becomes a block (simplified block-in-inline) */
         bool block = false;
@@ -685,29 +782,7 @@ void layFixupChildren(Layouter* L, CscdLayoutBox* b) {
         b->kind = CSCD_BOX_BLOCK;
     }
     if (b->kind == CSCD_BOX_TABLE || b->kind == CSCD_BOX_TABLE_ROW_GROUP || b->kind == CSCD_BOX_TABLE_ROW) {
-        size_t w = 0;
-        for (size_t i = 0; i < ch->len; ++i) {
-            CscdLayoutBox* c = cscdBoxChild(b, i);
-            if (c->kind == CSCD_BOX_TEXT) cscdLayoutBoxFree(c);
-            else ch->items[w++] = c;
-        }
-        ch->len = w;
-        if (b->kind == CSCD_BOX_TABLE_ROW) {
-            /* anything that is not a cell gets an anonymous cell */
-            for (size_t i = 0; i < ch->len; ++i) {
-                CscdLayoutBox* c = cscdBoxChild(b, i);
-                if (c->kind == CSCD_BOX_TABLE_CELL) continue;
-                CscdLayoutBox* cell = cscdLayoutBoxNew();
-                cell->kind = CSCD_BOX_TABLE_CELL;
-                cell->anonymous = true;
-                cell->style = anonymousStyle(b->style, CSCD_DISPLAY_TABLE_CELL);
-                cell->element = b->element;
-                cell->parent = b;
-                appendChild(cell, c);
-                layFixupChildren(L, cell);
-                ch->items[i] = cell;
-            }
-        }
+        fixupTablePart(L, b);
         return;
     }
     bool flexOrGrid = b->kind == CSCD_BOX_FLEX || b->kind == CSCD_BOX_GRID;
@@ -1140,8 +1215,8 @@ void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, d
         break;
     case CSCD_REPL_SVG: {
         double vbw = 0, vbh = 0;
-        if (e && cscdElementHasAttributeC(e, "viewbox")) {
-            CscdStr vb = cscdStrDup(cscdElementAttrC(e, "viewbox"));
+        if (e && cscdElementHasAttributeC(e, "viewBox")) {
+            CscdStr vb = cscdStrDup(cscdElementAttrC(e, "viewBox"));
             for (size_t i = 0; i < vb.len; ++i) if (vb.ptr[i] == ',') vb.ptr[i] = ' ';
             CscdSvVec parts = {0};
             cscdSplitSpaces(cscdStrSv(&vb), &parts);

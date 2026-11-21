@@ -5,9 +5,13 @@ way they would be for a browser. This page lists what is there, and what is not 
 
 ## HTML
 
-An HTML5 tokenizer and tree builder: implied `<html>`, `<head>` and `<body>`, optional end tags
-(`p`, `li`, `td`, `option`…), void and raw-text elements, character references, implied
-`<tbody>`. `<link rel="stylesheet">`, `<style>`, `<title>`, `<img>`, inline `<svg>`, `<canvas>`,
+HTML's parser as the specification has it, its tokenizer and its tree construction, so a page makes
+the tree a browser makes of it: implied `<html>`, `<head>` and `<body>`, optional end tags (`p`, `li`,
+`td`, `option`…), every named character reference, misnested formatting (`<b><i></b></i>`, by the
+adoption agency), content misplaced in a table (put before it), templates, framesets, `<select>`'s
+contents, inline SVG and MathML. It passes all of html5lib's tree-construction tests but the 8 that
+need scripting. A page in XHTML's syntax (`.xht`, `.xhtml`, or `cscdViewLoadXHTML`) is parsed as XML
+instead: `<div/>` is closed and nothing is implied or moved. `<link rel="stylesheet">`, `<style>`, `<title>`, `<img>`, inline `<svg>`, `<canvas>`,
 form controls, `<details>`, `<dialog>` and the `popover` attribute all work. A `media` attribute on
 `<style>` or `<link>` is evaluated again whenever the view is resized.
 

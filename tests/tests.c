@@ -139,6 +139,64 @@ static void testParser(void) {
     cscdPathFree(&path);
 }
 
+/* the specification's tree construction: what browsers make of misnested and misplaced markup */
+static void testTreeConstruction(void) {
+#define HTML_OF(src, sel, want) do { \
+        CscdDocument* d_ = cscdParseHTML(CSCD_SV(src)); \
+        CscdElement* e_ = cscdDocumentQuerySelector(d_, CSCD_SV(sel)); \
+        CHECK(e_ && eq(keep(cscdElementInnerHTML(e_)), want)); \
+        cscdDocumentFree(d_); \
+    } while (0)
+    /* the adoption agency: a formatting element closed inside a block goes on in the block */
+    HTML_OF("<b>1<p>2</b>3</p>", "body", "<b>1</b><p><b>2</b>3</p>");
+    HTML_OF("<a><p>x<a>y", "body", "<a></a><p><a>x</a><a>y</a></p>");
+    /* foster parenting: text and elements misplaced in a table go before it */
+    HTML_OF("<table>x<tr><td>c</td></tr><b>y</b></table>", "body", "x<b>y</b><table><tbody><tr><td>c</td></tr></tbody></table>");
+    /* a table in quirks mode (no doctype) does not close a p; with one it does */
+    HTML_OF("<p><table></table>", "p", "<table></table>");
+    HTML_OF("<!DOCTYPE html><p><table></table>", "body", "<p></p><table></table>");
+    /* the customizable select: its options' markup stays, a nested select ends it */
+    HTML_OF("<select><option><b>o</b></option></select>", "select", "<option><b>o</b></option>");
+    HTML_OF("<select><option>a<select><option>b", "body", "<select><option>a</option></select><option>b</option>");
+    /* SVG: its attributes' case as SVG has it, its own rules (no implied p end) */
+    HTML_OF("<svg viewbox='0 0 1 1'><p>", "body", "<svg viewBox=\"0 0 1 1\"></svg><p></p>");
+    /* character references: the longest name, one without its semicolon, none in an attribute before '=' */
+    HTML_OF("<p title='&ampx &amp=' >&notin; &notit; &#x80;</p>", "body", "<p title=\"&amp;ampx &amp;amp=\">\xE2\x88\x89 \xC2\xACit; \xE2\x82\xAC</p>");
+    /* a fragment in its context: <tr> in a table body is a row (not dropped) */
+    CscdDocument* d = cscdParseHTML(CSCD_SV("<table><tbody id=t></tbody></table>"));
+    CscdElement* tb = cscdDocumentGetElementById(d, CSCD_SV("t"));
+    cscdElementSetInnerHTML(tb, CSCD_SV("<tr><td>1<td>2"));
+    CHECK(eq(keep(cscdElementInnerHTML(tb)), "<tr><td>1</td><td>2</td></tr>"));
+    cscdDocumentFree(d);
+#undef HTML_OF
+    /* XHTML: XML's syntax, nothing implied or moved, names' case kept where they have it, namespaces from xmlns */
+    CscdDocument* x = cscdParseXHTML(CSCD_SV("<?xml version='1.0'?><!DOCTYPE html><html xmlns='http://www.w3.org/1999/xhtml'><body>"
+                                             "<div id='d'><td>c</td><div/>t&amp;&#65;<![CDATA[<b>]]></div>"
+                                             "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><rect/></svg></body></html>"));
+    CscdElement* dv = cscdDocumentGetElementById(x, CSCD_SV("d"));
+    CHECK(dv && eq(keep(cscdElementInnerHTML(dv)), "<td>c</td><div></div>t&amp;A&lt;b&gt;"));
+    CscdElement* svg = cscdDocumentQuerySelector(x, CSCD_SV("svg"));
+    CHECK(svg && svg->ns_ == CSCD_NS_SVG && cscdElementHasAttributeC(svg, "viewBox"));
+    CHECK(cscdDocumentQuerySelector(x, CSCD_SV("rect")) && cscdDocumentQuerySelector(x, CSCD_SV("rect"))->ns_ == CSCD_NS_SVG);
+    CHECK(cscdDocumentHead(x) == NULL); /* (none implied) */
+    cscdDocumentFree(x);
+}
+
+/* CSS 2.1's anonymous table objects: text in a table, cells outside a row, rows outside a table */
+static void testTableFixup(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<div id=t style='display:table'>text</div>"
+                  "<div id=r style='display:table-row'><div id=c1 style='display:table-cell;width:50px'>a</div>"
+                  "<div id=c2 style='display:table-cell;width:50px'>b</div></div>"
+                  "<div style='display:table'><span id=s>x</span><div id=c3 style='display:table-cell'>y</div></div>");
+    CHECK(rectOf(v, "t").h > 0); /* (its text in an anonymous row and cell: it was dropped) */
+    const CscdRect c1 = rectOf(v, "c1"), c2 = rectOf(v, "c2");
+    CHECK(c1.h > 0 && c2.x >= c1.x + c1.w - 0.5f && fabsf(c2.y - c1.y) < 0.5f); /* (side by side: one anonymous table) */
+    const CscdRect s = viewRect(v, byId(v, "s")), c3 = rectOf(v, "c3");
+    CHECK(s.w > 0 && c3.x >= s.x + s.w - 0.5f && fabsf(c3.y - s.y) < 1); /* (the span in an anonymous cell before y's) */
+    cscdViewFree(v);
+}
+
 static void testSelectors(void) {
     CscdDocument* doc = cscdParseHTML(CSCD_SV("<ul id=l><li>1</li><li class=k>2</li><li>3</li><li data-v='a b'>4</li></ul><div><p></p><span></span></div>"));
 #define ALL(s) (all.len = 0, cscdDocumentQuerySelectorAll(doc, CSCD_SV(s), &all), all.len)
@@ -5433,6 +5491,8 @@ static void testHostileRequests(void) {
 
 int main(void) {
     testParser();
+    testTreeConstruction();
+    testTableFixup();
     testSelectors();
     testHasSiblings();
     testCascade();

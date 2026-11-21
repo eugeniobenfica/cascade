@@ -222,17 +222,24 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       `grid-auto-flow: dense` did not go back for holes, `minmax(x, auto)` rows did not grow to their contents.
 - [x] A JS-free runner for WPT reftests in `css/` (`tests/wpt.c`): ten folders of a pinned commit (flexbox, grid,
       CSS2 margins, positioning, normal flow, floats, backgrounds), each test and its reference painted at 800x600 and
-      compared within the test's fuzzy allowance; pages with scripts passed over, XHTML's self-closed elements and
-      CDATA read as XML would. The score of each folder is in `tests/wpt.score` (2,054 of 3,307 run, from 846: a
-      line of text is now whole pixels high, its font's ascent and descent rounded as browsers round them); CI fails
-      when a folder passes fewer.
-- [x] html5lib tree-construction tests (`tests/html5lib.c`: 857 of 1,645, the rest in `tests/html5lib.known`),
+      compared within the test's fuzzy allowance; pages with scripts passed over, XHTML pages parsed as XML. The score
+      of each folder is in `tests/wpt.score` (2,113 of 3,307 run, from 846: a line of text is now whole pixels high,
+      its font's ascent and descent rounded as browsers round them; then the table fixup below); CI fails when a
+      folder passes fewer.
+- [x] html5lib tree-construction tests (`tests/html5lib.c`: all 1,784 cases but the 8 that need scripting),
       css-parsing-tests (`tools/cssParsingTests.py`: 2,645 of 2,684; fixed on the way: lab() and lch() as CIE Lab,
       An+B by CSS Syntax, `3n - 1` was 3n+1, declarations named by an identifier only, `color(srgb ...)`), BidiTest
       and BidiCharacterTest (every one of their 861,948 cases; fixed: sos and eos from the levels X1 to X8 give, not
       from those already resolved). CI runs each on a pinned download.
-- [ ] HTML's tree builder as the specification has it (the adoption agency, foster parenting, the insertion modes of
-      template, frameset, select and foreign content, fragments in their context): 788 html5lib cases fail.
+- [x] HTML's parser as the specification has it (`src/dom/html.c`): its tokenizer state by state (RCDATA, RAWTEXT,
+      script data and its escapes, CDATA in foreign content, every named character reference, numeric ones as
+      Windows-1252 has the C1 range) and its tree construction mode by mode (the adoption agency and the Noah's Ark
+      clause, foster parenting, template, frameset, the customizable select, SVG and MathML with their attribute names'
+      case, quirks mode from the doctype, fragments in their context, foreign ones too). html5lib: from 857 of 1,645 to
+      every case. On the way: XHTML pages are parsed as XML (`cscdParseXHTML`, `cscdViewLoadXHTML`, and `.xht` files
+      by `cscdViewLoadFile`), and the table fixup is CSS 2.1's (17.2.1: text in a table is no longer dropped, a run of
+      what is not a table's part goes in an anonymous row and cell, a row or cell outside a table in an anonymous one):
+      2,054 WPT reftests to 2,113.
 - [ ] The WPT reftests that still fail, folder by folder (`cascade-wpt-tests` with `CASCADE_WPT_LIST=1` lists them,
       `CASCADE_WPT_DUMP=1` saves the first's two pictures).
 

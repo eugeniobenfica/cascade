@@ -696,7 +696,7 @@ void cscdElementSetText(CscdElement* e, CscdSv text) {
 void cscdDomAdoptTemplates(CscdNode* root) {
     for (size_t i = 0; i < root->children.len; ++i) cscdDomAdoptTemplates(cscdNodeChild(root, i));
     CscdElement* e = cscdNodeAsElement(root);
-    if (!e || !cscdElementIs(e, "template") || !root->children.len) return;
+    if (!e || e->ns_ != CSCD_NS_HTML || !cscdElementIs(e, "template") || !root->children.len) return;
     if (!e->templateContent_) e->templateContent_ = cscdElementNew(CSCD_SV("template-content"));
     while (root->children.len) {
         CscdNode* c = cscdNodeChild(root, 0);
@@ -716,6 +716,7 @@ static CscdNode* cloneNode(const CscdNode* n, bool deep) {
         const CscdElement* e = (const CscdElement*)n;
         CscdElement* c = cscdElementNew(cscdStrSv(&e->tag));
         cscdStrPairVecCopy(&c->attributes, &e->attributes);
+        c->ns_ = e->ns_;
         if (deep && e->templateContent_) c->templateContent_ = (CscdElement*)cloneNode(&e->templateContent_->node, true);
         out = &c->node;
         break;

@@ -6,8 +6,9 @@
  * With no folder (the tests are not in the repository: CI downloads a pinned commit of html5lib-tests,
  * CASCADE_HTML5LIB_TESTS names it), nothing is run. What cascade's tree does not have is left out of both sides: the
  * doctype (no node for it), namespaces (an SVG or MathML element is its tag name, lowercase; xlink:href an attribute
- * with that name). Cases that need scripting (#script-on) and fragments in a foreign context are passed over. --known:
- * the cases known to fail ("file.dat:N", one a line, "#" comments); one listed that passes is an error too. */
+ * with that name). Cases that need scripting (#script-on) are passed over; a fragment in a foreign context ("svg
+ * path") is parsed in it. --known: the cases known to fail ("file.dat:N", one a line, "#" comments); one listed that
+ * passes is an error too. */
 #include "cascade/cascade.h"
 
 #include <ctype.h>
@@ -70,10 +71,10 @@ static void dumpNode(const CscdNode* n, int depth, CscdStr* out) {
             cscdStrAppendf(out, "%s=\"%s\"\n", cscdStrC(&attrs.items[i].name), cscdStrC(&attrs.items[i].value));
         }
         cscdStrPairVecFree(&attrs);
-        if (e->templateContent_) {
+        if (e->templateContent_ || (e->ns_ == CSCD_NS_HTML && cscdStrEqC(&e->tag, "template"))) { /* (an empty one's too) */
             indent(out, depth + 1);
             cscdStrAppendC(out, "content\n");
-            dumpChildren(&e->templateContent_->node, depth + 2, out);
+            if (e->templateContent_) dumpChildren(&e->templateContent_->node, depth + 2, out);
         }
         dumpChildren(n, depth + 1, out);
     }
@@ -110,7 +111,8 @@ static void normalizeExpected(const char* doc, CscdStr* out) {
             l->depth = -1;
             continue;
         }
-        if (t[0] == '<' && t[1] != '!' && t[1] != '/') {
+        const size_t tl = strlen(t);
+        if (t[0] == '<' && t[1] != '!' && t[1] != '/' && tl && t[tl - 1] == '>') { /* (an element: "<=\"\"" is an attribute) */
             const char* sp = strchr(t, ' ');
             const char* close = strchr(t, '>');
             CscdStr name = {0};
@@ -122,7 +124,7 @@ static void normalizeExpected(const char* doc, CscdStr* out) {
             cscdStrClear(&l->text);
             cscdStrAppendf(&l->text, "<%s>", cscdStrC(&name));
             cscdStrFree(&name);
-        } else if (t[0] != '"' && t[0] != '<' && strchr(t, '=')) {
+        } else if (t[0] != '"' && strncmp(t, "<!--", 4) && strchr(t, '=')) {
             l->attr = true;
             const char* eq = strchr(t, '=');
             const char* sp = strchr(t, ' ');
@@ -166,16 +168,18 @@ typedef struct Case {
 } Case;
 
 /* the sections of the case at *p: "#data", "#errors", "#document-fragment", "#script-on", "#document"... */
-static bool nextCase(const char** p, Case* c) {
-    const char* s = strstr(*p, "#data\n");
-    if (!s) return false;
+static bool nextCase(const char** p, const char* limit, Case* c) {
+    /* (by lengths: a case's data may hold a NUL) */
+    const char* s = *p;
+    while (s < limit && !(limit - s >= 6 && !memcmp(s, "#data\n", 6) && (s == *p || s[-1] == '\n'))) ++s;
+    if (s >= limit) return false;
     s += 6;
     const char* section = NULL; /* (which one the lines go to) */
     CscdStr* into = &c->data;
     bool first = true;
-    while (*s) {
-        const char* end = strchr(s, '\n');
-        if (!end) end = s + strlen(s);
+    while (s < limit) {
+        const char* end = (const char*)memchr(s, '\n', (size_t)(limit - s));
+        if (!end) end = limit;
         const CscdSv line = {s, (size_t)(end - s)};
         if (line.len && line.ptr[0] == '#' && (cscdSvEqC(line, "#errors") || cscdSvEqC(line, "#new-errors") || cscdSvEqC(line, "#document") ||
                                                 cscdSvEqC(line, "#document-fragment") || cscdSvEqC(line, "#script-on") || cscdSvEqC(line, "#script-off"))) {
@@ -183,8 +187,9 @@ static bool nextCase(const char** p, Case* c) {
             into = cscdSvEqC(line, "#document") ? &c->document : cscdSvEqC(line, "#document-fragment") ? &c->fragment : NULL;
             if (cscdSvEqC(line, "#script-on")) c->scriptOn = true;
             first = true;
-        } else if (section && !strncmp(section, "#document\n", 10) && line.len == 0) {
-            s = *end ? end + 1 : end; /* (the blank line after a case) */
+        } else if (section && !strncmp(section, "#document\n", 10) && line.len == 0 &&
+                   (end >= limit - 1 || (limit - end > 6 && !memcmp(end + 1, "#data\n", 6)))) {
+            s = end < limit ? end + 1 : end; /* (the blank line after a case: a blank line in a text goes on) */
             break;
         } else if (into) {
             if (!first || into != &c->data) {
@@ -194,7 +199,7 @@ static bool nextCase(const char** p, Case* c) {
             first = false;
         }
         if (!section && into == &c->data && first) first = false;
-        s = *end ? end + 1 : end;
+        s = end < limit ? end + 1 : end;
     }
     *p = s;
     return true;
@@ -264,27 +269,33 @@ int main(int argc, char** argv) {
         /* (CRLF checkouts: the cases are LF) */
         size_t w = 0;
         for (size_t i = 0; i < len; ++i)
-            if (text[i] != '\r') text[w++] = text[i];
+            if (!(text[i] == '\r' && i + 1 < len && text[i + 1] == '\n')) text[w++] = text[i]; /* (a lone CR is the case's) */
         text[w] = 0;
         const char* p = text;
         int index = 0;
         Case c;
         memset(&c, 0, sizeof c);
-        while (nextCase(&p, &c)) {
+        while (nextCase(&p, text + w, &c)) {
             ++index;
             char id[256];
             snprintf(id, sizeof id, "%s:%d", cscdStrC(&files.items[fi]), index);
-            const bool foreignContext = c.fragment.len && strchr(cscdStrC(&c.fragment), ' ');
-            if (c.scriptOn || foreignContext) {
+            if (c.scriptOn) {
                 ++skipped;
             } else {
                 CscdStr got = {0}, want = {0};
                 normalizeExpected(cscdStrC(&c.document), &want);
                 if (c.fragment.len) {
                     CscdDocument* doc = cscdParseHTML(CSCD_SV(""));
-                    CscdElement* ctx = cscdDocumentCreateElement(doc, cscdStrSv(&c.fragment));
+                    /* (a foreign context: "svg path", "math mi") */
+                    CscdSv name = cscdStrSv(&c.fragment);
+                    uint8_t ns = CSCD_NS_HTML;
+                    if (cscdSvStartsC(name, "svg ")) ns = CSCD_NS_SVG, name = cscdSvFrom(name, 4);
+                    else if (cscdSvStartsC(name, "math ")) ns = CSCD_NS_MATHML, name = cscdSvFrom(name, 5);
+                    CscdElement* ctx = cscdDocumentCreateElement(doc, name);
+                    ctx->ns_ = ns;
                     cscdParseHTMLFragment(cscdStrSv(&c.data), ctx);
-                    dumpChildren(&ctx->node, 0, &got);
+                    /* (a template's: in its content) */
+                    dumpChildren(ctx->templateContent_ ? &ctx->templateContent_->node : &ctx->node, 0, &got);
                     cscdNodeDestroy(&ctx->node);
                     cscdDocumentFree(doc);
                 } else {
