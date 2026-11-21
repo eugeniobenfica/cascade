@@ -1,5 +1,6 @@
 /* Box tree construction, block layout (margins, floats, positioning), inline layout (whitespace,
  * line breaking, vertical alignment) and intrinsic sizes. */
+#include "text/lineBreakInternal.h"
 #include "layout/layoutInternal.h"
 #include "paint/canvasInternal.h"
 #include "text/bidiInternal.h"
@@ -359,11 +360,6 @@ static void transformText(CscdSv s, CscdTextTransform t, bool* wordStart, CscdSt
         *wordStart = !(letter || (cp >= '0' && cp <= '9') || cp == '\'');
         cscdUtf8Append(out, cp);
     }
-}
-
-static bool isCJK(uint32_t cp) {
-    return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
-           (cp >= 0xFF00 && cp <= 0xFFEF) || (cp >= 0x20000 && cp <= 0x2FFFF) || (cp >= 0x3000 && cp <= 0x303F);
 }
 
 static bool collapses(uint8_t ws) { return ws == CSCD_WS_NORMAL || ws == CSCD_WS_NOWRAP || ws == CSCD_WS_PRE_LINE; }
@@ -1418,7 +1414,23 @@ typedef struct Collect {
     bool wordStart;
     CscdPtrVec stack;
     CscdStr raw;       /* (scratch) */
+    /* line breaking (UAX #14) across the texts of a block: the last code points before this text, since the last
+     * forced break or atomic inline, and the item that ends the text before (its break after is decided with this one's
+     * first code point; SIZE_MAX: none) */
+    CscdU32Vec lbContext;
+    size_t lbPrevItem;
+    CscdU32Vec lbCps;   /* (scratch: this text's code points) */
+    CscdU32Vec lbAll;   /* (scratch: the context and a line of this text) */
+    CscdSizeVec lbOff;  /* (scratch: their byte offsets) */
+    CSCD_VEC(uint8_t) lbOut;
 } Collect;
+
+#define LB_CONTEXT 16 /* (code points kept from the texts before: what the rules look back at, spaces collapsed) */
+
+static void lbForget(Collect* C) {
+    C->lbContext.len = 0;
+    C->lbPrevItem = SIZE_MAX;
+}
 
 static void pushItem(InlineState* st, InlineItem it) { cscdVecPush(&st->items, it); }
 
@@ -1488,41 +1500,93 @@ static void collectText(Collect* C, CscdLayoutBox* c) {
     c->font = f;
     *stFont(C->st, c) = f;
     stSetChain(C->st, c, &C->stack);
-    /* segments */
-    bool canWrap = wraps(ws);
-    bool breakAll = s->wordBreak == CSCD_WB_BREAK_ALL;
-    size_t segStart = 0;
+    /* segments: between the line breaking opportunities of UAX #14 (Unicode's), the boundary before this text decided
+     * with what came before it in the block; a text that does not wrap breaks at its preserved newlines alone */
+    const bool canWrap = wraps(ws);
+    const bool breakAll = s->wordBreak == CSCD_WB_BREAK_ALL;
+    const bool softHyphens = s->hyphens != 1; /* (hyphens: none: a soft hyphen is no opportunity) */
     const size_t n = stProcessed(C->st, c)->len;
-    for (size_t i = 0; i < n;) {
-        const CscdStr* text = stProcessed(C->st, c);
-        CscdSv tv = cscdStrSv(text);
-        size_t at = i;
-        uint32_t ch = cscdUtf8Next(tv, &i);
-        if (ch == '\n') {
+    size_t segStart = 0;
+    if (!canWrap) {
+        const CscdSv tv = cscdStrSv(stProcessed(C->st, c));
+        for (size_t i = 0; i < n;) {
+            const size_t at = i;
+            if (cscdUtf8Next(tv, &i) != '\n') continue;
             emitSeg(C, c, &f, segStart, at, true, true);
             segStart = i;
+        }
+        if (segStart < n) emitSeg(C, c, &f, segStart, n, false, false);
+        lbForget(C);
+        return;
+    }
+    {
+        const CscdSv tv = cscdStrSv(stProcessed(C->st, c));
+        C->lbCps.len = 0;
+        C->lbOff.len = 0;
+        for (size_t i = 0; i < n;) {
+            cscdVecPush(&C->lbOff, i);
+            cscdVecPush(&C->lbCps, cscdUtf8Next(tv, &i));
+        }
+        cscdVecPush(&C->lbOff, n);
+    }
+    const size_t count = C->lbCps.len;
+    for (size_t p0 = 0; p0 < count;) {
+        /* a line of the text: up to a preserved newline, or its end */
+        size_t p1 = p0;
+        while (p1 < count && C->lbCps.items[p1] != '\n') ++p1;
+        const size_t ctx = C->lbContext.len, len = p1 - p0;
+        if (len) {
+            /* its code points after the context's (the context first, in the same buffer) */
+            CscdU32Vec all = C->lbAll;
+            all.len = 0;
+            cscdVecAppend(&all, C->lbContext.items, ctx);
+            cscdVecAppend(&all, C->lbCps.items + p0, len);
+            cscdVecResize(&C->lbOut, all.len + 1);
+            cscdLineBreaks(all.items, all.len, C->lbOut.items);
+            const uint8_t* out = C->lbOut.items + ctx;
+            /* the boundary with the text before, at the end of its last item */
+            if (ctx && C->lbPrevItem < C->st->items.len) {
+                InlineItem* prev = &C->st->items.items[C->lbPrevItem];
+                const bool brk = out[0] != CSCD_LB_NONE && (C->lbContext.items[ctx - 1] != 0xAD || softHyphens);
+                prev->breakAfter = brk;
+                if (brk && C->lbContext.items[ctx - 1] == 0xAD) prev->hyphen = true;
+            }
+            for (size_t k = 1; k < len; ++k) {
+                const uint32_t before = C->lbCps.items[p0 + k - 1], here = C->lbCps.items[p0 + k];
+                bool brk = out[k] != CSCD_LB_NONE;
+                if (before == 0xAD && !softHyphens) brk = false;
+                if (!brk && breakAll && before != ' ' && here != ' ') { /* (word-break: break-all: between any two letters) */
+                    uint8_t fl;
+                    const CscdLineBreakClass cl = cscdLineBreakClass(here, &fl);
+                    brk = cl != LB_CM && cl != LB_ZWJ && cl != LB_GL && cl != LB_WJ && cscdLineBreakClass(before, &fl) != LB_GL;
+                }
+                if (!brk) continue;
+                emitSeg(C, c, &f, segStart, C->lbOff.items[p0 + k], true, false);
+                if (before == 0xAD && C->st->items.len) cscdVecLast(&C->st->items).hyphen = true;
+                segStart = C->lbOff.items[p0 + k];
+            }
+            /* what the next text looks back at */
+            if (all.len > LB_CONTEXT) {
+                memmove(all.items, all.items + all.len - LB_CONTEXT, LB_CONTEXT * sizeof(uint32_t));
+                all.len = LB_CONTEXT;
+            }
+            C->lbContext.len = 0;
+            cscdVecAppend(&C->lbContext, all.items, all.len);
+            C->lbAll = all;
+        }
+        if (p1 < count) { /* a preserved newline: a forced break, and nothing before it is looked back at */
+            emitSeg(C, c, &f, segStart, C->lbOff.items[p1], true, true);
+            segStart = C->lbOff.items[p1 + 1];
+            lbForget(C);
+            p0 = p1 + 1;
             continue;
         }
-        if (!canWrap) continue;
-        if (ch == ' ') {
-            /* include all following spaces in this segment */
-            while (i < n && tv.ptr[i] == ' ') ++i;
-            emitSeg(C, c, &f, segStart, i, true, false);
-            segStart = i;
-        } else if (breakAll || isCJK(ch)) {
-            if (i < n && tv.ptr[i] == ' ') continue;
-            emitSeg(C, c, &f, segStart, i, true, false);
-            segStart = i;
-        } else if (ch == '-' && at > segStart && i < n && tv.ptr[i] != ' ') {
-            emitSeg(C, c, &f, segStart, i, true, false);
-            segStart = i;
-        } else if (ch == 0xAD && s->hyphens != 1 && at > segStart) {
-            emitSeg(C, c, &f, segStart, i, true, false);
-            if (C->st->items.len) cscdVecLast(&C->st->items).hyphen = true;
-            segStart = i;
-        }
+        p0 = p1;
     }
-    if (segStart < n) emitSeg(C, c, &f, segStart, n, false, false);
+    if (segStart < n) {
+        emitSeg(C, c, &f, segStart, n, false, false);
+        C->lbPrevItem = C->st->items.len - 1;
+    } else C->lbPrevItem = SIZE_MAX;
 }
 
 static void collectWalk(Collect* C, CscdLayoutBox* parent) {
@@ -1565,6 +1629,7 @@ static void collectWalk(Collect* C, CscdLayoutBox* parent) {
             stSetChain(st, c, &C->stack);
             pushItem(st, br);
             C->prevSpace = true;
+            lbForget(C);
         } else if (layIsOutOfFlow(c)) {
             InlineItem it;
             memset(&it, 0, sizeof it);
@@ -1582,6 +1647,7 @@ static void collectWalk(Collect* C, CscdLayoutBox* parent) {
             pushItem(st, it);
             C->prevSpace = false;
             C->wordStart = true;
+            lbForget(C);
         }
     }
 }
@@ -1595,9 +1661,15 @@ static void collectInline(Layouter* L, CscdLayoutBox* root, InlineState* st, dou
     C.cbW = cbW;
     C.prevSpace = true;
     C.wordStart = true;
+    C.lbPrevItem = SIZE_MAX;
     collectWalk(&C, root);
     cscdVecFree(&C.stack);
     cscdStrFree(&C.raw);
+    cscdVecFree(&C.lbContext);
+    cscdVecFree(&C.lbCps);
+    cscdVecFree(&C.lbAll);
+    cscdVecFree(&C.lbOff);
+    cscdVecFree(&C.lbOut);
     /* break opportunities before atomic inlines */
     for (size_t i = 1; i < st->items.len; ++i) {
         if (st->items.items[i].t == IT_ATOMIC && wraps(root->style->whiteSpace)) {

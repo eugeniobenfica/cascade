@@ -2,6 +2,7 @@
  * a browser computes for the same documents. */
 #include "cascade/cascade.h"
 #include "../src/text/bidiInternal.h" /* (internal: the algorithm on its own) */
+#include "../src/text/lineBreakInternal.h" /* (internal: UAX #14 on its own) */
 #include "../src/view/viewInternal.h" /* (internal: viewSetInputAge, the platforms' touch times) */
 #include "../src/core/thread.h"        /* (internal: the parallel loops) */
 #include "../src/paint/canvasInternal.h"  /* (internal: shadows blurred whole, to compare) */
@@ -2952,6 +2953,113 @@ static const char* bidiOf(const char* textUtf8, int level) {
     return keep(out);
 }
 
+/* Line breaking: a few cases always, and Unicode's conformance file when CASCADE_LINEBREAK_TEST names it (CI downloads
+ * LineBreakTest.txt of the Unicode version lineBreakData.inc was made from): every boundary of its 16,000 lines. */
+static bool breaksMatch(const uint32_t* cps, size_t n, const char* want) {
+    uint8_t out[64];
+    cscdLineBreaks(cps, n, out);
+    for (size_t i = 1; i < n; ++i)
+        if ((out[i] != CSCD_LB_NONE) != (want[i - 1] == '/')) return false;
+    return true;
+}
+
+static void testLineBreak(void) {
+    /* (/ a break may come there, - none: between the code points) */
+    const uint32_t words[] = {'a', 'b', ' ', 'c', 'd'};
+    CHECK(breaksMatch(words, 5, "--/-"));
+    const uint32_t cjk[] = {0x65E5, 0x672C, 0x3002, 0x8A9E, 0x3063}; /* 日本。語っ: no break before 。 nor small っ */
+    CHECK(breaksMatch(cjk, 5, "/-/-"));
+    const uint32_t money[] = {'$', '1', '2', '.', '5', ' ', '(', 'x', ')'};
+    CHECK(breaksMatch(money, 9, "-----/--"));
+    const uint32_t hyphen[] = {'w', 'e', 'l', 'l', '-', 'k', 'n', 'o', 'w', 'n', ' ', '-', '5'};
+    CHECK(breaksMatch(hyphen, 13, "----/-----/-"));
+    const uint32_t flags[] = {0x1F1E7, 0x1F1F7, 0x1F1F5, 0x1F1F9}; /* two flags: a break between them only */
+    CHECK(breaksMatch(flags, 4, "-/-"));
+    const char* path = getenv("CASCADE_LINEBREAK_TEST");
+    if (!path || !*path) return;
+    FILE* f = fopen(path, "rb");
+    CHECK(f != NULL);
+    if (!f) return;
+    char line[4096];
+    int cases = 0, failed = 0;
+    while (fgets(line, sizeof line, f)) {
+        char* hash = strchr(line, '#');
+        if (hash) *hash = 0;
+        uint32_t cps[64];
+        char want[64]; /* (before each code point but the first: '/' a break, '-' none) */
+        size_t n = 0;
+        const char* p = line;
+        int pending = -1;
+        for (;;) {
+            while (*p == ' ' || *p == '\t') ++p;
+            if (!*p || *p == '\n' || *p == '\r') break;
+            if ((unsigned char)p[0] == 0xC3 && (unsigned char)p[1] == 0x97) { pending = '-'; p += 2; continue; } /* × */
+            if ((unsigned char)p[0] == 0xC3 && (unsigned char)p[1] == 0xB7) { pending = '/'; p += 2; continue; } /* ÷ */
+            char* end;
+            const unsigned long cp = strtoul(p, &end, 16);
+            if (end == p || n >= 63) { n = 0; break; }
+            if (n > 0) want[n - 1] = (char)pending;
+            cps[n++] = (uint32_t)cp;
+            p = end;
+        }
+        if (n < 1) continue;
+        ++cases;
+        if (!breaksMatch(cps, n, want)) {
+            if (++failed <= 8) {
+                printf("  LineBreakTest: %s", line);
+                uint8_t out[64];
+                cscdLineBreaks(cps, n, out);
+                printf("    got:");
+                for (size_t i = 0; i < n; ++i) printf(" %s%04X", i ? (out[i] ? "/ " : "- ") : "", (unsigned)cps[i]);
+                printf("\n");
+            }
+        }
+    }
+    fclose(f);
+    printf("  LineBreakTest: %d of %d lines as Unicode says\n", cases - failed, cases);
+    CHECK(cases > 10000);
+    CHECK(failed == 0);
+}
+
+/* the lines of the text boxes of e, each line's text (appended, a '|' after each) */
+static void linesOf(const CscdLayoutBox* b, CscdStr* out) {
+    for (size_t i = 0; i < b->textFrags.len; ++i) {
+        cscdStrAppend(out, cscdStrSv(&b->textFrags.items[i].text));
+        cscdStrAppendChar(out, '|');
+    }
+    for (size_t i = 0; i < b->children.len; ++i) linesOf(cscdBoxChild(b, i), out);
+}
+
+/* Lines break where UAX #14 lets them, across the elements of a line too: as narrow as can be, no line starts with a
+ * closing mark or a small kana, a URL breaks after its slashes, and a word split by a tag is one word. */
+static void paintOnce(CscdView* v);
+
+static void testLineBreakLayout(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    cscdViewSetViewport(v, 300, 200, 1);
+    cscdViewLoadHTML(v, CSCD_SV("<style>body{margin:0;font:14px sans-serif} div{width:1px}</style>"
+                                "<div id=j>\xE6\x97\xA5\xE6\x9C\xAC\xE3\x80\x82\xE3\x81\xA1\xE3\x82\x87\xE3\x81\xA3\xE3\x81\xA8</div>"
+                                "<div id=u>see example.com/a/b now</div><div id=w>fo<b>ob</b>ar baz</div><div id=x>foo <b>bar</b> baz</div>"),
+                     CSCD_SV("."));
+    paintOnce(v);
+    CscdStr j = {0}, u = {0}, w = {0};
+    linesOf(query(v, "#j")->layout, &j);
+    linesOf(query(v, "#u")->layout, &u);
+    linesOf(query(v, "#w")->layout, &w);
+    /* 日本。ちょっと: 日|本。|ち|ょ... no: ちょ っ と each small kana stays with what is before it */
+    CHECK(strstr(cscdStrC(&j), "|\xE3\x80\x82") == NULL);     /* (no line starts with 。) */
+    CHECK(strstr(cscdStrC(&j), "|\xE3\x82\x87") == NULL);     /* (nor with ょ) */
+    CHECK(strstr(cscdStrC(&j), "|\xE3\x81\xA3") == NULL);     /* (nor with っ) */
+    CHECK(strstr(cscdStrC(&u), "example.com/|") != NULL && strstr(cscdStrC(&u), "a/|") != NULL);
+    CHECK(query(v, "#w")->layout->lines.len == 2); /* (foobar: one word over three boxes, then baz) */
+    CHECK(query(v, "#x")->layout->lines.len == 3); /* (a space before an element: a break there) */
+    cscdStrFree(&j);
+    cscdStrFree(&u);
+    cscdStrFree(&w);
+    cscdViewFree(v);
+}
+
 static void testBidi(void) {
     /* Hebrew in English: the Hebrew word at 1, the space before it stays with the English */
     CHECK(eq(bidiOf("ab \xD7\x90\xD7\x91 cd", 0), "00011000"));
@@ -4189,6 +4297,8 @@ int main(void) {
     testBackdropAndMask();
     testSmallerProperties();
     testBidi();
+    testLineBreak();
+    testLineBreakLayout();
     testSiblingPositions();
     testStaticPositionRelayout();
     testTablePercentColumns();

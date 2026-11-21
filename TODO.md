@@ -120,7 +120,10 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 
 ### Text
 
-- [ ] Line breaking by UAX #14 (today: spaces, hyphens and CJK), with `LineBreakTest.txt` in CI.
+- [x] Line breaking by UAX #14 (Unicode 16.0's rules, `src/text/lineBreak.c`; the table made by
+      `tools/genLineBreak.py`), across the elements of a line; all 16,666 lines of `LineBreakTest.txt` pass, and CI
+      downloads it. A page of mixed text lays out ~25% slower, from the opportunities it had missed (after a URL's
+      slashes, around punctuation): more pieces to measure.
 - [ ] Grapheme clusters by UAX #29 for the caret and deletion (today: code points), with `GraphemeBreakTest.txt`.
 - [ ] Arabic through the font's `init`/`medi`/`fina` features instead of the presentation-forms table.
 - [ ] Shapers for Thai, Khmer, Myanmar, Tibetan, Hangul jamo and the Universal Shaping Engine; run

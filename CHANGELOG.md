@@ -7,6 +7,12 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Line breaking by UAX #14** (Unicode 16.0): lines break where Unicode's rules let them, across the elements of a
+  line (`foo<b>bar</b>` is one word), no line starts with a closing mark or a small kana, a URL breaks after its
+  slashes, numbers and their signs stay together; soft hyphens, `hyphens: none` and `word-break: break-all` as before.
+  The Unicode conformance file passes whole (16,666 lines; CI downloads it, `CASCADE_LINEBREAK_TEST`).
+- Fixed: the stack reserve under sanitizers (ThreadSanitizer's larger frames overflowed a 512 KB thread).
+
 - **Places in layout are doubles** (`CscdLayoutBox.x`/`y`, baselines, text fragments, lines; `inlineFrags[].rect` and
   `overflow` are a `CscdBoxRect` of doubles, `cscdBoxRectF` gives it as floats); sizes stay floats. A box is moved
   instead of laid out again wherever it is on the page, and the layout made from the last one is the one made from

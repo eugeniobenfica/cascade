@@ -64,7 +64,7 @@ Event handling, the forms and the rest of the interface are in [The interface](i
 ## Layout
 
 - **Flow**: block formatting with margin collapsing, floats and clearance; inline formatting with
-  white-space modes, line breaking, `text-align` (and justify), `vertical-align`, `text-indent`,
+  white-space modes, line breaking (Unicode's UAX #14, across elements), `text-align` (and justify), `vertical-align`, `text-indent`,
   `text-overflow: ellipsis` and `line-clamp`, `text-align-last`; `inline-block`.
 - **Flexbox**: direction, wrap, grow and shrink (with min / max freezing), `gap`, `order`, every
   alignment, auto margins.
