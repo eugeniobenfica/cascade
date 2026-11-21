@@ -35,15 +35,15 @@ CMAP-4/2
 CMAP-4/3
 CMAP-4/4
 
-# CFF fonts whose glyphs past the BMP cascade does not map (the case's character from the fallback font)
-CFF-1/1F33A
-CFF-1/1F33B
-CFF-1/1F4A7
-CFF-1/1F95D
-CFF-2/1F33A
-CFF-2/1F33B
-CFF-2/1F4A7
-CFF-2/1F95D
+# emoji in a CFF font: where the system has a color emoji font (Windows), cascade draws them from it
+~CFF-1/1F33A
+~CFF-1/1F33B
+~CFF-1/1F4A7
+~CFF-1/1F95D
+~CFF-2/1F33A
+~CFF-2/1F33B
+~CFF-2/1F4A7
+~CFF-2/1F95D
 
 # GPOS cursive attachment (type 3), which cascade does not apply: the letters' heights in Nasta'liq
 SHARAN-1/1

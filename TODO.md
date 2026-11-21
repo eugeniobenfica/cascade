@@ -139,8 +139,7 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       text-rendering-tests run in CI (`tools/textRenderingTests.py`): every Balinese and Tai Tham case as HarfBuzz
       shapes it; the failures listed in `tests/textRenderingTests.known`, and no others.
 - [ ] GPOS cursive attachment (lookup type 3): Nasta'liq's letters on their heights (SHARAN-1).
-- [ ] cmap formats 13 and 14 (variation sequences) and the Macintosh platform's cmaps (CMAP-1..4); CFF fonts' glyphs
-      past the BMP (CFF-1, CFF-2).
+- [ ] cmap formats 13 and 14 (variation sequences) and the Macintosh platform's cmaps (CMAP-1..4).
 - [ ] Kannada as HarfBuzz shapes it (SHKNDA-1..3: the Indic shaper's below-base and post-base forms).
 - [ ] Lao: a tone mark over another mark, positioned as HarfBuzz does (its mark-to-mark).
 - [ ] WOFF2.

@@ -5,7 +5,8 @@
 
 (--harfbuzz: HarfBuzz's shaping instead, through uharfbuzz: which cases the reference shaper passes. --known: the
 cases known to fail, one a line, a case's id or the start of ids ("MORX-"), "#" and what follows a comment; those
-failing count as known, and a case listed that passes is an error too, so that the list stays what fails.)
+failing count as known, and a case listed that passes is an error too, so that the list stays what fails; "~" before
+an id: a case that fails on some systems only, which may pass.)
 
 Needs fontTools (pip install fonttools). Each test case (testcases/*.html: a text, a font, and the glyphs it should be
 drawn with, by name or index, at their places, as SVG) whose id starts with one of the prefixes (all of them when none is given) is shaped
@@ -97,6 +98,8 @@ def main():
     tool, root = args[0], args[1]
     harfbuzz = tool == "--harfbuzz"
     prefixes = args[2:]
+    maybe = {x[1:] for x in known if x.startswith("~")}
+    known = [x.lstrip("~") for x in known]
     is_known = lambda cid: any(cid == x or (x.endswith(("-", "/")) and cid.startswith(x)) for x in known)
     cases = []  # (id, font, text, expected)
     tests = os.path.join(root, "testcases")
@@ -141,7 +144,7 @@ def main():
                 a[0] == b[0] and abs(a[1] - b[1]) <= 1 and abs(a[2] - b[2]) <= 1 for a, b in zip(got, want))
             if ok:
                 passed += 1
-                if is_known(cid) and cid in known:
+                if is_known(cid) and cid in known and cid not in maybe:
                     stale.append(cid)
             elif is_known(cid):
                 known_failed += 1
