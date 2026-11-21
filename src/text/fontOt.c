@@ -248,11 +248,13 @@ static bool matchLookahead(const Ctx* c, size_t last, int count, const uint8_t* 
 
 /* A font can ask for anything: 65535 lookups of 65535 subtables, contexts that call contexts (64
  * lookups each, 8 deep), or one glyph made into 65535, again and again. Real fonts stay far below
- * these limits (a thousand lookups of sixteen subtables, at every glyph, takes a quarter of this). */
+ * these limits: three hundred lookups of three subtables at every glyph take a quarter of the work allowed (each
+ * subtable tried at a glyph is one unit; HarfBuzz allows 64 lookups a glyph). More made a 40 kB text shape for
+ * seconds, minutes under the fuzzer (tests/corpus/font/gsubWorkKhmer). */
 #define MIN_MAX_GLYPHS 16384
 #define MAX_GROWTH 64
-#define WORK_PER_GLYPH 65536
-#define MIN_WORK (1u << 22)
+#define WORK_PER_GLYPH 4096
+#define MIN_WORK (1u << 16)
 
 /* The lookups a matched context calls, each at its glyph of the input. A lookup that makes the text longer or shorter
  * (a multiple substitution, a ligature) changes the input as the later ones see it, as HarfBuzz has it: the glyphs it
