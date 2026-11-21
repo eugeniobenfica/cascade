@@ -20,6 +20,8 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
     `cscdWindowOptionsFree` (`cscdWindowNew` copies what it needs), in place of `cscdWindowOptions()` and its fields;
   - layout boxes: only through the view (`cscdViewElementRect` and the like).
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
+- **Long texts in a textarea**: its lines are kept from edit to edit, so a key in 20,000 lines takes milliseconds
+  instead of two seconds.
 - **Screen readers**: UI Automation's text pattern on text fields (by character, word and line, with the selection);
   live regions (`aria-live`, `role="status"`...) said when they change, on Windows, macOS, iOS and Linux; changes
   told element by element instead of the whole page (`CSCD_A11Y_EVENT_NAME`, `CSCD_A11Y_EVENT_LIVE` are new).

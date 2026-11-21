@@ -190,7 +190,11 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       children changed, `CSCD_A11Y_EVENT_NAME` with the one whose text did), the whole tree only for a new page or
       many changes at once. A text-only change told readers nothing before.
 - [ ] The text interfaces of NSAccessibility (selected text ranges, line for index) and AT-SPI (Text) for fields.
-- [ ] `contenteditable` / rich text, and a text field that scales to large documents.
+- [x] A text field that scales to large documents: a textarea's lines are kept from edit to edit (only the paragraphs
+      an edit touches are wrapped again; the line a place is on found by halves). In 20,000 lines (1.3 MB) a key
+      takes 4.7 ms and an arrow 3 ms, from 2 s and 1.6 s.
+- [ ] `contenteditable` / rich text: a caret and a selection in the page's text, typing, deleting and breaking lines in
+      its text nodes, bold and italic, pasting HTML (the clipboard's is there: `cscdViewClipboardHtml`).
 
 ### Conformance
 

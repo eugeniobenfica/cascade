@@ -424,6 +424,7 @@ typedef CSCD_VEC(EditLine) EditLineVec;
 
 /* Lines of a value: one per paragraph, wrapped at spaces to width when wrap is on (out replaced). */
 void editLines(CscdSv text, const CscdFont* f, float width, bool wrap, float letterSpacing, EditLineVec* out);
+void editLinesUncached(CscdSv text, const CscdFont* f, float width, bool wrap, float ls, EditLineVec* out); /* (the tests': each time anew) */
 size_t editLineOf(const EditLineVec* lines, size_t pos);
 /* The position in line closest to x (relative to the line's left edge). */
 size_t editHit(CscdSv text, EditLine line, const CscdFont* f, float x, float letterSpacing);

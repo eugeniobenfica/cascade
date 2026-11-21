@@ -954,6 +954,41 @@ static void testA11yText(void) {
     cscdViewFree(v);
 }
 
+/* A long text's lines, kept from edit to edit (only the paragraphs an edit touches wrapped again): the same lines as
+ * the whole text wrapped anew, after each of many random edits. */
+static void testEditLinesKept(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<textarea id=t style='width:200px;font:14px sans-serif'></textarea>");
+    CscdElement* t = byId(v, "t");
+    const CscdFont font = cscdFontForStyle(t->style);
+    CscdStr text = {0};
+    for (int i = 0; i < 300; ++i) cscdStrAppendC(&text, i % 7 == 3 ? "\n" : "lorem ipsum dolor sit amet ");
+    uint32_t r = 12345;
+    EditLineVec kept = {0}, fresh = {0};
+    bool same = true;
+    for (int round = 0; round < 400 && same; ++round) {
+        r = r * 1103515245u + 12345u;
+        const size_t at = text.len ? (r >> 8) % text.len : 0;
+        const int what = (int)((r >> 4) % 4);
+        if (what == 0) cscdStrInsert(&text, at, CSCD_SV("x"));
+        else if (what == 1) cscdStrInsert(&text, at, CSCD_SV("\n"));
+        else if (what == 2 && text.len > 1) cscdStrErase(&text, at, cscdMinz(3, text.len - at));
+        else cscdStrInsert(&text, at, CSCD_SV("a longer piece of text pasted in "));
+        const bool wrap = round % 5 != 4;
+        editLines(cscdStrSv(&text), &font, 200, wrap, 0, &kept);
+        editLinesUncached(cscdStrSv(&text), &font, 200, wrap, 0, &fresh);
+        same = kept.len == fresh.len && !memcmp(kept.items, fresh.items, kept.len * sizeof *kept.items);
+        if (!same) printf("  edit %d (%d at %zu): %zu lines kept, %zu anew\n", round, what, at, kept.len, fresh.len);
+    }
+    CHECK(same && text.len > 2048);
+    /* the line a place is on */
+    CHECK(fresh.len > 3 && editLineOf(&fresh, fresh.items[3].start) == 3 && editLineOf(&fresh, fresh.items[3].start + 1) == 3);
+    cscdVecFree(&kept);
+    cscdVecFree(&fresh);
+    cscdStrFree(&text);
+    cscdViewFree(v);
+}
+
 static void testMenus(void) {
     CscdView* v = cscdViewNew();
     menuView = v;
@@ -5197,6 +5232,7 @@ int main(void) {
     testBinding();
     testAccessors();
     testMenus();
+    testEditLinesKept();
     testA11yUpdates();
     testA11yText();
     testShortcuts();

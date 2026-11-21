@@ -2,6 +2,7 @@
  * bars, <select> lists), dialogs, popovers, tooltips, drag and drop, splitters, virtual lists, the
  * clipboard from the program, and the line layout and undo of text fields. Touch is touch.c's. */
 #include "view/viewInternal.h"
+#include "core/thread.h"
 #include "text/graphemeInternal.h"
 #include "text/bidiInternal.h"
 
@@ -126,47 +127,133 @@ void openMenuFree(OpenMenu* m) {
 
 /* ---- text field geometry ------------------------------------------------------------------------- */
 
-void editLines(CscdSv text, const CscdFont* f, float width, bool wrap, float ls, EditLineVec* out) {
-    out->len = 0;
-    size_t pos = 0;
-    for (;;) {
-        size_t nl = cscdSvFindChar(text, '\n', pos);
-        size_t pend = nl == CSCD_NPOS ? text.len : nl;
-        if (!wrap || width <= 0) {
-            EditLine l = {pos, pend};
-            cscdVecPush(out, l);
-        } else {
-            size_t start = pos;
-            do {
-                size_t end = pend;
-                if (cscdFontMeasure(cscdSvSub(text, start, pend - start), f, ls, 0) > width) {
-                    size_t lastSpace = CSCD_NPOS;
-                    for (size_t k = start; k < pend;) {
-                        size_t kn = cscdGraphemeNext(text, k); /* (a line never splits a character) */
-                        if (text.ptr[k] == ' ') lastSpace = k;
-                        if (cscdFontMeasure(cscdSvSub(text, start, kn - start), f, ls, 0) > width) {
-                            end = lastSpace != CSCD_NPOS && lastSpace > start ? lastSpace + 1 : cscdMaxz(k, cscdGraphemeNext(text, start));
-                            break;
-                        }
-                        k = kn;
-                    }
+/* the lines of the paragraph [pos, pend) (pend: its line break, or the end), appended */
+static void wrapParagraph(CscdSv text, size_t pos, size_t pend, const CscdFont* f, float width, bool wrap, float ls, EditLineVec* out) {
+    if (!wrap || width <= 0) {
+        EditLine l = {pos, pend};
+        cscdVecPush(out, l);
+        return;
+    }
+    size_t start = pos;
+    do {
+        size_t end = pend;
+        if (cscdFontMeasure(cscdSvSub(text, start, pend - start), f, ls, 0) > width) {
+            size_t lastSpace = CSCD_NPOS;
+            for (size_t k = start; k < pend;) {
+                size_t kn = cscdGraphemeNext(text, k); /* (a line never splits a character) */
+                if (text.ptr[k] == ' ') lastSpace = k;
+                if (cscdFontMeasure(cscdSvSub(text, start, kn - start), f, ls, 0) > width) {
+                    end = lastSpace != CSCD_NPOS && lastSpace > start ? lastSpace + 1 : cscdMaxz(k, cscdGraphemeNext(text, start));
+                    break;
                 }
-                EditLine l = {start, end};
-                cscdVecPush(out, l);
-                start = end;
-            } while (start < pend);
+                k = kn;
+            }
         }
-        if (nl == CSCD_NPOS) break;
+        EditLine l = {start, end};
+        cscdVecPush(out, l);
+        start = end;
+    } while (start < pend);
+}
+
+/* the paragraphs from the one at from to the one that ends at or after to, appended */
+static void wrapParagraphs(CscdSv text, size_t from, size_t to, const CscdFont* f, float width, bool wrap, float ls, EditLineVec* out) {
+    size_t pos = from;
+    for (;;) {
+        const size_t nl = cscdSvFindChar(text, '\n', pos);
+        const size_t pend = nl == CSCD_NPOS ? text.len : nl;
+        wrapParagraph(text, pos, pend, f, width, wrap, ls, out);
+        if (nl == CSCD_NPOS || pend >= to) break;
         pos = nl + 1;
     }
 }
 
+/* The lines a field's text last made, a few of them, by the text and how it was laid out: a frame asks for the same
+ * lines many times (painting, the caret, the keys), and an edit changes a paragraph or two: the lines of the others
+ * are taken from here (a long text is not wrapped again at every key). */
+typedef struct LinesMemo {
+    bool used;
+    CscdStr text;
+    CscdFont font;
+    float width, ls;
+    bool wrap;
+    EditLineVec lines;
+    uint64_t stamp;
+} LinesMemo;
+static CSCD_THREAD_LOCAL LinesMemo linesMemo[4];
+static CSCD_THREAD_LOCAL uint64_t linesStamp;
+
+void editLines(CscdSv text, const CscdFont* f, float width, bool wrap, float ls, EditLineVec* out) {
+    out->len = 0;
+    LinesMemo* near = NULL;
+    for (int i = 0; i < 4; ++i) {
+        LinesMemo* m = &linesMemo[i];
+        if (!m->used || !cscdFontEq(&m->font, f) || m->width != width || m->wrap != wrap || m->ls != ls) continue;
+        if (m->text.len == text.len && (!text.len || !memcmp(m->text.ptr, text.ptr, text.len))) {
+            cscdVecAppend(out, m->lines.items, m->lines.len);
+            m->stamp = ++linesStamp;
+            return;
+        }
+        if (!near || m->stamp > near->stamp) near = m;
+    }
+    if (near && text.len >= 2048) {
+        /* what the edit left alone: the text before it and after it */
+        const CscdSv old = cscdStrSv(&near->text);
+        const size_t most = cscdMinz(old.len, text.len);
+        size_t prefix = 0, suffix = 0;
+        while (prefix < most && old.ptr[prefix] == text.ptr[prefix]) ++prefix;
+        while (suffix < most - prefix && old.ptr[old.len - 1 - suffix] == text.ptr[text.len - 1 - suffix]) ++suffix;
+        /* (the paragraph the edit starts in, from its start; to the end of the one it ends in) */
+        size_t from = prefix;
+        while (from > 0 && text.ptr[from - 1] != '\n') --from;
+        const size_t changedEnd = text.len - suffix;
+        size_t to = cscdSvFindChar(text, '\n', changedEnd);
+        if (to == CSCD_NPOS) to = text.len;
+        const ptrdiff_t delta = (ptrdiff_t)text.len - (ptrdiff_t)old.len;
+        const size_t oldTo = (size_t)((ptrdiff_t)to - delta);
+        size_t k = 0;
+        for (; k < near->lines.len && near->lines.items[k].start < from; ++k) cscdVecPush(out, near->lines.items[k]);
+        wrapParagraphs(text, from, to, f, width, wrap, ls, out);
+        if (to < text.len) {
+            while (k < near->lines.len && near->lines.items[k].start <= oldTo) ++k;
+            for (; k < near->lines.len; ++k) {
+                EditLine l = near->lines.items[k];
+                l.start = (size_t)((ptrdiff_t)l.start + delta);
+                l.end = (size_t)((ptrdiff_t)l.end + delta);
+                cscdVecPush(out, l);
+            }
+        }
+    } else {
+        wrapParagraphs(text, 0, text.len, f, width, wrap, ls, out);
+    }
+    /* (kept in the slot used longest ago) */
+    LinesMemo* slot = &linesMemo[0];
+    for (int i = 1; i < 4; ++i)
+        if (!linesMemo[i].used || (slot->used && linesMemo[i].stamp < slot->stamp)) slot = &linesMemo[i];
+    slot->used = true;
+    cscdStrSet(&slot->text, text);
+    slot->font = *f;
+    slot->width = width;
+    slot->ls = ls;
+    slot->wrap = wrap;
+    slot->lines.len = 0;
+    cscdVecAppend(&slot->lines, out->items, out->len);
+    slot->stamp = ++linesStamp;
+}
+
+void editLinesUncached(CscdSv text, const CscdFont* f, float width, bool wrap, float ls, EditLineVec* out) {
+    out->len = 0;
+    wrapParagraphs(text, 0, text.len, f, width, wrap, ls, out);
+}
+
 size_t editLineOf(const EditLineVec* lines, size_t pos) {
-    size_t best = 0;
-    for (size_t i = 0; i < lines->len; ++i)
-        if (lines->items[i].start <= pos) best = i;
-        else break;
-    return best;
+    /* (the last line starting at or before pos) */
+    size_t lo = 0, hi = lines->len;
+    while (hi - lo > 1) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (lines->items[mid].start <= pos) lo = mid;
+        else hi = mid;
+    }
+    return lo;
 }
 
 size_t editHit(CscdSv text, EditLine line, const CscdFont* f, float x, float ls) {
