@@ -793,7 +793,6 @@ static void run(const CscdFontFace* face, bool gpos, uint32_t script, CscdOtBuff
     const uint32_t table = gpos ? m->gpos : m->gsub;
     if (!table || !buf->len) return;
     const PlanLookupVec* plan = planFor(face, table, script, feats, n);
-    size_t work = cscdMaxz(buf->len * WORK_PER_GLYPH, MIN_WORK);
     /* how long it may grow: from the text it came from (its clusters' span), not from its length now, which the runs
      * before this one may have made longer (one run after another, each 64 times the last, made millions) */
     uint32_t lo = UINT32_MAX, hi = 0;
@@ -802,25 +801,26 @@ static void run(const CscdFontFace* face, bool gpos, uint32_t script, CscdOtBuff
         if (buf->items[i].cluster > hi) hi = buf->items[i].cluster;
     }
     const size_t span = (size_t)(hi - lo) + 1;
+    size_t work = cscdMaxz(span * WORK_PER_GLYPH, MIN_WORK); /* (so is the work: the text's, not what earlier runs made of it) */
     Ctx c = {face, m, m->base, table + u16(m->base + table + 8), gpos, buf, 0, 0, 1, 0, cscdMaxz(span * MAX_GROWTH, MIN_MAX_GLYPHS), &work};
     c.rtl = rtl;
     for (size_t i = 0; i < buf->len; ++i) if (!buf->items[i].gclass) refreshClass(&c, &buf->items[i]);
     if (gpos)
         for (size_t i = 0; i < buf->len; ++i) buf->items[i].cursive = 0;
-    for (size_t l = 0; l < plan->len; ++l) {
+    for (size_t l = 0; l < plan->len && work; ++l) { /* (the work spent: the rest of the lookups left out) */
         const PlanLookup* pl = &plan->items[l];
         const uint32_t lk = lookupOffset(&c, pl->index);
         if (!lk) continue;
         c.value = pl->value;
         c.depth = 0;
         if (!gpos && u16(m->base + lk) == 8) { /* reverse chaining: from the end */
-            for (size_t i = buf->len; i-- > 0;) {
+            for (size_t i = buf->len; i-- > 0 && work;) {
                 size_t next;
                 if (buf->items[i].mask & pl->mask) applyAt(&c, pl->index, i, &next);
             }
             continue;
         }
-        for (size_t i = 0; i < buf->len;) {
+        for (size_t i = 0; i < buf->len && work;) {
             size_t next = i + 1;
             if ((buf->items[i].mask & pl->mask) && applyAt(&c, pl->index, i, &next)) i = next > i ? next : i + 1;
             else ++i;
