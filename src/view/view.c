@@ -249,6 +249,7 @@ void cscdViewFree(CscdView* v) {
     viewUnhookDocument(v);
     viewClearMenus(v);
     viewPopupsFree(v);
+    viewShortcutsFree(v);
     cscdVecFree(&v->menus);
     cscdVecFree(&v->menuBar);
     clearTimers(v);
@@ -792,13 +793,30 @@ void cscdViewOnNodeRemoved(CscdView* v, CscdNodeFn fn, void* user) { v->onNodeRe
 void cscdViewOnDocumentReplaced(CscdView* v, CscdActionFn fn, void* user) { v->onDocumentReplaced = fn; v->onDocumentReplacedUser = user; }
 void cscdViewOnInvalidate(CscdView* v, CscdActionFn fn, void* user) { v->onInvalidate = fn; v->onInvalidateUser = user; }
 void cscdViewOnMenuItem(CscdView* v, CscdMenuItemFn fn, void* user) { v->onMenuItem = fn; v->onMenuItemUser = user; }
+void cscdViewSetClipboard(CscdView* v, const CscdClipboardHooks* h) {
+    CscdClipboardHooks none;
+    memset(&none, 0, sizeof none);
+    if (!h) h = &none;
+    v->setClipboard = h->setText;
+    v->getClipboard = h->getText;
+    v->setClipboardHtml = h->setHtml;
+    v->getClipboardHtml = h->getHtml;
+    v->setClipboardImage = h->setImage;
+    v->getClipboardImage = h->getImage;
+    v->setClipboardFiles = h->setFiles;
+    v->getClipboardFiles = h->getFiles;
+    v->clipboardUser = h->user;
+}
 void cscdViewSetClipboardHooks(CscdView* v, CscdSetClipboardFn set, CscdGetClipboardFn get, CscdSetClipboardImageFn setImage,
                              CscdGetClipboardFilesFn getFiles, void* user) {
-    v->setClipboard = set;
-    v->getClipboard = get;
-    v->setClipboardImage = setImage;
-    v->getClipboardFiles = getFiles;
-    v->clipboardUser = user;
+    CscdClipboardHooks h;
+    memset(&h, 0, sizeof h);
+    h.setText = set;
+    h.getText = get;
+    h.setImage = setImage;
+    h.getFiles = getFiles;
+    h.user = user;
+    cscdViewSetClipboard(v, &h);
 }
 CscdDocument* cscdViewDocument(CscdView* v) { return v->doc; }
 CscdElement* cscdViewGetElementById(CscdView* v, CscdSv id) { return cscdDocumentGetElementById(v->doc, id); }

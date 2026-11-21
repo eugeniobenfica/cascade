@@ -407,6 +407,7 @@ void cscdViewMouseUp(CscdView* v, float x, float y, int button, CscdModifiers m)
     v->selecting = false;
     if (v->splitter) { viewSplitterUp(v); viewSetActive(v, NULL); v->pressed = NULL; return; }
     if (v->dragActive) {
+        if (v->dragOut) return; /* (the system's drag: it says how it ended) */
         if (!v->dragExternal) viewEndDrag(v, true);
         viewSetActive(v, NULL);
         v->pressed = NULL;

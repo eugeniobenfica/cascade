@@ -16,6 +16,7 @@
 #include <imm.h>
 #include <ole2.h>
 #include <shellapi.h>
+#include <shlobj.h> /* (DROPFILES) */
 #include <winreg.h>
 
 #include <ctype.h>
@@ -389,6 +390,226 @@ static void clipGetFiles(void* user, CscdStrVec* out) {
     CloseClipboard();
 }
 
+/* bytes as a clipboard format (the clipboard open, emptied) */
+static void putFormat(UINT format, const void* data, size_t bytes) {
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!mem) return;
+    memcpy(GlobalLock(mem), data, bytes);
+    GlobalUnlock(mem);
+    if (!SetClipboardData(format, mem)) GlobalFree(mem);
+}
+
+static void putUnicode(CscdSv text) {
+    wchar_t* wide = widen(text.ptr ? text.ptr : "", (int)text.len);
+    putFormat(CF_UNICODETEXT, wide, (wcslen(wide) + 1) * sizeof(wchar_t));
+    cscdFree(wide);
+}
+
+static UINT htmlFormat(void) {
+    static UINT f;
+    if (!f) f = RegisterClipboardFormatW(L"HTML Format");
+    return f;
+}
+
+/* CF_HTML: a header of byte offsets, then the fragment inside a document; and the text, for those who read text */
+static void clipSetHtml(void* user, CscdSv html, CscdSv text) {
+    CscdWindow* w = (CscdWindow*)user;
+    if (!OpenClipboard((HWND)w->hwnd)) return;
+    EmptyClipboard();
+    static const char before[] = "<html><body>\r\n<!--StartFragment-->", after[] = "<!--EndFragment-->\r\n</body></html>";
+    static const char head[] = "Version:0.9\r\nStartHTML:%010u\r\nEndHTML:%010u\r\nStartFragment:%010u\r\nEndFragment:%010u\r\n";
+    char header[160];
+    const unsigned headLen = (unsigned)snprintf(header, sizeof header, head, 0u, 0u, 0u, 0u);
+    const unsigned startFragment = headLen + (unsigned)(sizeof before - 1), endFragment = startFragment + (unsigned)html.len;
+    const unsigned endHtml = endFragment + (unsigned)(sizeof after - 1);
+    snprintf(header, sizeof header, head, headLen, endHtml, startFragment, endFragment);
+    CscdStr all = {0};
+    cscdStrAppendC(&all, header);
+    cscdStrAppendC(&all, before);
+    cscdStrAppend(&all, html);
+    cscdStrAppendC(&all, after);
+    putFormat(htmlFormat(), cscdStrC(&all), all.len + 1);
+    cscdStrFree(&all);
+    putUnicode(text);
+    CloseClipboard();
+}
+
+static unsigned headerNumber(CscdSv s, const char* key) {
+    const size_t at = cscdSvFind(s, cscdSv(key), 0);
+    if (at == CSCD_NPOS) return 0;
+    unsigned v = 0;
+    for (size_t i = at + strlen(key); i < s.len && s.ptr[i] >= '0' && s.ptr[i] <= '9'; ++i) v = v * 10 + (unsigned)(s.ptr[i] - '0');
+    return v;
+}
+
+static void clipGetHtml(void* user, CscdStr* out) {
+    CscdWindow* w = (CscdWindow*)user;
+    if (!OpenClipboard((HWND)w->hwnd)) return;
+    HANDLE h = GetClipboardData(htmlFormat());
+    if (h) {
+        const char* p = (const char*)GlobalLock(h);
+        if (p) {
+            const CscdSv s = cscdSvMake(p, strnlen(p, GlobalSize(h)));
+            const unsigned a = headerNumber(s, "StartFragment:"), z = headerNumber(s, "EndFragment:");
+            if (a < z && z <= s.len) {
+                CscdStr frag = {0};
+                cscdStrAppend(&frag, cscdSvSub(s, a, z - a));
+                removeCR(&frag);
+                cscdStrAppend(out, cscdStrSv(&frag));
+                cscdStrFree(&frag);
+            }
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+}
+
+/* CF_DIB: 32 bits (alpha when it has some) or 24, top-down or bottom-up, as premultiplied BGRA */
+static bool clipGetImage(void* user, CscdImage* out) {
+    CscdWindow* w = (CscdWindow*)user;
+    if (!OpenClipboard((HWND)w->hwnd)) return false;
+    bool ok = false;
+    HANDLE h = GetClipboardData(CF_DIB);
+    const BITMAPINFOHEADER* bi = h ? (const BITMAPINFOHEADER*)GlobalLock(h) : NULL;
+    if (bi) {
+        const SIZE_T size = GlobalSize(h);
+        const int width = bi->biWidth, height = bi->biHeight < 0 ? -bi->biHeight : bi->biHeight, bpp = bi->biBitCount;
+        const bool topDown = bi->biHeight < 0;
+        size_t offset = bi->biSize + (bi->biCompression == BI_BITFIELDS && bi->biSize == sizeof(BITMAPINFOHEADER) ? 12 : 0);
+        if (bpp <= 8) offset += (size_t)(bi->biClrUsed ? bi->biClrUsed : (1u << bpp)) * 4;
+        const size_t stride = (((size_t)width * (size_t)bpp + 31) / 32) * 4;
+        if (width > 0 && height > 0 && width <= 1 << 15 && height <= 1 << 15 && (bpp == 32 || bpp == 24) &&
+            (bi->biCompression == BI_RGB || bi->biCompression == BI_BITFIELDS) && offset + stride * (size_t)height <= size) {
+            const uint8_t* bits = (const uint8_t*)bi + offset;
+            bool anyAlpha = false;
+            if (bpp == 32)
+                for (int y = 0; y < height && !anyAlpha; ++y)
+                    for (int x = 0; x < width; ++x) if (bits[(size_t)y * stride + (size_t)x * 4 + 3]) { anyAlpha = true; break; }
+            cscdImageInit(out, width, height);
+            for (int y = 0; y < height; ++y) {
+                const uint8_t* row = bits + (size_t)(topDown ? y : height - 1 - y) * stride;
+                uint32_t* to = cscdImageRow(out, y);
+                for (int x = 0; x < width; ++x) {
+                    const uint8_t* p = row + (size_t)x * (size_t)(bpp / 8);
+                    const uint32_t a = bpp == 32 && anyAlpha ? p[3] : 255;
+                    to[x] = (a << 24) | ((uint32_t)p[2] * a / 255 << 16) | ((uint32_t)p[1] * a / 255 << 8) | ((uint32_t)p[0] * a / 255);
+                }
+            }
+            ok = true;
+        }
+        GlobalUnlock(h);
+    }
+    CloseClipboard();
+    return ok;
+}
+
+/* CF_HDROP's bytes: a DROPFILES, then the paths (UTF-16, each ended, the list ended) */
+static uint8_t* hdropOf(const CscdStrVec* paths, size_t* outBytes) {
+    size_t chars = 1;
+    wchar_t** wide = (wchar_t**)cscdCalloc(paths->len, sizeof(wchar_t*));
+    for (size_t i = 0; i < paths->len; ++i) {
+        wide[i] = widen(cscdStrC(&paths->items[i]), (int)paths->items[i].len);
+        for (wchar_t* c = wide[i]; *c; ++c) if (*c == L'/') *c = L'\\';
+        chars += wcslen(wide[i]) + 1;
+    }
+    const size_t bytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+    uint8_t* data = (uint8_t*)cscdCalloc(1, bytes);
+    DROPFILES* df = (DROPFILES*)data;
+    df->pFiles = sizeof(DROPFILES);
+    df->fWide = TRUE;
+    wchar_t* at = (wchar_t*)(data + sizeof(DROPFILES));
+    for (size_t i = 0; i < paths->len; ++i) {
+        const size_t n = wcslen(wide[i]) + 1;
+        memcpy(at, wide[i], n * sizeof(wchar_t));
+        at += n;
+        cscdFree(wide[i]);
+    }
+    *at = 0;
+    cscdFree(wide);
+    *outBytes = bytes;
+    return data;
+}
+
+/* CF_HDROP, as Explorer copies files */
+static void clipSetFiles(void* user, const CscdStrVec* paths) {
+    CscdWindow* w = (CscdWindow*)user;
+    if (!OpenClipboard((HWND)w->hwnd)) return;
+    EmptyClipboard();
+    size_t bytes;
+    uint8_t* data = hdropOf(paths, &bytes);
+    putFormat(CF_HDROP, data, bytes);
+    cscdFree(data);
+    CloseClipboard();
+}
+
+/* ---- drags out to other apps: OLE's DoDragDrop, with a shell data object (text, files) ---------------------- */
+
+typedef struct DropSource { IDropSource iface; LONG refs; } DropSource;
+
+static HRESULT STDMETHODCALLTYPE dsQueryInterface(IDropSource* self, REFIID riid, void** out) {
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropSource)) {
+        *out = self;
+        self->lpVtbl->AddRef(self);
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE dsAddRef(IDropSource* self) { return (ULONG)InterlockedIncrement(&((DropSource*)self)->refs); }
+static ULONG STDMETHODCALLTYPE dsRelease(IDropSource* self) { return (ULONG)InterlockedDecrement(&((DropSource*)self)->refs); } /* (on the stack) */
+static HRESULT STDMETHODCALLTYPE dsQueryContinueDrag(IDropSource* self, BOOL escape, DWORD keys) {
+    (void)self;
+    if (escape) return DRAGDROP_S_CANCEL;
+    return (keys & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) ? S_OK : DRAGDROP_S_DROP;
+}
+static HRESULT STDMETHODCALLTYPE dsGiveFeedback(IDropSource* self, DWORD effect) {
+    (void)self; (void)effect;
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+}
+static IDropSourceVtbl dropSourceVtbl = {dsQueryInterface, dsAddRef, dsRelease, dsQueryContinueDrag, dsGiveFeedback};
+
+static void setDataFormat(IDataObject* obj, CLIPFORMAT format, const void* bytes, size_t n) {
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, n);
+    if (!mem) return;
+    memcpy(GlobalLock(mem), bytes, n);
+    GlobalUnlock(mem);
+    FORMATETC fe = {format, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    STGMEDIUM sm;
+    memset(&sm, 0, sizeof sm);
+    sm.tymed = TYMED_HGLOBAL;
+    sm.hGlobal = mem;
+    if (FAILED(obj->lpVtbl->SetData(obj, &fe, &sm, TRUE))) GlobalFree(mem);
+}
+
+static bool dragOut(void* user, const CscdDataTransfer* dt) {
+    CscdWindow* w = (CscdWindow*)user;
+    IDataObject* obj = NULL;
+    if (FAILED(SHCreateDataObject(NULL, 0, NULL, NULL, &IID_IDataObject, (void**)&obj)) || !obj) return false;
+    const CscdSv text = cscdDataTransferGetData(dt, CSCD_SV("text/plain"));
+    if (text.len) {
+        wchar_t* wide = widen(text.ptr, (int)text.len);
+        setDataFormat(obj, CF_UNICODETEXT, wide, (wcslen(wide) + 1) * sizeof(wchar_t));
+        cscdFree(wide);
+    }
+    if (dt->files.len) {
+        size_t bytes;
+        uint8_t* data = hdropOf(&dt->files, &bytes);
+        setDataFormat(obj, CF_HDROP, data, bytes);
+        cscdFree(data);
+    }
+    const bool copy = cscdStrEqC(&dt->effectAllowed, "copy"), move = cscdStrEqC(&dt->effectAllowed, "move"), link = cscdStrEqC(&dt->effectAllowed, "link");
+    const DWORD allowed = copy ? DROPEFFECT_COPY : move ? DROPEFFECT_MOVE : link ? DROPEFFECT_LINK : DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+    DropSource source = {{&dropSourceVtbl}, 1};
+    DWORD effect = DROPEFFECT_NONE;
+    ReleaseCapture();
+    /* (its own loop, until the button goes up: then the view hears how it ended) */
+    const HRESULT hr = DoDragDrop(obj, &source.iface, allowed, &effect);
+    obj->lpVtbl->Release(obj);
+    const char* how = hr != DRAGDROP_S_DROP ? "none" : (effect & DROPEFFECT_MOVE) ? "move" : (effect & DROPEFFECT_COPY) ? "copy" : (effect & DROPEFFECT_LINK) ? "link" : "none";
+    if (w->view) cscdViewDragOutEnded(w->view, cscdSv(how));
+    return true;
+}
+
 /* ---- the window ------------------------------------------------------------------------------------- */
 
 static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -444,7 +665,9 @@ void windowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
     w->clientH = cr.bottom;
     w->presenter = windowPresenterNew(w, hwnd, opts->backend, w->clientW, w->clientH);
     cscdViewSetViewport(w->view, w->clientW / w->dpr, w->clientH / w->dpr, w->dpr);
-    cscdViewSetClipboardHooks(w->view, clipSetText, clipGetText, clipSetImage, clipGetFiles, w);
+    const CscdClipboardHooks clip = {clipSetText, clipGetText, clipSetHtml, clipGetHtml, clipSetImage, clipGetImage, clipSetFiles, clipGetFiles, w};
+    cscdViewSetClipboard(w->view, &clip);
+    cscdViewOnDragOut(w->view, dragOut, w);
     readPreferences(w);
     winA11yAttach(w);
     /* files and text dragged in from other apps */

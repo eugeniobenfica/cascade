@@ -230,13 +230,37 @@ static const struct wl_message toplevelDecorationRequests[] = {{"destroy", "", x
 static const struct wl_message toplevelDecorationEvents[] = {{"configure", "u", xdgTypes}};
 const struct wl_interface zxdg_toplevel_decoration_v1_interface = {"zxdg_toplevel_decoration_v1", 1, 3, toplevelDecorationRequests, 1, toplevelDecorationEvents};
 
+/* ---- text-input-unstable-v3: the compositor's input methods (compose a word, pick it) ---------------------- */
+
+extern const struct wl_interface zwp_text_input_manager_v3_interface, zwp_text_input_v3_interface;
+
+static const struct wl_interface* textInputTypes[] = {
+    NULL, NULL, NULL, NULL,                                  /* 0: four plain arguments */
+    &zwp_text_input_v3_interface, NULL /* wl_seat */,        /* 4: get_text_input */
+    NULL /* wl_surface */,                                   /* 6: enter, leave */
+};
+static const struct wl_message textInputManagerRequests[] = {{"destroy", "", textInputTypes}, {"get_text_input", "no", textInputTypes + 4}};
+const struct wl_interface zwp_text_input_manager_v3_interface = {"zwp_text_input_manager_v3", 1, 2, textInputManagerRequests, 0, NULL};
+static const struct wl_message textInputRequests[] = {
+    {"destroy", "", textInputTypes}, {"enable", "", textInputTypes}, {"disable", "", textInputTypes},
+    {"set_surrounding_text", "sii", textInputTypes}, {"set_text_change_cause", "u", textInputTypes}, {"set_content_type", "uu", textInputTypes},
+    {"set_cursor_rectangle", "iiii", textInputTypes}, {"commit", "", textInputTypes}};
+static const struct wl_message textInputEvents[] = {
+    {"enter", "o", textInputTypes + 6}, {"leave", "o", textInputTypes + 6}, {"preedit_string", "?sii", textInputTypes},
+    {"commit_string", "?s", textInputTypes}, {"delete_surrounding_text", "uu", textInputTypes}, {"done", "u", textInputTypes}};
+const struct wl_interface zwp_text_input_v3_interface = {"zwp_text_input_v3", 1, 8, textInputRequests, 6, textInputEvents};
+
 static void fillXdgTypes(void) {
+    textInputTypes[5] = W.seat;
+    textInputTypes[6] = W.surface;
     xdgTypes[6] = W.surface;
     xdgTypes[12] = xdgTypes[16] = xdgTypes[18] = xdgTypes[24] = W.seat;
     xdgTypes[21] = W.output;
 }
 
 /* opcodes */
+enum { TIM_DESTROY = 0, TIM_GET_TEXT_INPUT = 1, TI_DESTROY = 0, TI_ENABLE = 1, TI_DISABLE = 2, TI_SET_CONTENT_TYPE = 5,
+       TI_SET_CURSOR_RECTANGLE = 6, TI_COMMIT = 7 };
 enum { REGISTRY_BIND = 0, COMPOSITOR_CREATE_SURFACE = 0, SUBCOMPOSITOR_GET_SUBSURFACE = 1, SUBSURFACE_DESTROY = 0, SUBSURFACE_SET_POSITION = 1,
        SUBSURFACE_SET_DESYNC = 5, SURFACE_DESTROY = 0, SURFACE_ATTACH = 1, SURFACE_DAMAGE = 2, SURFACE_COMMIT = 6, SURFACE_SET_BUFFER_SCALE = 8,
        SURFACE_DAMAGE_BUFFER = 9, SHM_CREATE_POOL = 0, SHM_POOL_CREATE_BUFFER = 0, SHM_POOL_DESTROY = 1, BUFFER_DESTROY = 0,
@@ -302,11 +326,19 @@ struct CscdWindowNative {
     CscdCursor shown;
     int frameCursor; /* the frame's resize cursor shown instead (-1: none) */
     bool cursorShown;
+    /* the input method (text-input-v3): the manager, ours, whether the compositor gave it our surface and we enabled
+     * it, the commits sent, and what the next done applies */
+    void *textInputManager, *textInput;
+    bool textInputFocus, textInputEnabled;
+    uint32_t textInputCommits;
+    CscdRect textInputRect; /* (as last told) */
+    CscdStr pendingPreedit, pendingCommit;
+    bool pendingHasCommit;
     /* the clipboard */
     void* selectionOffer;
     CscdStrVec selectionTypes;
     void* ownSource;
-    CscdStr clipText;
+    ClipData clip; /* (what ownSource offers) */
     /* a drag from another app */
     void* dragOffer;
     CscdStrVec dragTypes;
@@ -1149,13 +1181,14 @@ static const struct {
     void (*selection)(void*, void*, void*);
 } dataDeviceListener = {devDataOffer, devEnter, devLeave, devMotion, devDrop, devSelection};
 
-/* our selection: its text written to whoever asks */
+/* our selection: the format asked for written to whoever asks */
 static void sourceTarget(void* d, void* s, const char* mime) { (void)d; (void)s; (void)mime; }
 static void sourceSend(void* d, void* s, const char* mime, int32_t fd) {
-    (void)s; (void)mime;
+    (void)s;
     CscdWindowNative* n = (CscdWindowNative*)d;
-    for (size_t at = 0; at < n->clipText.len;) {
-        const ssize_t put = write(fd, n->clipText.ptr + at, n->clipText.len - at);
+    const ClipFormat* f = mime ? clipDataFind(&n->clip, mime) : NULL;
+    for (size_t at = 0; f && at < f->data.len;) {
+        const ssize_t put = write(fd, f->data.items + at, f->data.len - at);
         if (put <= 0) break;
         at += (size_t)put;
     }
@@ -1177,53 +1210,151 @@ static const struct {
     void (*action)(void*, void*, uint32_t);
 } sourceListener = {sourceTarget, sourceSend, sourceCancelled, sourceDummy, sourceDummy, sourceAction};
 
-static void clipSetText(void* user, CscdSv text) {
-    CscdWindowNative* n = ((CscdWindow*)user)->native;
+/* offers what n->clip holds as the selection */
+static void offerClip(CscdWindowNative* n) {
     if (!n->dataDevice) return;
-    cscdStrSet(&n->clipText, text);
     void* source = WL_NEW(n->dataDeviceManager, DDM_CREATE_DATA_SOURCE, W.dataSource, NULL);
     WL_LISTEN(source, &sourceListener, n);
-    WL_CALL(source, DATA_SOURCE_OFFER, "text/plain;charset=utf-8");
-    WL_CALL(source, DATA_SOURCE_OFFER, "UTF8_STRING");
-    WL_CALL(source, DATA_SOURCE_OFFER, "text/plain");
+    for (size_t i = 0; i < n->clip.len; ++i) WL_CALL(source, DATA_SOURCE_OFFER, cscdStrC(&n->clip.items[i].mime));
     WL_CALL(n->dataDevice, DATA_DEVICE_SET_SELECTION, source, n->inputSerial);
     n->ownSource = source;
     W.displayFlush(n->dpy);
 }
 
-static void clipGetText(void* user, CscdStr* out) {
+static void clipSetText(void* user, CscdSv text) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
-    if (n->ownSource) { cscdStrAppend(out, cscdStrSv(&n->clipText)); return; }
-    if (!n->selectionOffer) return;
-    const char* types[] = {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"};
-    for (size_t i = 0; i < CSCD_COUNT(types); ++i)
-        if (hasType(&n->selectionTypes, types[i])) {
-            CscdStr s = {0};
-            receive(n, n->selectionOffer, types[i], &s);
-            for (size_t k = 0; k < s.len; ++k) if (s.ptr[k] != '\r') cscdStrAppendChar(out, s.ptr[k]);
-            cscdStrFree(&s);
-            return;
-        }
+    clipDataSetText(&n->clip, text);
+    offerClip(n);
 }
 
-static void clipSetImage(void* user, const CscdImage* img) { (void)user; (void)img; } /* (images: text only on Wayland so far) */
+static void clipSetHtml(void* user, CscdSv html, CscdSv text) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    clipDataSetHtml(&n->clip, html, text);
+    offerClip(n);
+}
+
+static void clipSetImage(void* user, const CscdImage* img) {
+    if (img->width <= 0 || img->height <= 0) return;
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    clipDataSetImage(&n->clip, img);
+    offerClip(n);
+}
+
+static void clipSetFiles(void* user, const CscdStrVec* paths) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    clipDataSetFiles(&n->clip, paths);
+    offerClip(n);
+}
+
+/* the selection's mime: ours when we offer it, else read from the offer (false: it has none) */
+static bool clipRead(CscdWindowNative* n, const char* mime, CscdStr* out) {
+    if (n->ownSource) {
+        const ClipFormat* f = clipDataFind(&n->clip, mime);
+        if (!f) return false;
+        cscdStrAppend(out, cscdSvMake((const char*)f->data.items, f->data.len));
+        return true;
+    }
+    return n->selectionOffer && hasType(&n->selectionTypes, mime) && receive(n, n->selectionOffer, mime, out);
+}
+
+static void clipGetText(void* user, CscdStr* out) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    const char* types[] = {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"};
+    for (size_t i = 0; i < CSCD_COUNT(types); ++i) {
+        CscdStr s = {0};
+        const bool got = clipRead(n, types[i], &s);
+        for (size_t k = 0; k < s.len; ++k) if (s.ptr[k] != '\r') cscdStrAppendChar(out, s.ptr[k]);
+        cscdStrFree(&s);
+        if (got) return;
+    }
+}
+
+static void clipGetHtml(void* user, CscdStr* out) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    CscdStr s = {0};
+    if (clipRead(n, "text/html", &s))
+        for (size_t k = 0; k < s.len; ++k) if (s.ptr[k] != '\r') cscdStrAppendChar(out, s.ptr[k]);
+    cscdStrFree(&s);
+}
+
+static bool clipGetImage(void* user, CscdImage* out) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    CscdStr s = {0};
+    bool ok = false;
+    if (clipRead(n, "image/png", &s)) {
+        CscdImage* img = cscdDecodeImage((const uint8_t*)s.ptr, s.len);
+        if (img && img->width > 0 && img->height > 0) {
+            cscdImageInit(out, img->width, img->height);
+            memcpy(out->pixels, img->pixels, (size_t)img->width * (size_t)img->height * 4);
+            ok = true;
+        }
+        cscdRelease(img);
+    }
+    cscdStrFree(&s);
+    return ok;
+}
 
 static void clipGetFiles(void* user, CscdStrVec* out) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
-    if (n->ownSource || !n->selectionOffer || !hasType(&n->selectionTypes, "text/uri-list")) return;
     CscdStr s = {0};
-    receive(n, n->selectionOffer, "text/uri-list", &s);
-    size_t start = 0;
-    while (start < s.len) {
-        size_t end = cscdSvFindChar(cscdStrSv(&s), '\n', start);
-        if (end == CSCD_NPOS) end = s.len;
-        CscdSv line = cscdSvSub(cscdStrSv(&s), start, end - start);
-        start = end + 1;
-        while (line.len && line.ptr[line.len - 1] == '\r') --line.len;
-        if (cscdSvStartsC(line, "file://") && cscdSvFindChar(line, '/', 7) != CSCD_NPOS) cscdVecPush(out, cscdStrDup(cscdSvFrom(line, cscdSvFindChar(line, '/', 7))));
-    }
+    if (clipRead(n, "text/uri-list", &s)) clipFilePaths(cscdStrSv(&s), out);
     cscdStrFree(&s);
 }
+
+/* ---- the input method's events: what it composes and what it commits, applied at done ---- */
+
+static void tiEnter(void* d, void* ti, void* surface) {
+    (void)ti;
+    CscdWindowNative* n = (CscdWindowNative*)d;
+    n->textInputFocus = surface == n->surface;
+    n->textInputEnabled = false; /* (enabled again for the focused field, if there is one) */
+    if (n->textInputFocus) wlWindowPlaceInputMethod(n->w);
+}
+static void tiLeave(void* d, void* ti, void* surface) {
+    (void)ti; (void)surface;
+    CscdWindowNative* n = (CscdWindowNative*)d;
+    if (n->textInputEnabled) {
+        WL_CALL0(n->textInput, TI_DISABLE);
+        WL_CALL0(n->textInput, TI_COMMIT);
+        ++n->textInputCommits;
+    }
+    n->textInputFocus = n->textInputEnabled = false;
+    cscdViewSetComposition(n->w->view, CSCD_SV(""));
+}
+static void tiPreedit(void* d, void* ti, const char* text, int32_t begin, int32_t end) {
+    (void)ti; (void)begin; (void)end;
+    cscdStrSetC(&((CscdWindowNative*)d)->pendingPreedit, text ? text : "");
+}
+static void tiCommit(void* d, void* ti, const char* text) {
+    (void)ti;
+    CscdWindowNative* n = (CscdWindowNative*)d;
+    cscdStrSetC(&n->pendingCommit, text ? text : "");
+    n->pendingHasCommit = true;
+}
+static void tiDelete(void* d, void* ti, uint32_t before, uint32_t after) { (void)d; (void)ti; (void)before; (void)after; } /* (we send no surrounding text) */
+static void tiDone(void* d, void* ti, uint32_t serial) {
+    (void)ti; (void)serial; /* (applied whatever the serial: the protocol asks it) */
+    CscdWindowNative* n = (CscdWindowNative*)d;
+    CscdView* view = n->w->view;
+    /* the composition goes, the committed text goes in, then the new composition */
+    if (n->pendingHasCommit) {
+        cscdViewSetComposition(view, CSCD_SV(""));
+        if (n->pendingCommit.len) cscdViewTextInput(view, cscdStrSv(&n->pendingCommit));
+    }
+    cscdViewSetComposition(view, cscdStrSv(&n->pendingPreedit));
+    cscdStrClear(&n->pendingPreedit);
+    cscdStrClear(&n->pendingCommit);
+    n->pendingHasCommit = false;
+    wlWindowPlaceInputMethod(n->w); /* (the caret moved) */
+}
+static const struct {
+    void (*enter)(void*, void*, void*);
+    void (*leave)(void*, void*, void*);
+    void (*preedit)(void*, void*, const char*, int32_t, int32_t);
+    void (*commit)(void*, void*, const char*);
+    void (*deleteSurrounding)(void*, void*, uint32_t, uint32_t);
+    void (*done)(void*, void*, uint32_t);
+} textInputListener = {tiEnter, tiLeave, tiPreedit, tiCommit, tiDelete, tiDone};
 
 /* ---- the registry ---- */
 
@@ -1241,6 +1372,8 @@ static void registryGlobal(void* d, void* registry, uint32_t name, const char* i
     else if (!strcmp(iface, "wl_seat") && !n->seat) {
         n->seat = BIND(W.seat, cscdMini((int)version, 5));
         WL_LISTEN(n->seat, &seatListener, n);
+    } else if (!strcmp(iface, "zwp_text_input_manager_v3")) {
+        n->textInputManager = BIND(&zwp_text_input_manager_v3_interface, 1);
     } else if (!strcmp(iface, "wl_data_device_manager") && W.dataDeviceManager) n->dataDeviceManager = BIND(W.dataDeviceManager, cscdMini((int)version, 3));
     else if (!strcmp(iface, "wl_output") && n->outputCount < MAX_OUTPUTS) {
         Output* o = &n->outputs[n->outputCount++];
@@ -1296,6 +1429,8 @@ void wlWindowDestroyNative(CscdWindow* w) {
         if (n->xkbState) W.xkbStateUnref(n->xkbState);
         if (n->xkbKeymap) W.xkbKeymapUnref(n->xkbKeymap);
         if (n->xkbContext) W.xkbContextUnref(n->xkbContext);
+        WL_DESTROY(n->textInput, TI_DESTROY);
+        WL_DESTROY(n->textInputManager, TIM_DESTROY);
         W.displayFlush(n->dpy);
         W.displayDisconnect(n->dpy);
     }
@@ -1305,7 +1440,9 @@ void wlWindowDestroyNative(CscdWindow* w) {
     for (size_t i = 0; i < n->offerTypes.len; ++i) { cscdStrVecFree(n->offerTypes.items[i]); cscdFree(n->offerTypes.items[i]); }
     cscdVecFree(&n->offers);
     cscdVecFree(&n->offerTypes);
-    cscdStrFree(&n->clipText);
+    clipDataFree(&n->clip);
+    cscdStrFree(&n->pendingPreedit);
+    cscdStrFree(&n->pendingCommit);
     cscdFree(n);
     w->native = NULL;
 }
@@ -1334,6 +1471,10 @@ void wlWindowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
     W.displayRoundtrip(n->dpy); /* (the outputs' scales, the seat's capabilities) */
     for (int i = 0; i < n->outputCount; ++i) n->scale = cscdMaxi(n->scale, n->outputs[i].scale); /* (a guess until the window is on one) */
     w->dpr = (float)n->scale;
+    if (n->seat && n->textInputManager) {
+        n->textInput = WL_NEW(n->textInputManager, TIM_GET_TEXT_INPUT, &zwp_text_input_v3_interface, NULL, n->seat);
+        WL_LISTEN(n->textInput, &textInputListener, n);
+    }
     if (n->seat && n->dataDeviceManager) {
         n->dataDevice = WL_NEW(n->dataDeviceManager, DDM_GET_DATA_DEVICE, W.dataDevice, NULL, n->seat);
         WL_LISTEN(n->dataDevice, &dataDeviceListener, n);
@@ -1386,7 +1527,8 @@ void wlWindowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
     } else n->wake[0] = n->wake[1] = -1;
     w->presenter = windowPresenterNew(w, &n->handle, opts->backend, w->clientW, w->clientH);
     cscdViewSetViewport(w->view, w->clientW / w->dpr, w->clientH / w->dpr, w->dpr);
-    cscdViewSetClipboardHooks(w->view, clipSetText, clipGetText, clipSetImage, clipGetFiles, w);
+    const CscdClipboardHooks clip = {clipSetText, clipGetText, clipSetHtml, clipGetHtml, clipSetImage, clipGetImage, clipSetFiles, clipGetFiles, w};
+    cscdViewSetClipboard(w->view, &clip);
 }
 
 void* wlWindowSurface(const CscdWindow* w) { return &w->native->handle; }
@@ -1413,7 +1555,39 @@ void wlWindowShow(CscdWindow* w) {
     w->dirty = true;
 }
 
-void wlWindowPlaceInputMethod(CscdWindow* w) { (void)w; } /* (text-input-v3 is not spoken: compositors type for us through the keymap) */
+/* The input method follows the focused text field: enabled while there is one, its caret the cursor rectangle (surface
+ * coordinates, CSS pixels as the surface has them); disabled when there is none. */
+void wlWindowPlaceInputMethod(CscdWindow* w) {
+    CscdWindowNative* n = w->native;
+    if (!n || !n->textInput || !n->textInputFocus || !w->hwnd) return;
+    CscdTextState t;
+    memset(&t, 0, sizeof t);
+    const bool field = cscdViewGetTextState(w->view, &t);
+    if (field) cscdTextStateFini(&t);
+    if (field) {
+        const bool changed = !n->textInputEnabled;
+        if (!n->textInputEnabled) {
+            WL_CALL0(n->textInput, TI_ENABLE);
+            WL_CALL(n->textInput, TI_SET_CONTENT_TYPE, 0u, 0u); /* (no hint; normal) */
+            n->textInputEnabled = true;
+        }
+        const CscdRect r = cscdViewCaretRect(w->view);
+        if (changed || r.x != n->textInputRect.x || r.y != n->textInputRect.y || r.h != n->textInputRect.h) {
+            n->textInputRect = r;
+            WL_CALL(n->textInput, TI_SET_CURSOR_RECTANGLE, (int32_t)r.x, (int32_t)r.y, cscdMaxi(1, (int32_t)r.w), cscdMaxi(1, (int32_t)r.h));
+        } else {
+            return; /* (nothing new to tell) */
+        }
+    } else if (n->textInputEnabled) {
+        WL_CALL0(n->textInput, TI_DISABLE);
+        n->textInputEnabled = false;
+    } else {
+        return;
+    }
+    WL_CALL0(n->textInput, TI_COMMIT);
+    ++n->textInputCommits;
+    W.displayFlush(n->dpy);
+}
 
 void wlWindowResize(CscdWindow* w, int width, int height) {
     CscdWindowNative* n = w->native;
@@ -1471,6 +1645,7 @@ bool wlWindowPump(CscdWindow* w, bool wait) {
         while (read(n->wake[0], buf, sizeof buf) > 0) {}
     }
     if (fds[2].fd >= 0 && (fds[2].revents & POLLIN)) platformA11yRead(w);
+    wlWindowPlaceInputMethod(w); /* (the focus may have moved to a text field, or out of one: told when it did) */
     /* key repeat */
     if (n->repeatKey && n->repeatRate > 0) {
         const double t = nowSeconds();

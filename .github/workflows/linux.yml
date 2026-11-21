@@ -113,7 +113,7 @@ jobs:
           Xvfb :99 -screen 0 1400x900x24 >/dev/null 2>&1 & xvfb=$!; sleep 1
           export DISPLAY=:99
           CASCADE_TEST_WINDOW=1 build/cascade-capi-tests
-          CASCADE_TEST_WINDOW=1 build/cascade-window-tests
+          CASCADE_TEST_WINDOW=1 CASCADE_TEST_CLIPBOARD=1 build/cascade-window-tests
           for b in software opengl vulkan; do
             # the X screen while the window is open: grabbed until the window shows (a software
             # GL can take a while to put up its first frame)

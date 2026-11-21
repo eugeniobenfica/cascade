@@ -751,6 +751,109 @@ static void clipGetFiles(void* user, CscdStrVec* out) {
     readFiles(NSPasteboard.generalPasteboard, out);
 }
 
+/* ---- drags out to other apps: a dragging session of the view's, its text and files ---------------------------- */
+
+@interface CascadeDragSource : NSObject <NSDraggingSource>
+@property(nonatomic, assign) CscdWindow* owner;
+@property(nonatomic, assign) NSDragOperation allowed;
+@end
+
+static CascadeDragSource* activeDrag; /* (kept until the session ends) */
+
+@implementation CascadeDragSource
+- (NSDragOperation)draggingSession:(NSDraggingSession*)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    (void)session; (void)context;
+    return _allowed;
+}
+- (void)draggingSession:(NSDraggingSession*)session endedAtPoint:(NSPoint)point operation:(NSDragOperation)op {
+    (void)session; (void)point;
+    const char* how = (op & NSDragOperationMove) ? "move" : (op & NSDragOperationCopy) ? "copy" : (op & NSDragOperationLink) ? "link" : "none";
+    if (_owner && _owner->hwnd) cscdViewDragOutEnded(_owner->view, cscdSv(how));
+    activeDrag = nil;
+}
+@end
+
+static bool dragOut(void* user, const CscdDataTransfer* dt) {
+    CscdWindow* w = (CscdWindow*)user;
+    CscdWindowNative* n = w->native;
+    NSEvent* event = NSApp.currentEvent;
+    if (!n || !event || activeDrag) return false;
+    const NSPoint at = [NSVIEW(n) convertPoint:event.locationInWindow fromView:nil];
+    const NSRect frame = NSMakeRect(at.x - 16, at.y - 16, 32, 32);
+    NSMutableArray* items = [NSMutableArray array];
+    const CscdSv text = cscdDataTransferGetData(dt, CSCD_SV("text/plain"));
+    if (text.len) {
+        NSPasteboardItem* pi = [[NSPasteboardItem alloc] init];
+        [pi setString:svToNS(text) forType:NSPasteboardTypeString];
+        NSDraggingItem* item = [[NSDraggingItem alloc] initWithPasteboardWriter:pi];
+        [item setDraggingFrame:frame contents:[NSImage imageNamed:NSImageNameMultipleDocuments]];
+        [items addObject:item];
+    }
+    for (size_t i = 0; i < dt->files.len; ++i) {
+        NSString* path = svToNS(cscdStrSv(&dt->files.items[i]));
+        NSDraggingItem* item = [[NSDraggingItem alloc] initWithPasteboardWriter:[NSURL fileURLWithPath:path]];
+        [item setDraggingFrame:frame contents:[NSWorkspace.sharedWorkspace iconForFile:path]];
+        [items addObject:item];
+    }
+    if (!items.count) return false;
+    CascadeDragSource* source = [[CascadeDragSource alloc] init];
+    source.owner = w;
+    const bool copy = cscdStrEqC(&dt->effectAllowed, "copy"), move = cscdStrEqC(&dt->effectAllowed, "move"), link = cscdStrEqC(&dt->effectAllowed, "link");
+    source.allowed = copy ? NSDragOperationCopy : move ? NSDragOperationMove : link ? NSDragOperationLink
+                                                       : NSDragOperationCopy | NSDragOperationMove | NSDragOperationLink;
+    activeDrag = source;
+    [NSVIEW(n) beginDraggingSessionWithItems:items event:event source:source];
+    return true;
+}
+
+static void clipSetHtml(void* user, CscdSv html, CscdSv text) {
+    (void)user;
+    NSPasteboard* pb = NSPasteboard.generalPasteboard;
+    [pb clearContents];
+    [pb setString:svToNS(html) forType:NSPasteboardTypeHTML];
+    [pb setString:svToNS(text) forType:NSPasteboardTypeString];
+}
+
+static void clipGetHtml(void* user, CscdStr* out) {
+    (void)user;
+    CscdStr s = {0};
+    fromNS([NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeHTML], &s);
+    removeCR(&s);
+    cscdStrAppend(out, cscdStrSv(&s));
+    cscdStrFree(&s);
+}
+
+/* PNG when the pasteboard has it, else whatever image it has (TIFF, PDF...) made PNG */
+static bool clipGetImage(void* user, CscdImage* out) {
+    (void)user;
+    NSPasteboard* pb = NSPasteboard.generalPasteboard;
+    NSData* data = [pb dataForType:NSPasteboardTypePNG];
+    if (!data) {
+        NSImage* image = [[NSImage alloc] initWithPasteboard:pb];
+        NSData* tiff = image.TIFFRepresentation;
+        NSBitmapImageRep* rep = tiff ? [NSBitmapImageRep imageRepWithData:tiff] : nil;
+        data = rep ? [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] : nil;
+    }
+    if (!data) return false;
+    CscdImage* img = cscdDecodeImage((const uint8_t*)data.bytes, data.length);
+    const bool ok = img && img->width > 0 && img->height > 0;
+    if (ok) {
+        cscdImageInit(out, img->width, img->height);
+        memcpy(out->pixels, img->pixels, (size_t)img->width * (size_t)img->height * 4);
+    }
+    cscdRelease(img);
+    return ok;
+}
+
+static void clipSetFiles(void* user, const CscdStrVec* paths) {
+    (void)user;
+    NSMutableArray* urls = [NSMutableArray array];
+    for (size_t i = 0; i < paths->len; ++i) [urls addObject:[NSURL fileURLWithPath:svToNS(cscdStrSv(&paths->items[i]))]];
+    NSPasteboard* pb = NSPasteboard.generalPasteboard;
+    [pb clearContents];
+    [pb writeObjects:urls];
+}
+
 /* ---- the system's preferences: the appearance and Reduce motion ------------------------------------ */
 
 static int preferencesChanged; /* (counts the system's notices) */
@@ -819,7 +922,9 @@ void windowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
         w->clientH = cscdMaxi(1, (int)lround(size.height * w->dpr));
         w->presenter = windowPresenterNew(w, n->view, opts->backend, w->clientW, w->clientH);
         cscdViewSetViewport(w->view, (float)size.width, (float)size.height, w->dpr);
-        cscdViewSetClipboardHooks(w->view, clipSetText, clipGetText, clipSetImage, clipGetFiles, w);
+        const CscdClipboardHooks clip = {clipSetText, clipGetText, clipSetHtml, clipGetHtml, clipSetImage, clipGetImage, clipSetFiles, clipGetFiles, w};
+        cscdViewSetClipboard(w->view, &clip);
+        cscdViewOnDragOut(w->view, dragOut, w);
         watchPreferences();
         readPreferences(w);
         cocoaA11yAttach(w);

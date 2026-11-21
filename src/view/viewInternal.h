@@ -18,6 +18,8 @@ typedef struct OpenMenu {
 } OpenMenu;
 
 typedef struct MenuBarEntry { CscdElement* entry; CscdMenuBarFn fn; void* user; CscdFreeFn freeUser; } MenuBarEntry;
+/* a keyboard shortcut: its modifiers and key (the key's name as cscdViewKeyDown has it, lowercase) */
+typedef struct Shortcut { CscdModifiers mods; CscdStr key; CscdAction action; } Shortcut;
 typedef struct SourceFile { CscdStr path; long long stamp; } SourceFile;
 /* A list that makes only the rows that show (cscdViewBindList). */
 typedef struct VirtualList {
@@ -97,6 +99,8 @@ struct CscdView {
     CscdMenuItemFn onMenuItem; void* onMenuItemUser;
     CscdSetClipboardFn setClipboard; CscdGetClipboardFn getClipboard;
     CscdSetClipboardImageFn setClipboardImage; CscdGetClipboardFilesFn getClipboardFiles;
+    CscdSetClipboardHtmlFn setClipboardHtml; CscdGetClipboardFn getClipboardHtml;
+    CscdGetClipboardImageFn getClipboardImage; CscdSetClipboardFilesFn setClipboardFiles;
     void* clipboardUser;
     int tooltipDelayMs;
 
@@ -204,6 +208,7 @@ struct CscdView {
     /* menus */
     CscdPtrVec menus; /* OpenMenu*, owned */
     CSCD_VEC(MenuBarEntry) menuBar;
+    CSCD_VEC(struct Shortcut) shortcuts; /* (cscdViewAddShortcut) */
     CscdElement* menuBarOpen;
     bool menuSwallowUp;
     /* tooltips */
@@ -221,6 +226,9 @@ struct CscdView {
     CscdElement* dragOver;
     float dragStartX, dragStartY;
     bool dragActive, dragExternal, dropAllowed;
+    bool dragOut; /* (the system has the drag: cscdViewOnDragOut) */
+    CscdDragOutFn onDragOut; void* onDragOutUser;
+    const char* dragOutEffect; /* (how it ended, for dragend) */
     CscdDataTransfer* dragData;
     CscdImage* dragGhost;
     float ghostX, ghostY, ghostScale;
@@ -283,6 +291,7 @@ void viewClearHits(CscdView* v);
 CscdRect viewPopupBounds(const CscdView* v);
 bool viewIsPopupWindow(const CscdView* v, const CscdElement* e);
 void viewPopupsFree(CscdView* v);
+void viewShortcutsFree(CscdView* v); /* (viewKeys.c) */
 void viewPopupHitsSweep(CscdView* v); /* (the hit areas of popups that closed go) */
 void viewNotifyInvalidate(CscdView* v);
 CscdRect viewPaintArea(CscdView* v, CscdElement* e);

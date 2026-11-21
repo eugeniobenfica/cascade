@@ -177,7 +177,12 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       one), a non-activating child panel on macOS. The keys stay with the window. Wayland (an `xdg_popup` with its
       positioner) and the phones keep them inside the window.
 - [ ] Popups on Wayland through `xdg_popup` (the compositor places them; no screen coordinates there).
-- [ ] IME on Wayland (`text-input-v3`), accelerators, drag out to other apps, rich clipboard formats.
+- [x] Input methods on Wayland (`text-input-v3`: enabled with a focused text field, the caret its cursor rectangle,
+      the composition and the committed text applied at `done`); keyboard shortcuts (`cscdViewAddShortcut`, and the
+      shortcuts a menu bar's items show); drags out to other apps (`cscdViewOnDragOut`: OLE's DoDragDrop on Windows,
+      a dragging session on macOS); the clipboard's HTML, images and files both ways (`cscdViewSetClipboard`:
+      CF_HTML, CF_DIB, CF_HDROP; X11's and Wayland's media types; the pasteboard's types).
+- [ ] Drags out to other apps on X11 (XDND as the source) and Wayland (`wl_data_device.start_drag`).
 - [ ] UI Automation TextPattern and live regions; push accessibility updates per element instead of the whole tree.
 - [ ] `contenteditable` / rich text, and a text field that scales to large documents.
 

@@ -67,7 +67,7 @@ jobs:
         run: |
           mkdir -p shots
           CASCADE_TEST_WINDOW=1 build/cascade-capi-tests.exe
-          CASCADE_TEST_WINDOW=1 build/cascade-window-tests.exe
+          CASCADE_TEST_WINDOW=1 CASCADE_TEST_CLIPBOARD=1 build/cascade-window-tests.exe
           for b in software opengl; do timeout 60 build/cascade-gallery.exe --$b --screenshot shots/windows-$b.png; done
       - uses: actions/upload-artifact@v7
         if: always()

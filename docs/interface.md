@@ -233,7 +233,23 @@ targets get `dragenter`, `dragover`, `dragleave` and `drop`, and accept by calli
 pointer (`cscdDataTransferSetDragImage` replaces it).
 
 Files and text dragged in from other applications arrive the same way, in
-`e->dataTransfer->files` and `cscdDataTransferGetData(e->dataTransfer, CSCD_SV("text/plain"))`.
+`cscdEventDataTransfer(e)->files` and `cscdDataTransferGetData(cscdEventDataTransfer(e), CSCD_SV("text/plain"))`.
+
+A drag that leaves the window goes on as the system's (Windows, macOS), with its `text/plain` and its
+files: another application can take it, and the source's `dragend` says how (`dropEffect`). A host
+of your own does this with `cscdViewOnDragOut` and `cscdViewDragOutEnded`.
+
+## Keyboard shortcuts
+
+```c
+cscdViewAddShortcut(ui, CSCD_SV("Ctrl+S"), cscdAction(save, app));   /* Command-S on the Mac */
+cscdViewAddShortcut(ui, CSCD_SV("F5"), cscdAction(reload, app));
+```
+
+They run when the page's `keydown` listeners did not cancel the key, before the focused element
+does anything with it; in a text field, only those with Ctrl, Alt or Meta, and the function keys.
+The shortcuts a menu bar's items show (`cscdViewBindMenuBar`) work the same way with the menus
+closed.
 
 ## Touch
 
@@ -254,12 +270,19 @@ A sheet that every page of a program shares goes under the document's own with
 ## Clipboard
 
 Text fields use the system clipboard by themselves. A window connects the view to it
-(`cscdViewSetClipboardHooks`): text, a picture, and the files copied in the file manager. Without a
-window, give the view your own hooks. The program reaches it through them too:
+(`cscdViewSetClipboard`): text, HTML, pictures and files, both ways, in each system's own formats
+(Windows' CF_HTML, CF_DIB and CF_HDROP; X11's and Wayland's media types; the Mac's pasteboard
+types). Without a window, give the view your own hooks. The program reaches it through them too:
 
 ```c
 cscdViewCopyText(ui, CSCD_SV("#3390ff"));
+cscdViewCopyHtml(ui, CSCD_SV("<b>#3390ff</b>"), CSCD_SV("#3390ff")); /* with the text plain readers get */
 cscdViewCopyImage(ui, chart);                 /* a CscdImage, as a PNG */
+cscdViewCopyFiles(ui, &paths);                /* as the file manager copies them */
+CscdStr html = {0};
+cscdViewClipboardHtml(ui, &html);             /* the fragment copied */
+CscdImage picture;
+if (cscdViewClipboardImage(ui, &picture)) { /* ... */ cscdImageFini(&picture); }
 CscdStrVec files = {0};
 cscdViewClipboardFiles(ui, &files);           /* on phones, copies (a picture as a PNG file) */
 ```

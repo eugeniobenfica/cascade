@@ -798,6 +798,79 @@ static void testPopupWindows(void) {
     cscdViewFree(v);
 }
 
+/* Keyboard shortcuts: the app's, and those its menu bar's items show. */
+static int shortcutRuns;
+static void countShortcut(void* user) { shortcutRuns += (int)(intptr_t)user; }
+static void cancelKey(void* user, CscdEvent* ev) { (void)user; cscdEventPreventDefault(ev); }
+static void editMenuWithShortcuts(void* user, CscdMenu* out) {
+    (void)user;
+    cscdMenuAdd(out, cscdMenuItem(CSCD_SV("Duplicate"), countShortcut, (void*)(intptr_t)100, CSCD_SV("Ctrl+D")));
+    CscdMenuItem* off = cscdMenuAdd(out, cscdMenuItem(CSCD_SV("Off"), countShortcut, (void*)(intptr_t)1000, CSCD_SV("Ctrl+K")));
+    off->enabled = false;
+    CscdMenu sub = {0};
+    cscdMenuAdd(&sub, cscdMenuItem(CSCD_SV("Deeper"), countShortcut, (void*)(intptr_t)10000, CSCD_SV("Alt+Shift+F7")));
+    cscdMenuAdd(out, cscdMenuSub(CSCD_SV("More"), sub));
+}
+
+static void testShortcuts(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    layoutView(v, "<div id=bar><span id=edit>Edit</span></div><input id=field><button id=b>b</button>");
+    const CscdModifiers ctrl = {.ctrl = true}, ctrlShift = {.ctrl = true, .shift = true}, plain = {0}, altShift = {.alt = true, .shift = true};
+    cscdViewAddShortcut(v, CSCD_SV("Ctrl+S"), cscdAction(countShortcut, (void*)(intptr_t)1));
+    cscdViewAddShortcut(v, CSCD_SV("ctrl + shift + z"), cscdAction(countShortcut, (void*)(intptr_t)2));
+    cscdViewAddShortcut(v, CSCD_SV("Delete"), cscdAction(countShortcut, (void*)(intptr_t)4));
+    cscdViewAddShortcut(v, CSCD_SV("F5"), cscdAction(countShortcut, (void*)(intptr_t)8));
+    cscdViewAddShortcut(v, CSCD_SV("Ctrl+Nothing+Q"), cscdAction(countShortcut, (void*)(intptr_t)1)); /* (not one: refused) */
+    shortcutRuns = 0;
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("s"));
+    CHECK(shortcutRuns == 1);
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrlShift, CSCD_SV("Z"));
+    CHECK(shortcutRuns == 3);
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, plain, CSCD_SV("s")); /* (no Ctrl: not it) */
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrlShift, CSCD_SV("s"));
+    CHECK(shortcutRuns == 3);
+    cscdViewKeyDown(v, CSCD_KEY_DELETE, plain, CSCD_SV("Delete"));
+    CHECK(shortcutRuns == 7);
+    /* in a text field: Delete deletes; Ctrl+S and F5 are still the app's */
+    cscdViewFocus(v, byId(v, "field"));
+    shortcutRuns = 0;
+    cscdViewKeyDown(v, CSCD_KEY_DELETE, plain, CSCD_SV("Delete"));
+    CHECK(shortcutRuns == 0);
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("s"));
+    cscdViewKeyDown(v, CSCD_KEY_F5, plain, CSCD_SV("F5"));
+    CHECK(shortcutRuns == 9);
+    /* a keydown listener that cancels the key keeps it from the shortcut */
+    on(byId(v, "field"), "keydown", cancelKey, NULL);
+    shortcutRuns = 0;
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("s"));
+    CHECK(shortcutRuns == 0);
+    cscdViewFocus(v, byId(v, "b"));
+    /* added again: replaced; removed: gone */
+    cscdViewAddShortcut(v, CSCD_SV("Ctrl+S"), cscdAction(countShortcut, (void*)(intptr_t)16));
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("s"));
+    CHECK(shortcutRuns == 16);
+    cscdViewRemoveShortcut(v, CSCD_SV("Ctrl+S"));
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("s"));
+    CHECK(shortcutRuns == 16);
+    /* the menu bar's items, menus closed: enabled ones, in submenus too */
+    cscdViewBindMenuBar(v, byId(v, "edit"), editMenuWithShortcuts, NULL, NULL);
+    shortcutRuns = 0;
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("d"));
+    CHECK(shortcutRuns == 100 && !cscdViewMenuOpen(v));
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("k"));
+    CHECK(shortcutRuns == 100);
+    cscdViewKeyDown(v, CSCD_KEY_F7, altShift, CSCD_SV("F7"));
+    CHECK(shortcutRuns == 10100);
+    /* shortcuts stay from page to page */
+    cscdViewAddShortcut(v, CSCD_SV("Ctrl+O"), cscdAction(countShortcut, (void*)(intptr_t)1));
+    layoutView(v, "<p>another page</p>");
+    shortcutRuns = 0;
+    cscdViewKeyDown(v, CSCD_KEY_CHARACTER, ctrl, CSCD_SV("o"));
+    CHECK(shortcutRuns == 1);
+    cscdViewFree(v);
+}
+
 static void testMenus(void) {
     CscdView* v = cscdViewNew();
     menuView = v;
@@ -1003,6 +1076,64 @@ static void testDragDrop(void) {
     up(v, 40, 30);
     cscdStrVecFree(&dragLog);
     cscdStrVecFree(&droppedFiles);
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
+/* A drag out of the view goes to the host's hook (the system's drag), and comes back as dragend with how it ended. */
+static int dragOutCalls;
+static char dragOutData[32];
+static bool takeDragOut(void* user, const CscdDataTransfer* dt) {
+    ++dragOutCalls;
+    snprintf(dragOutData, sizeof dragOutData, "%.*s", (int)cscdDataTransferGetData(dt, CSCD_SV("text/x-item")).len,
+             cscdDataTransferGetData(dt, CSCD_SV("text/x-item")).ptr);
+    return *(bool*)user;
+}
+
+static void testDragOut(void) {
+    CscdView* v = cscdViewNew();
+    layoutViewWH(v, "<style>body{margin:0} #src{width:80px;height:40px}</style><div id=src draggable=true>drag me</div>", 400, 300);
+    CscdImage img;
+    cscdImageInit(&img, 400, 300);
+    frame(v, &img);
+    CscdElement* src = byId(v, "src");
+    on(src, "dragstart", onDragStart, NULL);
+    on(src, "dragend", onDragEnd, NULL);
+    /* without a hook: it stays in the view */
+    cscdStrVecFree(&dragLog);
+    down(v, 10, 10);
+    drag(v, 40, 20);
+    drag(v, 450, 20);
+    CHECK(cscdViewDragging(v));
+    up(v, 450, 20);
+    CHECK(!cscdViewDragging(v) && eq(lastLog(), "end:none"));
+    /* the host takes it: the page's drag waits for the system's, which another app takes to copy */
+    bool take = true;
+    cscdViewOnDragOut(v, takeDragOut, &take);
+    cscdStrVecFree(&dragLog);
+    dragOutCalls = 0;
+    down(v, 10, 10);
+    drag(v, 40, 20);
+    drag(v, 450, 20);
+    CHECK(dragOutCalls == 1 && eq(dragOutData, "42"));
+    drag(v, 460, 20); /* (once) */
+    up(v, 460, 20);   /* (the system's drag, still) */
+    CHECK(dragOutCalls == 1 && cscdViewDragging(v) && !eq(lastLog(), "end:none"));
+    cscdViewDragOutEnded(v, CSCD_SV("copy"));
+    CHECK(!cscdViewDragging(v) && eq(lastLog(), "end:copy"));
+    cscdViewDragOutEnded(v, CSCD_SV("move")); /* (nothing more) */
+    CHECK(eq(lastLog(), "end:copy"));
+    /* the host keeps it in the view: back inside, a drop ends it as before */
+    take = false;
+    cscdStrVecFree(&dragLog);
+    down(v, 10, 10);
+    drag(v, 40, 20);
+    drag(v, 450, 20);
+    CHECK(dragOutCalls == 2 && cscdViewDragging(v));
+    drag(v, 100, 100);
+    up(v, 100, 100);
+    CHECK(!cscdViewDragging(v) && eq(lastLog(), "end:none"));
+    cscdStrVecFree(&dragLog);
     cscdImageFini(&img);
     cscdViewFree(v);
 }
@@ -4983,8 +5114,10 @@ int main(void) {
     testBinding();
     testAccessors();
     testMenus();
+    testShortcuts();
     testPopupWindows();
     testDragDrop();
+    testDragOut();
     testTouch();
     testTouchSelection();
     testProgressRepaint();

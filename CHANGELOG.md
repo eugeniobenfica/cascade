@@ -20,6 +20,15 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
     `cscdWindowOptionsFree` (`cscdWindowNew` copies what it needs), in place of `cscdWindowOptions()` and its fields;
   - layout boxes: only through the view (`cscdViewElementRect` and the like).
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
+- **Keyboard shortcuts**: `cscdViewAddShortcut` ("Ctrl+S", "F5"...), and the shortcuts a menu bar's items show run
+  them with the menus closed.
+- **The clipboard's HTML, images and files**, both ways, in each system's formats: `cscdViewCopyHtml`,
+  `cscdViewCopyFiles`, `cscdViewClipboardHtml`, `cscdViewClipboardImage`; the hooks in one table
+  (`cscdViewSetClipboard`).
+- **Drags out to other apps** on Windows and macOS (`cscdViewOnDragOut`, `cscdViewDragOutEnded` for a host's own).
+- **Input methods on Wayland** (`text-input-v3`).
+- Fixed: two fonts made GSUB take minutes (a substitution run let the text grow 64 times over each time, compounding;
+  a multiple substitution moved the rest of the text once per glyph it added).
 - **Menus, `<select>` lists and tooltips go past the window's edges** on Windows, X11 and macOS, each in a window of
   its own (still the page's elements and CSS). New: `cscdViewSetPopupArea`, `cscdViewPopups`, `cscdViewPaintPopup`
   for a host that shows them itself.

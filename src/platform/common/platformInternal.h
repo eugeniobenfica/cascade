@@ -129,6 +129,21 @@ typedef struct WindowPopup { uint64_t id; void* native; CscdIRect rect; } Window
 
 /* window.c: what every platform shares */
 void windowRender(CscdWindow* w);
+/* The clipboard as X11 and Wayland hand it to other programs: each format's media type and bytes. The setters
+ * replace what was there with every type the content has (text: "text/plain;charset=utf-8", "UTF8_STRING",
+ * "text/plain"; HTML: "text/html" and the text; an image: "image/png"; files: "text/uri-list",
+ * "x-special/gnome-copied-files" and their paths as text). */
+typedef struct ClipFormat { CscdStr mime; CscdBytes data; } ClipFormat;
+typedef CSCD_VEC(ClipFormat) ClipData;
+void clipDataClear(ClipData* d);
+void clipDataFree(ClipData* d);
+const ClipFormat* clipDataFind(const ClipData* d, const char* mime);
+void clipDataSetText(ClipData* d, CscdSv text);
+void clipDataSetHtml(ClipData* d, CscdSv html, CscdSv text);
+void clipDataSetImage(ClipData* d, const CscdImage* image);
+void clipDataSetFiles(ClipData* d, const CscdStrVec* paths);
+/* file:// lines (a text/uri-list, GNOME's copied files) as paths, appended */
+void clipFilePaths(CscdSv list, CscdStrVec* out);
 #ifdef __APPLE__
 /* a11yCocoa.m: NSAccessibility (objects returned retained: __bridge_transfer them) */
 void cocoaA11yAttach(CscdWindow* w);

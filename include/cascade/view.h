@@ -80,6 +80,21 @@ typedef void (*CscdSetClipboardFn)(void* user, CscdSv text);
 typedef void (*CscdGetClipboardFn)(void* user, CscdStr* out); /* appended */
 typedef void (*CscdSetClipboardImageFn)(void* user, const CscdImage* image);
 typedef void (*CscdGetClipboardFilesFn)(void* user, CscdStrVec* out); /* appended */
+typedef void (*CscdSetClipboardHtmlFn)(void* user, CscdSv html, CscdSv text); /* (both: readers of either find it) */
+typedef bool (*CscdGetClipboardImageFn)(void* user, CscdImage* out);     /* out initialized by it when true */
+typedef void (*CscdSetClipboardFilesFn)(void* user, const CscdStrVec* paths);
+/* What the clipboard does, format by format (the window provides it): NULL where it cannot. */
+typedef struct CscdClipboardHooks {
+    CscdSetClipboardFn setText;
+    CscdGetClipboardFn getText;
+    CscdSetClipboardHtmlFn setHtml;
+    CscdGetClipboardFn getHtml; /* the copied fragment */
+    CscdSetClipboardImageFn setImage;
+    CscdGetClipboardImageFn getImage;
+    CscdSetClipboardFilesFn setFiles;
+    CscdGetClipboardFilesFn getFiles;
+    void* user;
+} CscdClipboardHooks;
 
 CscdView* cscdViewNew(void);
 void cscdViewFree(CscdView* v);
@@ -224,6 +239,15 @@ void cscdViewShowMenuAt(CscdView* v, CscdElement* anchor, CscdMenu items); /* be
 void cscdViewBindMenuBar(CscdView* v, CscdElement* entry, CscdMenuBarFn items, void* user, CscdFreeFn freeUser);
 void cscdViewCloseMenus(CscdView* v);
 bool cscdViewMenuOpen(const CscdView* v);
+
+/* Keyboard shortcuts (accelerators): keys as menus show them, "Ctrl+S", "Ctrl+Shift+Z", "Alt+Enter", "F5", "Delete"
+ * (modifiers Ctrl, Shift, Alt, Meta; on the Mac Command is Ctrl, as everywhere in cascade). The action runs when
+ * they are pressed and the page's keydown listeners did not cancel the key, before what the focused element does
+ * with it; in a text field, only those with Ctrl, Alt or Meta, and the function keys. The shortcuts the items of a
+ * menu bar's menus show (cscdViewBindMenuBar) run those items the same way, with the menus closed. A shortcut
+ * added again replaces the one before; they stay from page to page. */
+void cscdViewAddShortcut(CscdView* v, CscdSv keys, CscdAction action);
+void cscdViewRemoveShortcut(CscdView* v, CscdSv keys);
 void cscdViewOnMenuItem(CscdView* v, CscdMenuItemFn fn, void* user); /* decorate a row (icon painters) */
 
 /* <dialog> elements, as the web has them: showModal centers it over a dimmed page that does not
@@ -263,6 +287,14 @@ size_t cscdViewPopups(CscdView* v, CscdPopup* out, size_t max);
 /* Paints popup id into target (rect's size times the device pixel ratio; premultiplied, transparent around the
  * popup); false when it is no longer open. */
 bool cscdViewPaintPopup(CscdView* v, uint64_t id, CscdImage* target);
+
+/* Drags out to other apps: a drag the page started that leaves the view goes to fn (the host's), which hands its data
+ * (text, files) to the system and returns true, or false to keep it in the view. Once the system's drag is over the
+ * host says how it ended (another app took it to "copy", "move" or "link"; "none"), and the source gets "dragend"
+ * with that dropEffect. A desktop window does this itself (Windows, macOS). */
+typedef bool (*CscdDragOutFn)(void* user, const CscdDataTransfer* data);
+void cscdViewOnDragOut(CscdView* v, CscdDragOutFn fn, void* user);
+void cscdViewDragOutEnded(CscdView* v, CscdSv effect);
 
 /* Drag and drop. Elements with draggable="true" start a drag (dragstart, drag, dragend on the
  * source; dragenter, dragover, dragleave, drop on the targets; a target accepts by calling
@@ -413,7 +445,9 @@ size_t cscdViewListFirstShown(const CscdView* v, const CscdElement* box); /* the
 /* Elements with a splitter attribute resize the siblings on either side of them when dragged (along
  * the parent's flex direction); they get "input" while dragged and "change" after. */
 
-/* clipboard hooks (the window provides them) */
+/* clipboard hooks (the window provides them; hooks copied) */
+void cscdViewSetClipboard(CscdView* v, const CscdClipboardHooks* hooks);
+/* (the first four of them; the others none) */
 void cscdViewSetClipboardHooks(CscdView* v, CscdSetClipboardFn set, CscdGetClipboardFn get, CscdSetClipboardImageFn setImage,
                              CscdGetClipboardFilesFn getFiles, void* user);
 /* The clipboard from the program, through those hooks: false (or nothing appended) without them.
@@ -421,7 +455,12 @@ void cscdViewSetClipboardHooks(CscdView* v, CscdSetClipboardFn set, CscdGetClipb
  * as a PNG file), readable by path. */
 bool cscdViewCopyText(CscdView* v, CscdSv text);
 bool cscdViewCopyImage(CscdView* v, const CscdImage* image);
+/* HTML, with the text the readers of plain text get (where the clipboard has no HTML: the text alone) */
+bool cscdViewCopyHtml(CscdView* v, CscdSv html, CscdSv text);
+bool cscdViewCopyFiles(CscdView* v, const CscdStrVec* paths); /* (as the file manager copies them) */
 void cscdViewClipboardText(CscdView* v, CscdStr* out);    /* appended */
+void cscdViewClipboardHtml(CscdView* v, CscdStr* out);    /* appended: the fragment copied (nothing: no HTML there) */
+bool cscdViewClipboardImage(CscdView* v, CscdImage* out); /* out initialized when true; free it with cscdImageFini */
 void cscdViewClipboardFiles(CscdView* v, CscdStrVec* out); /* appended */
 
 /* queries */

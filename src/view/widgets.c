@@ -1289,11 +1289,38 @@ void viewBeginDrag(CscdView* v, float x, float y) {
     viewDragMoveTo(v, x, y);
 }
 
+void cscdViewOnDragOut(CscdView* v, CscdDragOutFn fn, void* user) {
+    v->onDragOut = fn;
+    v->onDragOutUser = user;
+}
+
+void cscdViewDragOutEnded(CscdView* v, CscdSv effect) {
+    if (!v->dragOut) return;
+    v->dragOut = false;
+    v->dragOutEffect = cscdSvEqC(effect, "copy") ? "copy" : cscdSvEqC(effect, "move") ? "move" : cscdSvEqC(effect, "link") ? "link" : "none";
+    viewEndDrag(v, false);
+    v->dragOutEffect = NULL;
+}
+
 void viewDragMoveTo(CscdView* v, float x, float y) {
     v->mouseX = x;
     v->mouseY = y;
+    if (v->dragOut) return; /* (the system's now) */
     CscdDataTransfer* dt = (CscdDataTransfer*)cscdRetain(v->dragData);
     if (!dt) return;
+    if (v->onDragOut && v->dragSource && !v->dragExternal && (x < 0 || y < 0 || x >= v->vw || y >= v->vh) &&
+        (dt->items.len || dt->files.len)) {
+        /* out of the view: to the system, for another app (the target under it hears it leave) */
+        CscdElement* old = v->dragOver;
+        v->dragOver = NULL;
+        v->dropAllowed = false;
+        fireDrag(v, "dragleave", old, x, y, dt);
+        v->dragOut = true;
+        cscdViewInvalidate(v);
+        if (!v->onDragOut(v->onDragOutUser, dt)) v->dragOut = false; /* (kept: on in the view) */
+        cscdRelease(dt);
+        return;
+    }
     CscdElement* t = cscdViewElementAt(v, x, y);
     if (v->dragSource && !v->dragExternal) fireDrag(v, "drag", v->dragSource, x, y, dt);
     if (t != v->dragOver) {
@@ -1331,12 +1358,12 @@ void viewEndDrag(CscdView* v, bool drop) {
         fireDrag(v, "dragleave", target, v->mouseX, v->mouseY, dt);
     }
     if (dt && v->dragSource && !v->dragExternal) {
-        if (!dropped) cscdStrSetC(&dt->dropEffect, "none");
+        if (!dropped) cscdStrSetC(&dt->dropEffect, v->dragOutEffect ? v->dragOutEffect : "none");
         fireDrag(v, "dragend", v->dragSource, v->mouseX, v->mouseY, dt);
     }
     viewUnwatch(v, mark);
     cscdRelease(dt);
-    v->dragActive = v->dragExternal = v->dropAllowed = false;
+    v->dragActive = v->dragExternal = v->dropAllowed = v->dragOut = false;
     v->dragSource = v->dragOver = NULL;
     cscdRelease(v->dragData);
     v->dragData = NULL;
@@ -1396,8 +1423,30 @@ bool cscdViewCopyImage(CscdView* v, const CscdImage* image) {
     return true;
 }
 
+bool cscdViewCopyHtml(CscdView* v, CscdSv html, CscdSv text) {
+    if (v->setClipboardHtml) v->setClipboardHtml(v->clipboardUser, html, text);
+    else if (v->setClipboard) v->setClipboard(v->clipboardUser, text);
+    else return false;
+    return true;
+}
+
+bool cscdViewCopyFiles(CscdView* v, const CscdStrVec* paths) {
+    if (!v->setClipboardFiles || !paths || !paths->len) return false;
+    v->setClipboardFiles(v->clipboardUser, paths);
+    return true;
+}
+
 void cscdViewClipboardText(CscdView* v, CscdStr* out) {
     if (v->getClipboard) v->getClipboard(v->clipboardUser, out);
+}
+
+void cscdViewClipboardHtml(CscdView* v, CscdStr* out) {
+    if (v->getClipboardHtml) v->getClipboardHtml(v->clipboardUser, out);
+}
+
+bool cscdViewClipboardImage(CscdView* v, CscdImage* out) {
+    memset(out, 0, sizeof *out);
+    return v->getClipboardImage && v->getClipboardImage(v->clipboardUser, out) && out->width > 0 && out->height > 0;
 }
 
 void cscdViewClipboardFiles(CscdView* v, CscdStrVec* out) {

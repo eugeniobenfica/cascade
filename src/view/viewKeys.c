@@ -4,6 +4,7 @@
 #include "view/viewInternal.h"
 #include "text/graphemeInternal.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -310,6 +311,166 @@ static void textFieldKey(CscdView* v, CscdElement* f, CscdKey k, CscdModifiers m
     }
 }
 
+/* ---- keyboard shortcuts ------------------------------------------------------------------------------ */
+
+/* "Ctrl+Shift+S" as modifiers and a key named as cscdViewKeyDown names it (lowercase); false when it is none */
+static bool parseShortcut(CscdSv s, CscdModifiers* m, CscdStr* key) {
+    memset(m, 0, sizeof *m);
+    key->len = 0;
+    size_t at = 0;
+    while (at < s.len) {
+        /* (the key may be "+" itself: "Ctrl++") */
+        size_t end = at;
+        while (end < s.len && (s.ptr[end] != '+' || end == at)) ++end;
+        CscdSv t = cscdSvTrim(cscdSvSub(s, at, end - at));
+        at = end + 1;
+        const bool last = end >= s.len;
+        if (!last) {
+            if (cscdSvIEqC(t, "ctrl") || cscdSvIEqC(t, "control") || cscdSvIEqC(t, "cmd") || cscdSvIEqC(t, "command")) m->ctrl = true;
+            else if (cscdSvIEqC(t, "shift")) m->shift = true;
+            else if (cscdSvIEqC(t, "alt") || cscdSvIEqC(t, "option") || cscdSvIEqC(t, "opt")) m->alt = true;
+            else if (cscdSvIEqC(t, "meta") || cscdSvIEqC(t, "super") || cscdSvIEqC(t, "win")) m->meta = true;
+            else return false;
+            continue;
+        }
+        static const char* const kAliases[][2] = {
+            {"esc", "escape"}, {"del", "delete"}, {"ins", "insert"}, {"return", "enter"}, {"space", " "}, {"spacebar", " "},
+            {"up", "arrowup"}, {"down", "arrowdown"}, {"left", "arrowleft"}, {"right", "arrowright"}, {"pgup", "pageup"},
+            {"pgdn", "pagedown"}, {"plus", "+"}, {"minus", "-"}, {"back", "backspace"},
+        };
+        if (!t.len && end > 0 && s.ptr[end - 1] == ' ') t = CSCD_SV(" ");
+        if (!t.len) return false;
+        for (size_t i = 0; i < CSCD_COUNT(kAliases); ++i)
+            if (cscdSvIEqC(t, kAliases[i][0])) t = cscdSv(kAliases[i][1]);
+        cscdStrSet(key, t);
+        for (size_t i = 0; i < key->len; ++i) key->ptr[i] = (char)tolower((unsigned char)key->ptr[i]);
+    }
+    return key->len > 0;
+}
+
+static bool sameMods(CscdModifiers a, CscdModifiers b) { return a.shift == b.shift && a.ctrl == b.ctrl && a.alt == b.alt && a.meta == b.meta; }
+
+static bool keyIs(const CscdStr* key, CscdSv name) {
+    if (key->len != name.len) return false;
+    for (size_t i = 0; i < name.len; ++i)
+        if (tolower((unsigned char)name.ptr[i]) != (unsigned char)key->ptr[i]) return false;
+    return true;
+}
+
+void cscdViewAddShortcut(CscdView* v, CscdSv keys, CscdAction action) {
+    Shortcut s;
+    memset(&s, 0, sizeof s);
+    if (!parseShortcut(keys, &s.mods, &s.key)) {
+        viewWarnf(v, CSCD_FEATURE_WARN_SELECTORS, "shortcut \"%.*s\": not one", (int)keys.len, keys.ptr);
+        cscdStrFree(&s.key);
+        cscdActionFree(&action);
+        return;
+    }
+    s.action = action;
+    for (size_t i = 0; i < v->shortcuts.len; ++i) {
+        Shortcut* o = &v->shortcuts.items[i];
+        if (sameMods(o->mods, s.mods) && cscdStrEq(&o->key, &s.key)) {
+            cscdActionFree(&o->action);
+            cscdStrFree(&o->key);
+            *o = s;
+            return;
+        }
+    }
+    cscdVecPush(&v->shortcuts, s);
+}
+
+void cscdViewRemoveShortcut(CscdView* v, CscdSv keys) {
+    CscdModifiers m;
+    CscdStr key = {0};
+    if (parseShortcut(keys, &m, &key))
+        for (size_t i = 0; i < v->shortcuts.len; ++i) {
+            Shortcut* o = &v->shortcuts.items[i];
+            if (!sameMods(o->mods, m) || !cscdStrEq(&o->key, &key)) continue;
+            cscdActionFree(&o->action);
+            cscdStrFree(&o->key);
+            cscdVecRemove(&v->shortcuts, i);
+            break;
+        }
+    cscdStrFree(&key);
+}
+
+void viewShortcutsFree(CscdView* v) {
+    for (size_t i = 0; i < v->shortcuts.len; ++i) {
+        cscdActionFree(&v->shortcuts.items[i].action);
+        cscdStrFree(&v->shortcuts.items[i].key);
+    }
+    cscdVecFree(&v->shortcuts);
+}
+
+/* the item of menu (or of its submenus, filled to look) whose shortcut is that key */
+static const CscdMenuItem* menuShortcut(CscdMenu* menu, CscdModifiers m, CscdSv keyName, CscdPtrVec* filled, int depth) {
+    for (size_t i = 0; i < menu->len; ++i) {
+        CscdMenuItem* it = &menu->items[i];
+        if (it->separator || !it->enabled) continue;
+        if (it->shortcut.len && it->action.fn) {
+            CscdModifiers im;
+            CscdStr key = {0};
+            const bool is = parseShortcut(cscdStrSv(&it->shortcut), &im, &key) && sameMods(im, m) && keyIs(&key, keyName);
+            cscdStrFree(&key);
+            if (is) return it;
+        }
+        if (depth > 4) continue;
+        if (it->submenu.len) {
+            const CscdMenuItem* in = menuShortcut(&it->submenu, m, keyName, filled, depth + 1);
+            if (in) return in;
+        } else if (it->fill.fn) {
+            /* (a submenu filled as it opens: filled to look, kept until the search ends) */
+            CscdMenu* sub = CSCD_NEW(CscdMenu);
+            cscdVecPush(filled, sub);
+            it->fill.fn(it->fill.user, sub);
+            const CscdMenuItem* in = menuShortcut(sub, m, keyName, filled, depth + 1);
+            if (in) return in;
+        }
+    }
+    return NULL;
+}
+
+/* A shortcut of the view's or of a menu bar item's for that key: run (true). */
+static bool runShortcut(CscdView* v, CscdModifiers m, CscdSv keyName, bool inText) {
+    if (!keyName.len) return false;
+    if (inText && !m.ctrl && !m.alt && !m.meta) {
+        /* (in a text field the keys type: only F1 to F24 are left to shortcuts) */
+        if (!(keyName.len >= 2 && keyName.len <= 3 && (keyName.ptr[0] == 'F' || keyName.ptr[0] == 'f') && isdigit((unsigned char)keyName.ptr[1])))
+            return false;
+    }
+    for (size_t i = 0; i < v->shortcuts.len; ++i) {
+        const Shortcut* s = &v->shortcuts.items[i];
+        if (!sameMods(s->mods, m) || !keyIs(&s->key, keyName)) continue;
+        const CscdAction a = s->action; /* (the action may remove its own shortcut) */
+        cscdActionCall(&a);
+        return true;
+    }
+    for (size_t i = 0; i < v->menuBar.len; ++i) {
+        const MenuBarEntry e = v->menuBar.items[i];
+        CscdMenu menu = {0};
+        CscdPtrVec filled = {0};
+        e.fn(e.user, &menu);
+        const CscdMenuItem* it = menuShortcut(&menu, m, keyName, &filled, 0);
+        CscdAction run = {0};
+        if (it) {
+            run = it->action;
+            ((CscdMenuItem*)it)->action.freeUser = NULL; /* (the action's data outlives the menu until it ran) */
+        }
+        for (size_t k = 0; k < filled.len; ++k) {
+            cscdMenuFree((CscdMenu*)filled.items[k]);
+            cscdFree(filled.items[k]);
+        }
+        cscdVecFree(&filled);
+        cscdMenuFree(&menu);
+        if (it) {
+            cscdActionCall(&run);
+            if (run.freeUser) run.freeUser(run.user);
+            return true;
+        }
+    }
+    return false;
+}
+
 void cscdViewKeyDown(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName) {
     if (viewInspectorKey(v, k, m, keyName)) return;
     cscdViewHideTooltip(v);
@@ -345,6 +506,8 @@ void cscdViewKeyDown(CscdView* v, CscdKey k, CscdModifiers m, CscdSv keyName) {
         return;
     }
     if (f != v->doc->focused) return;
+    /* the app's shortcuts, and its menu bar's (before what the focused element does with the key) */
+    if (runShortcut(v, m, keyName, f && isTextControl(f))) return;
     /* Esc hands the keys back to the program */
     if (k == CSCD_KEY_ESCAPE && f && cscdSvEqC(cscdElementAttrC(f, "data-focus"), "keyboard")) {
         cscdViewFocus(v, NULL);

@@ -707,3 +707,113 @@ int cscdWindowRun(CscdWindow* w) {
     while (cscdWindowPump(w, true)) {}
     return 0;
 }
+
+/* ---- the clipboard as X11 and Wayland hand it out ---------------------------------------------------------------- */
+
+void clipDataClear(ClipData* d) {
+    for (size_t i = 0; i < d->len; ++i) {
+        cscdStrFree(&d->items[i].mime);
+        cscdVecFree(&d->items[i].data);
+    }
+    d->len = 0;
+}
+
+void clipDataFree(ClipData* d) {
+    clipDataClear(d);
+    cscdVecFree(d);
+}
+
+const ClipFormat* clipDataFind(const ClipData* d, const char* mime) {
+    for (size_t i = 0; i < d->len; ++i)
+        if (cscdStrEqC(&d->items[i].mime, mime)) return &d->items[i];
+    return NULL;
+}
+
+static void clipDataAdd(ClipData* d, const char* mime, const void* bytes, size_t n) {
+    ClipFormat f;
+    memset(&f, 0, sizeof f);
+    f.mime = cscdStrDupC(mime);
+    if (n) cscdVecAppend(&f.data, (const uint8_t*)bytes, n);
+    cscdVecPush(d, f);
+}
+
+static void clipDataAddText(ClipData* d, CscdSv text) {
+    static const char* const kText[] = {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"};
+    for (size_t i = 0; i < CSCD_COUNT(kText); ++i) clipDataAdd(d, kText[i], text.ptr, text.len);
+}
+
+void clipDataSetText(ClipData* d, CscdSv text) {
+    clipDataClear(d);
+    clipDataAddText(d, text);
+}
+
+void clipDataSetHtml(ClipData* d, CscdSv html, CscdSv text) {
+    clipDataClear(d);
+    clipDataAdd(d, "text/html", html.ptr, html.len);
+    clipDataAddText(d, text);
+}
+
+void clipDataSetImage(ClipData* d, const CscdImage* image) {
+    clipDataClear(d);
+    CscdBytes png = {0};
+    cscdEncodePNG(image, &png);
+    clipDataAdd(d, "image/png", png.items, png.len);
+    cscdVecFree(&png);
+}
+
+void clipDataSetFiles(ClipData* d, const CscdStrVec* paths) {
+    clipDataClear(d);
+    CscdStr uris = {0}, gnome = {0}, text = {0};
+    cscdStrAppendC(&gnome, "copy");
+    for (size_t i = 0; i < paths->len; ++i) {
+        CscdStr uri = {0};
+        cscdStrAppendC(&uri, "file://");
+        const CscdStr* p = &paths->items[i];
+        for (size_t k = 0; k < p->len; ++k) {
+            const unsigned char c = (unsigned char)p->ptr[k];
+            if (isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') cscdStrAppendChar(&uri, (char)c);
+            else {
+                char hex[4];
+                snprintf(hex, sizeof hex, "%%%02X", c);
+                cscdStrAppendC(&uri, hex);
+            }
+        }
+        cscdStrAppend(&uris, cscdStrSv(&uri));
+        cscdStrAppendC(&uris, "\r\n");
+        cscdStrAppendChar(&gnome, '\n');
+        cscdStrAppend(&gnome, cscdStrSv(&uri));
+        if (i) cscdStrAppendChar(&text, '\n');
+        cscdStrAppend(&text, cscdStrSv(p));
+        cscdStrFree(&uri);
+    }
+    clipDataAdd(d, "text/uri-list", uris.ptr, uris.len);
+    clipDataAdd(d, "x-special/gnome-copied-files", gnome.ptr, gnome.len);
+    clipDataAddText(d, cscdStrSv(&text));
+    cscdStrFree(&uris);
+    cscdStrFree(&gnome);
+    cscdStrFree(&text);
+}
+
+static int hexDigit(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
+
+void clipFilePaths(CscdSv list, CscdStrVec* out) {
+    size_t start = 0;
+    while (start < list.len) {
+        size_t end = cscdSvFindChar(list, '\n', start);
+        if (end == CSCD_NPOS) end = list.len;
+        CscdSv line = cscdSvSub(list, start, end - start);
+        start = end + 1;
+        while (line.len && (line.ptr[line.len - 1] == '\r' || line.ptr[line.len - 1] == '\0')) --line.len;
+        if (!cscdSvStartsC(line, "file://")) continue;
+        const size_t slash = cscdSvFindChar(line, '/', 7); /* past the host name, usually empty */
+        if (slash == CSCD_NPOS) continue;
+        CscdStr path = {0};
+        for (size_t i = slash; i < line.len; ++i) {
+            if (line.ptr[i] == '%' && i + 2 < line.len && isxdigit((unsigned char)line.ptr[i + 1]) && isxdigit((unsigned char)line.ptr[i + 2])) {
+                cscdStrAppendChar(&path, (char)(hexDigit(line.ptr[i + 1]) * 16 + hexDigit(line.ptr[i + 2])));
+                i += 2;
+            } else cscdStrAppendChar(&path, line.ptr[i]);
+        }
+        cscdVecPush(out, path);
+    }
+}

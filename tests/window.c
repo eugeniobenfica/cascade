@@ -222,6 +222,62 @@ static void testPopups(void) {
     cscdWindowFree(w);
 }
 
+/* The system's clipboard, format by format, there and back (only when asked for: it replaces what the user copied). */
+static void testClipboard(void) {
+    Host h = {0};
+    CscdWindow* w = openWindow(&h);
+    CscdView* v = cscdWindowView(w);
+    CHECK(waitFor(w, &h, 1));
+    /* text */
+    CHECK(cscdViewCopyText(v, CSCD_SV("plain \xC3\xA9t\xC3\xA9")));
+    CscdStr s = {0};
+    cscdViewClipboardText(v, &s);
+    CHECK(cscdStrEqC(&s, "plain \xC3\xA9t\xC3\xA9"));
+    cscdStrClear(&s);
+    /* HTML, with its text */
+    CHECK(cscdViewCopyHtml(v, CSCD_SV("<b>bold</b> \xC3\xA9"), CSCD_SV("bold \xC3\xA9")));
+    cscdViewClipboardHtml(v, &s);
+    CHECK(cscdStrEqC(&s, "<b>bold</b> \xC3\xA9"));
+    cscdStrClear(&s);
+    cscdViewClipboardText(v, &s);
+    CHECK(cscdStrEqC(&s, "bold \xC3\xA9"));
+    cscdStrClear(&s);
+    /* an image: an opaque pixel and a half transparent one come back as they went */
+    CscdImage img, back;
+    cscdImageInit(&img, 3, 2);
+    cscdImageRow(&img, 0)[0] = 0xFF2040C0u;
+    cscdImageRow(&img, 1)[2] = 0x80400000u; /* (premultiplied: half of 0x80 red) */
+    CHECK(cscdViewCopyImage(v, &img));
+    if (cscdViewClipboardImage(v, &back)) {
+        CHECK(back.width == 3 && back.height == 2);
+        CHECK(cscdImageRow(&back, 0)[0] == 0xFF2040C0u);
+        const uint32_t p = cscdImageRow(&back, 1)[2];
+        CHECK((p >> 24) == 0x80 && ((p >> 16) & 255) >= 0x3E && ((p >> 16) & 255) <= 0x42);
+        cscdImageFini(&back);
+    } else {
+        CHECK(!"the image came back");
+    }
+    cscdImageFini(&img);
+    /* files */
+    CscdStrVec files = {0}, got = {0};
+    cscdVecPush(&files, cscdStrDupC(
+#ifdef _WIN32
+        "C:\\cascade test\\a b.txt"
+#else
+        "/tmp/cascade test/a b.txt"
+#endif
+        ));
+    CHECK(cscdViewCopyFiles(v, &files));
+    cscdViewClipboardFiles(v, &got);
+    CHECK(got.len == 1 && got.len == files.len && cscdStrEq(&got.items[0], &files.items[0]));
+    for (size_t i = 0; i < files.len; ++i) cscdStrFree(&files.items[i]);
+    for (size_t i = 0; i < got.len; ++i) cscdStrFree(&got.items[i]);
+    cscdVecFree(&files);
+    cscdVecFree(&got);
+    cscdStrFree(&s);
+    cscdWindowFree(w);
+}
+
 static void testRefused(void) {
     Host h = {0};
     h.refuse = true;
@@ -240,6 +296,7 @@ int main(void) {
     }
     testPresenter();
     testPopups();
+    if (getenv("CASCADE_TEST_CLIPBOARD")) testClipboard();
     testRefused();
     if (!failures) puts("ok");
     return failures ? 1 : 0;

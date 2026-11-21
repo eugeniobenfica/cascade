@@ -177,30 +177,8 @@ static void latin1ToUtf8(const char* s, size_t n, CscdStr* out) {
     for (size_t i = 0; i < n; ++i) cscdUtf8Append(out, (unsigned char)s[i]);
 }
 
-static int hexValue(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
-
 /* file:// lines of a text/uri-list (or of GNOME's copied-files list) as paths, appended to files. */
-static void filePaths(CscdSv list, CscdStrVec* files) {
-    size_t start = 0;
-    while (start < list.len) {
-        size_t end = cscdSvFindChar(list, '\n', start);
-        if (end == CSCD_NPOS) end = list.len;
-        CscdSv line = cscdSvSub(list, start, end - start);
-        start = end + 1;
-        while (line.len && (line.ptr[line.len - 1] == '\r' || line.ptr[line.len - 1] == '\0')) --line.len;
-        if (!cscdSvStartsC(line, "file://")) continue;
-        size_t slash = cscdSvFindChar(line, '/', 7); /* past the host name, usually empty */
-        if (slash == CSCD_NPOS) continue;
-        CscdStr path = {0};
-        for (size_t i = slash; i < line.len; ++i) {
-            if (line.ptr[i] == '%' && i + 2 < line.len && isxdigit((unsigned char)line.ptr[i + 1]) && isxdigit((unsigned char)line.ptr[i + 2])) {
-                cscdStrAppendChar(&path, (char)(hexValue(line.ptr[i + 1]) * 16 + hexValue(line.ptr[i + 2])));
-                i += 2;
-            } else cscdStrAppendChar(&path, line.ptr[i]);
-        }
-        cscdVecPush(files, path);
-    }
-}
+static void filePaths(CscdSv list, CscdStrVec* files) { clipFilePaths(list, files); }
 
 static void removeCR(CscdStr* s) {
     size_t k = 0;
@@ -218,7 +196,6 @@ static void programName(char buf[256]) {
     if (!buf[0]) strcpy(buf, "cascade");
 }
 
-typedef enum ClipKind { CLIP_NOTHING, CLIP_TEXT, CLIP_PNG } ClipKind;
 
 #define CURSOR_KINDS 64
 
@@ -244,9 +221,7 @@ struct CscdWindowNative {
     bool cursorShown;
     CscdCursor shown;
     /* the CLIPBOARD selection while this window owns it */
-    ClipKind clipKind;
-    CscdStr clipText;
-    CscdBytes clipPng;
+    ClipData clip;
     /* a drag from another app (XDND) */
     Window dndSource;
     int dndVersion;
@@ -404,33 +379,35 @@ static void answerSelectionRequest(CscdWindowNative* n, const XSelectionRequestE
     reply.xselection.time = r->time;
     reply.xselection.property = XNONE;
     const Atom prop = r->property != XNONE ? r->property : r->target;
-    const bool text = n->clipKind == CLIP_TEXT, png = n->clipKind == CLIP_PNG;
-    const Atom textTargets[] = {atom(n, UTF8_STRING), atom(n, TEXT_PLAIN_UTF8), XA_STRING, atom(n, TEXT), atom(n, TEXT_PLAIN)};
-    bool isText = false;
-    for (size_t i = 0; i < CSCD_COUNT(textTargets); ++i) isText = isText || r->target == textTargets[i];
-    if (r->selection == atom(n, CLIPBOARD) && (text || png)) {
+    if (r->selection == atom(n, CLIPBOARD) && n->clip.len) {
+        const bool text = clipDataFind(&n->clip, "UTF8_STRING") != NULL;
         /* the biggest property one request can set (BIG-REQUESTS makes it many megabytes) */
         long words = XExtendedMaxRequestSize(dpy);
         if (!words) words = XMaxRequestSize(dpy);
         const size_t limit = (size_t)words * 4 - 64;
         if (r->target == atom(n, TARGETS)) {
-            Atom list[8];
-            int count = 0;
-            list[count++] = atom(n, TARGETS);
-            if (text) for (size_t i = 0; i < CSCD_COUNT(textTargets); ++i) list[count++] = textTargets[i];
-            else list[count++] = atom(n, IMAGE_PNG);
-            XChangeProperty(dpy, r->requestor, prop, XA_ATOM, 32, PropModeReplace, (const unsigned char*)list, count);
+            CSCD_VEC(Atom) list = {0};
+            cscdVecPush(&list, atom(n, TARGETS));
+            for (size_t i = 0; i < n->clip.len; ++i) cscdVecPush(&list, XInternAtom(dpy, cscdStrC(&n->clip.items[i].mime), False));
+            if (text) {
+                cscdVecPush(&list, XA_STRING);
+                cscdVecPush(&list, atom(n, TEXT));
+            }
+            XChangeProperty(dpy, r->requestor, prop, XA_ATOM, 32, PropModeReplace, (const unsigned char*)list.items, (int)list.len);
+            cscdVecFree(&list);
             reply.xselection.property = prop;
-        } else if (text && isText) {
-            const Atom type = r->target == atom(n, TEXT) ? atom(n, UTF8_STRING) : r->target;
-            if (n->clipText.len <= limit) {
-                XChangeProperty(dpy, r->requestor, prop, type, 8, PropModeReplace, (const unsigned char*)(n->clipText.ptr ? n->clipText.ptr : ""),
-                                (int)n->clipText.len);
+        } else {
+            /* (TEXT and STRING: the UTF-8 text, as before) */
+            char* name = XGetAtomName(dpy, r->target);
+            const bool asText = r->target == atom(n, TEXT) || r->target == XA_STRING;
+            const ClipFormat* fmt = asText ? clipDataFind(&n->clip, "UTF8_STRING") : name ? clipDataFind(&n->clip, name) : NULL;
+            if (name) XFree(name);
+            if (fmt && fmt->data.len <= limit) {
+                const Atom type = r->target == atom(n, TEXT) ? atom(n, UTF8_STRING) : r->target;
+                XChangeProperty(dpy, r->requestor, prop, type, 8, PropModeReplace, fmt->data.len ? fmt->data.items : (const unsigned char*)"",
+                                (int)fmt->data.len);
                 reply.xselection.property = prop;
             }
-        } else if (png && r->target == atom(n, IMAGE_PNG) && n->clipPng.len <= limit) {
-            XChangeProperty(dpy, r->requestor, prop, r->target, 8, PropModeReplace, n->clipPng.items, (int)n->clipPng.len);
-            reply.xselection.property = prop;
         }
     }
     XSendEvent(dpy, r->requestor, False, NoEventMask, &reply);
@@ -481,8 +458,7 @@ void windowDestroyNative(CscdWindow* w) {
     }
     for (int i = 0; i < 2; ++i) if (n->wake[i] >= 0) close(n->wake[i]);
     platformCloseLibrary(n->xcursorLib);
-    cscdStrFree(&n->clipText);
-    cscdVecFree(&n->clipPng);
+    clipDataFree(&n->clip);
     cscdVecFree(&n->dndTypes);
     cscdFree(n);
     w->native = NULL;
@@ -492,20 +468,44 @@ void windowDestroyNative(CscdWindow* w) {
 
 static void clipSetText(void* user, CscdSv text) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
-    n->clipKind = CLIP_TEXT;
-    cscdStrSet(&n->clipText, text);
-    n->clipPng.len = 0;
+    clipDataSetText(&n->clip, text);
     takeClipboard(n);
+}
+
+static void clipSetHtml(void* user, CscdSv html, CscdSv text) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    clipDataSetHtml(&n->clip, html, text);
+    takeClipboard(n);
+}
+
+static void clipSetImage(void* user, const CscdImage* img) {
+    if (img->width <= 0 || img->height <= 0) return;
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    clipDataSetImage(&n->clip, img);
+    takeClipboard(n);
+}
+
+static void clipSetFiles(void* user, const CscdStrVec* paths) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    clipDataSetFiles(&n->clip, paths);
+    takeClipboard(n);
+}
+
+/* the clipboard's mime: ours when we own it, else asked of its owner (false: it has none) */
+static bool clipRead(CscdWindowNative* n, const char* mime, Atom target, CscdStr* out) {
+    if (ownsClipboard(n)) {
+        const ClipFormat* f = clipDataFind(&n->clip, mime);
+        if (!f) return false;
+        cscdStrAppend(out, cscdSvMake((const char*)f->data.items, f->data.len));
+        return true;
+    }
+    return readSelection(n, atom(n, CLIPBOARD), target, out);
 }
 
 static void clipGetText(void* user, CscdStr* out) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
-    if (ownsClipboard(n)) {
-        if (n->clipKind == CLIP_TEXT) cscdStrAppend(out, cscdStrSv(&n->clipText));
-        return;
-    }
     CscdStr s = {0};
-    if (!readSelection(n, atom(n, CLIPBOARD), atom(n, UTF8_STRING), &s)) {
+    if (!clipRead(n, "UTF8_STRING", atom(n, UTF8_STRING), &s) && !ownsClipboard(n)) {
         CscdStr l = {0};
         cscdStrClear(&s);
         if (readSelection(n, atom(n, CLIPBOARD), XA_STRING, &l)) latin1ToUtf8(l.ptr, l.len, &s);
@@ -516,22 +516,58 @@ static void clipGetText(void* user, CscdStr* out) {
     cscdStrFree(&s);
 }
 
-static void clipSetImage(void* user, const CscdImage* img) {
-    if (img->width <= 0 || img->height <= 0) return;
+/* text/html: UTF-8, or UTF-16 after a byte order mark (as some browsers put it) */
+static void clipGetHtml(void* user, CscdStr* out) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
-    n->clipKind = CLIP_PNG;
-    n->clipPng.len = 0;
-    cscdEncodePNG(img, &n->clipPng);
-    cscdStrClear(&n->clipText);
-    takeClipboard(n);
+    CscdStr s = {0};
+    if (clipRead(n, "text/html", XInternAtom(n->dpy, "text/html", False), &s)) {
+        if (s.len >= 2 && (unsigned char)s.ptr[0] == 0xFF && (unsigned char)s.ptr[1] == 0xFE) {
+            CscdStr u = {0};
+            for (size_t i = 2; i + 1 < s.len; i += 2) {
+                uint32_t c = (uint8_t)s.ptr[i] | (uint32_t)(uint8_t)s.ptr[i + 1] << 8;
+                if (c >= 0xD800 && c < 0xDC00 && i + 3 < s.len) {
+                    const uint32_t lo = (uint8_t)s.ptr[i + 2] | (uint32_t)(uint8_t)s.ptr[i + 3] << 8;
+                    if (lo >= 0xDC00 && lo < 0xE000) {
+                        c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                        i += 2;
+                    }
+                }
+                cscdUtf8Append(&u, c);
+            }
+            cscdStrFree(&s);
+            s = u;
+        } else if (s.len >= 3 && (unsigned char)s.ptr[0] == 0xEF && (unsigned char)s.ptr[1] == 0xBB && (unsigned char)s.ptr[2] == 0xBF) {
+            memmove(s.ptr, s.ptr + 3, s.len - 3);
+            cscdStrTruncate(&s, s.len - 3);
+        }
+        removeCR(&s);
+        cscdStrAppend(out, cscdStrSv(&s));
+    }
+    cscdStrFree(&s);
+}
+
+static bool clipGetImage(void* user, CscdImage* out) {
+    CscdWindowNative* n = ((CscdWindow*)user)->native;
+    CscdStr s = {0};
+    bool ok = false;
+    if (clipRead(n, "image/png", atom(n, IMAGE_PNG), &s)) {
+        CscdImage* img = cscdDecodeImage((const uint8_t*)s.ptr, s.len);
+        if (img && img->width > 0 && img->height > 0) {
+            cscdImageInit(out, img->width, img->height);
+            memcpy(out->pixels, img->pixels, (size_t)img->width * (size_t)img->height * 4);
+            ok = true;
+        }
+        cscdRelease(img);
+    }
+    cscdStrFree(&s);
+    return ok;
 }
 
 static void clipGetFiles(void* user, CscdStrVec* out) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
-    if (ownsClipboard(n)) return;
     CscdStr list = {0};
-    if (readSelection(n, atom(n, CLIPBOARD), atom(n, URI_LIST), &list)) filePaths(cscdStrSv(&list), out);
-    else if (readSelection(n, atom(n, CLIPBOARD), atom(n, GNOME_COPIED_FILES), &list)) filePaths(cscdStrSv(&list), out); /* "copy" or "cut" first */
+    if (clipRead(n, "text/uri-list", atom(n, URI_LIST), &list)) filePaths(cscdStrSv(&list), out);
+    else if (!ownsClipboard(n) && readSelection(n, atom(n, CLIPBOARD), atom(n, GNOME_COPIED_FILES), &list)) filePaths(cscdStrSv(&list), out); /* "copy" or "cut" first */
     cscdStrFree(&list);
 }
 
@@ -654,7 +690,8 @@ void windowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
 
     w->presenter = windowPresenterNew(w, &n->surface, opts->backend, w->clientW, w->clientH);
     cscdViewSetViewport(w->view, w->clientW / w->dpr, w->clientH / w->dpr, w->dpr);
-    cscdViewSetClipboardHooks(w->view, clipSetText, clipGetText, clipSetImage, clipGetFiles, w);
+    const CscdClipboardHooks clip = {clipSetText, clipGetText, clipSetHtml, clipGetHtml, clipSetImage, clipGetImage, clipSetFiles, clipGetFiles, w};
+    cscdViewSetClipboard(w->view, &clip);
 }
 
 void* windowSurface(const CscdWindow* w) { return &w->native->surface; }
@@ -1070,11 +1107,7 @@ bool cscdWindowPump(CscdWindow* w, bool wait) {
             answerSelectionRequest(n, &e.xselectionrequest);
             break;
         case SelectionClear:
-            if (e.xselectionclear.selection == atom(n, CLIPBOARD)) {
-                n->clipKind = CLIP_NOTHING;
-                cscdStrClear(&n->clipText);
-                n->clipPng.len = 0;
-            }
+            if (e.xselectionclear.selection == atom(n, CLIPBOARD)) clipDataClear(&n->clip);
             break;
         case ClientMessage:
             clientMessage(w, &e);
