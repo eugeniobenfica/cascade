@@ -871,6 +871,89 @@ static void testShortcuts(void) {
     cscdViewFree(v);
 }
 
+/* What screen readers are told when the page changes: the element whose children changed, the one whose name did, the
+ * live region to say; the whole tree only when too much changed. */
+typedef struct A11yLog { CscdElement* e[32]; CscdAccessibleEvent kind[32]; int n; } A11yLog;
+static void logA11y(void* user, CscdElement* e, CscdAccessibleEvent kind) {
+    A11yLog* l = (A11yLog*)user;
+    if (l->n < 32) {
+        l->e[l->n] = e;
+        l->kind[l->n] = kind;
+    }
+    ++l->n;
+}
+static bool sawA11y(const A11yLog* l, CscdElement* e, CscdAccessibleEvent kind) {
+    for (int i = 0; i < l->n && i < 32; ++i) if (l->e[i] == e && l->kind[i] == kind) return true;
+    return false;
+}
+
+static void testA11yUpdates(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<ul id=list role=list><li>a</li><li>b</li></ul><div id=st role=status></div><p id=quiet><span id=s>x</span></p>"
+                  "<button id=btn>Save</button><div aria-live=assertive id=alert><b id=inner>ok</b></div>");
+    A11yLog log = {0};
+    cscdViewOnAccessibleEvent(v, logA11y, &log);
+    /* an item added: the list's children changed, not the whole page's */
+    CscdElement* li = cscdElementNew(CSCD_SV("li"));
+    cscdElementSetText(li, CSCD_SV("c"));
+    cscdNodeAppendChild(cscdElementNode(byId(v, "list")), cscdElementNode(li));
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, byId(v, "list"), CSCD_A11Y_EVENT_STRUCTURE) && !sawA11y(&log, NULL, CSCD_A11Y_EVENT_STRUCTURE));
+    /* a button's text: its name */
+    log.n = 0;
+    cscdElementSetText(byId(v, "btn"), CSCD_SV("Saved"));
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, byId(v, "btn"), CSCD_A11Y_EVENT_NAME) && !sawA11y(&log, NULL, CSCD_A11Y_EVENT_STRUCTURE));
+    /* a status's text: said politely; something deeper in an assertive region: that region */
+    log.n = 0;
+    cscdElementSetText(byId(v, "st"), CSCD_SV("3 files saved"));
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, byId(v, "st"), CSCD_A11Y_EVENT_LIVE) && cscdAccessibleLive(byId(v, "st")) == 1);
+    log.n = 0;
+    cscdElementSetText(byId(v, "inner"), CSCD_SV("failed"));
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, byId(v, "alert"), CSCD_A11Y_EVENT_LIVE) && cscdAccessibleLive(byId(v, "alert")) == 2);
+    /* outside any live region: nothing said */
+    log.n = 0;
+    cscdElementSetText(byId(v, "s"), CSCD_SV("y"));
+    cscdViewUpdate(v);
+    bool said = false;
+    for (int i = 0; i < log.n && i < 32; ++i) said = said || log.kind[i] == CSCD_A11Y_EVENT_LIVE;
+    CHECK(!said && cscdAccessibleLive(byId(v, "quiet")) == 0);
+    /* a new page: the whole tree */
+    log.n = 0;
+    cscdViewLoadHTML(v, CSCD_SV("<p>another</p>"), CSCD_SV(""));
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, NULL, CSCD_A11Y_EVENT_STRUCTURE));
+    cscdViewOnAccessibleEvent(v, NULL, NULL);
+    cscdViewFree(v);
+}
+
+/* A text field's text as readers go through it: its selection, where a stretch shows, a selection made. */
+static void testA11yText(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>textarea{font:16px sans-serif;width:300px;height:100px}</style><input id=i value='hello world'><textarea id=t>one\ntwo\nthree</textarea>");
+    CscdElement *i = byId(v, "i"), *t = byId(v, "t");
+    size_t a = 1, z = 1;
+    CHECK(cscdAccessibleTextSelection(i, &a, &z) && a == z);
+    CHECK(cscdAccessibleSelectText(v, i, 6, 11) && cscdAccessibleTextSelection(i, &a, &z) && a == 6 && z == 11);
+    CscdRectVec rects = {0};
+    cscdAccessibleTextRects(v, i, 6, 11, &rects);
+    const CscdRect box = cscdViewElementRect(v, i);
+    CHECK(rects.len == 1 && rects.items[0].w > 10 && rects.items[0].x > box.x && cscdRectRight(rects.items[0]) <= cscdRectRight(box) + 1);
+    /* across three lines of a textarea: three rectangles, one under another */
+    CHECK(cscdAccessibleSelectText(v, t, 1, 10));
+    rects.len = 0;
+    cscdAccessibleTextRects(v, t, 1, 10, &rects);
+    CHECK(rects.len == 3 && rects.items[1].y > rects.items[0].y && rects.items[2].y > rects.items[1].y);
+    /* the place at a point: back where it was */
+    const size_t at = cscdAccessibleTextOffsetAt(v, t, rects.items[2].x + rects.items[2].w - 1, rects.items[2].y + rects.items[2].h / 2);
+    CHECK(at >= 9 && at <= 10);
+    cscdVecFree(&rects);
+    CHECK(!cscdAccessibleTextSelection(byId(v, "i") ? cscdDocumentBody(cscdViewDocument(v)) : NULL, &a, &z));
+    cscdViewFree(v);
+}
+
 static void testMenus(void) {
     CscdView* v = cscdViewNew();
     menuView = v;
@@ -5114,6 +5197,8 @@ int main(void) {
     testBinding();
     testAccessors();
     testMenus();
+    testA11yUpdates();
+    testA11yText();
     testShortcuts();
     testPopupWindows();
     testDragDrop();

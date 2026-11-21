@@ -211,14 +211,30 @@ static void onEvent(void* user, CscdElement* e, CscdAccessibleEvent event) {
     CscdWindow* w = (CscdWindow*)user;
     CscdA11yLink* link = linkOf(w);
     if (!link) return;
-    if (event == CSCD_A11Y_EVENT_STRUCTURE || !e) {
+    if (!e || (event == CSCD_A11Y_EVENT_STRUCTURE && e == cscdAccessibleRoot(w->view))) {
         NSAccessibilityPostNotification((__bridge id)windowSurface(w), NSAccessibilityLayoutChangedNotification);
+        return;
+    }
+    if (event == CSCD_A11Y_EVENT_LIVE) {
+        /* a live region's text, said (polite or assertive) */
+        CscdStr text = {0};
+        cscdNodeTextContent(cscdElementNode(e), &text);
+        NSString* said = [[NSString alloc] initWithBytes:text.ptr ? text.ptr : "" length:text.len encoding:NSUTF8StringEncoding];
+        cscdStrFree(&text);
+        if (said.length)
+            NSAccessibilityPostNotificationWithUserInfo(NSApp, NSAccessibilityAnnouncementRequestedNotification, @{
+                NSAccessibilityAnnouncementKey : said,
+                NSAccessibilityPriorityKey : @(cscdAccessibleLive(e) == 2 ? NSAccessibilityPriorityHigh : NSAccessibilityPriorityMedium)
+            });
         return;
     }
     if (!cscdAccessibleIncluded(e)) return;
     CscdA11yNode* node = nodeFor(link, e);
-    NSAccessibilityPostNotification(node, event == CSCD_A11Y_EVENT_FOCUS ? NSAccessibilityFocusedUIElementChangedNotification
-                                                                          : NSAccessibilityValueChangedNotification);
+    NSAccessibilityNotificationName what = event == CSCD_A11Y_EVENT_FOCUS ? NSAccessibilityFocusedUIElementChangedNotification
+                                           : event == CSCD_A11Y_EVENT_STRUCTURE ? NSAccessibilityLayoutChangedNotification
+                                           : event == CSCD_A11Y_EVENT_NAME ? NSAccessibilityTitleChangedNotification
+                                                                           : NSAccessibilityValueChangedNotification;
+    NSAccessibilityPostNotification(node, what);
 }
 
 void cocoaA11yAttach(CscdWindow* w) {

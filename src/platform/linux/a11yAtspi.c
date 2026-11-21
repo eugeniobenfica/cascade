@@ -883,6 +883,23 @@ static void accessibleEvent(void* user, CscdElement* e, CscdAccessibleEvent even
         if (root) emit(a, e ? e : root, "ChildrenChanged", "add", 0, 'r', e ? e : root);
         break;
     }
+    case CSCD_A11Y_EVENT_NAME:
+        if (e) {
+            CscdStr s = {0};
+            cscdAccessibleName(v, e, &s);
+            emit(a, e, "PropertyChange", "accessible-name", 0, 's', cscdStrC(&s));
+            cscdStrFree(&s);
+        }
+        break;
+    case CSCD_A11Y_EVENT_LIVE:
+        if (e) {
+            /* (Orca says an announcement: the region's text, polite 1 or assertive 2) */
+            CscdStr s = {0};
+            cscdNodeTextContent(cscdElementNode(e), &s);
+            if (s.len) emit(a, e, "Announcement", "", cscdAccessibleLive(e), 's', cscdStrC(&s));
+            cscdStrFree(&s);
+        }
+        break;
     }
 }
 

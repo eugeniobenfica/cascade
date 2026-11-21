@@ -191,6 +191,14 @@ static void onAccessibleEvent(void* user, CscdElement* e, CscdAccessibleEvent ev
     if (!link.window || !UIAccessibilityIsVoiceOverRunning()) return;
     if (event == CSCD_A11Y_EVENT_FOCUS && e) {
         UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, nodeFor(link, e));
+    } else if (event == CSCD_A11Y_EVENT_LIVE && e) {
+        CscdStr text = {0};
+        cscdNodeTextContent(cscdElementNode(e), &text);
+        NSString* said = [[NSString alloc] initWithBytes:text.ptr ? text.ptr : "" length:text.len encoding:NSUTF8StringEncoding];
+        cscdStrFree(&text);
+        if (said.length) UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, said);
+    } else if (event == CSCD_A11Y_EVENT_NAME) {
+        /* (read when it is next looked at) */
     } else if (event == CSCD_A11Y_EVENT_STRUCTURE && !link.layoutPending) {
         /* once for a burst of changes: the elements of removed ones go, VoiceOver reads the page again */
         link.layoutPending = YES;

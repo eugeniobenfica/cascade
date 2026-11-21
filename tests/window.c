@@ -11,7 +11,10 @@
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
+#define COBJMACROS
 #include <windows.h>
+#include <ole2.h>
+#include <uiautomation.h>
 #endif
 
 static int failures = 0;
@@ -260,13 +263,12 @@ static void testClipboard(void) {
     cscdImageFini(&img);
     /* files */
     CscdStrVec files = {0}, got = {0};
-    cscdVecPush(&files, cscdStrDupC(
 #ifdef _WIN32
-        "C:\\cascade test\\a b.txt"
+    const char* path = "C:\\cascade test\\a b.txt";
 #else
-        "/tmp/cascade test/a b.txt"
+    const char* path = "/tmp/cascade test/a b.txt";
 #endif
-        ));
+    cscdVecPush(&files, cscdStrDupC(path));
     CHECK(cscdViewCopyFiles(v, &files));
     cscdViewClipboardFiles(v, &got);
     CHECK(got.len == 1 && got.len == files.len && cscdStrEq(&got.items[0], &files.items[0]));
@@ -277,6 +279,102 @@ static void testClipboard(void) {
     cscdStrFree(&s);
     cscdWindowFree(w);
 }
+
+#ifdef _WIN32
+/* UI Automation's text pattern on a text field: the text, by word and by line, the selection both ways. */
+static WCHAR* rangeText(ITextRangeProvider* r) {
+    static WCHAR buf[64];
+    BSTR b = NULL;
+    buf[0] = 0;
+    if (SUCCEEDED(r->lpVtbl->GetText(r, -1, &b)) && b) {
+        wcsncpy(buf, b, 63);
+        buf[63] = 0;
+        SysFreeString(b);
+    }
+    return buf;
+}
+
+static ITextProvider* textOf(CscdWindow* w, CscdElement* e) {
+    IRawElementProviderSimple* p = (IRawElementProviderSimple*)winA11yProvider(w, e);
+    IUnknown* pattern = NULL;
+    ITextProvider* text = NULL;
+    if (p && SUCCEEDED(p->lpVtbl->GetPatternProvider(p, UIA_TextPatternId, &pattern)) && pattern) {
+        pattern->lpVtbl->QueryInterface(pattern, &IID_ITextProvider, (void**)&text);
+        pattern->lpVtbl->Release(pattern);
+    }
+    if (p) p->lpVtbl->Release(p);
+    return text;
+}
+
+static void testTextPattern(void) {
+    Host h = {0};
+    CscdWindow* w = openWindow(&h);
+    CscdView* v = cscdWindowView(w);
+    cscdViewLoadHTML(v, CSCD_SV("<input id=f value='hello world'><textarea id=t>one two\nthree</textarea><button id=b>b</button>"), CSCD_SV(""));
+    CHECK(waitFor(w, &h, 1));
+    CscdElement *f = cscdViewGetElementById(v, CSCD_SV("f")), *t = cscdViewGetElementById(v, CSCD_SV("t"));
+    CHECK(!textOf(w, cscdViewGetElementById(v, CSCD_SV("b")))); /* (a button has none) */
+    ITextProvider* text = textOf(w, f);
+    CHECK(text != NULL);
+    if (text) {
+        ITextRangeProvider* all = NULL;
+        CHECK(SUCCEEDED(text->lpVtbl->get_DocumentRange(text, &all)) && all);
+        CHECK(!wcscmp(rangeText(all), L"hello world"));
+        /* the first word, the next, a character */
+        ITextRangeProvider* r = NULL;
+        all->lpVtbl->Clone(all, &r);
+        r->lpVtbl->MoveEndpointByRange(r, TextPatternRangeEndpoint_End, all, TextPatternRangeEndpoint_Start);
+        r->lpVtbl->ExpandToEnclosingUnit(r, TextUnit_Word);
+        CHECK(!wcscmp(rangeText(r), L"hello "));
+        int moved = 0;
+        r->lpVtbl->Move(r, TextUnit_Word, 1, &moved);
+        CHECK(moved == 1 && !wcscmp(rangeText(r), L"world"));
+        r->lpVtbl->ExpandToEnclosingUnit(r, TextUnit_Character);
+        CHECK(!wcscmp(rangeText(r), L"w"));
+        /* selected through it, read back as the selection */
+        r->lpVtbl->MoveEndpointByUnit(r, TextPatternRangeEndpoint_End, TextUnit_Character, 2, &moved);
+        CHECK(moved == 2 && !wcscmp(rangeText(r), L"wor"));
+        CHECK(SUCCEEDED(r->lpVtbl->Select(r)));
+        CHECK(cscdViewDocument(v)->focused == f);
+        SAFEARRAY* sel = NULL;
+        CHECK(SUCCEEDED(text->lpVtbl->GetSelection(text, &sel)) && sel);
+        if (sel) {
+            LONG at = 0;
+            IUnknown* u = NULL;
+            ITextRangeProvider* s = NULL;
+            SafeArrayGetElement(sel, &at, &u);
+            if (u) u->lpVtbl->QueryInterface(u, &IID_ITextRangeProvider, (void**)&s);
+            CHECK(s && !wcscmp(rangeText(s), L"wor"));
+            if (s) s->lpVtbl->Release(s);
+            if (u) u->lpVtbl->Release(u);
+            SafeArrayDestroy(sel);
+        }
+        /* where it is: a rectangle on the screen, inside the window */
+        SAFEARRAY* rects = NULL;
+        CHECK(SUCCEEDED(r->lpVtbl->GetBoundingRectangles(r, &rects)) && rects && rects->rgsabound[0].cElements == 4);
+        if (rects) SafeArrayDestroy(rects);
+        r->lpVtbl->Release(r);
+        all->lpVtbl->Release(all);
+        text->lpVtbl->Release(text);
+    }
+    /* a textarea by line */
+    text = textOf(w, t);
+    CHECK(text != NULL);
+    if (text) {
+        ITextRangeProvider* r = NULL;
+        text->lpVtbl->get_DocumentRange(text, &r);
+        r->lpVtbl->MoveEndpointByRange(r, TextPatternRangeEndpoint_End, r, TextPatternRangeEndpoint_Start);
+        r->lpVtbl->ExpandToEnclosingUnit(r, TextUnit_Line);
+        CHECK(!wcscmp(rangeText(r), L"one two\n"));
+        int moved = 0;
+        r->lpVtbl->Move(r, TextUnit_Line, 5, &moved);
+        CHECK(moved == 1 && !wcscmp(rangeText(r), L"three"));
+        r->lpVtbl->Release(r);
+        text->lpVtbl->Release(text);
+    }
+    cscdWindowFree(w);
+}
+#endif
 
 static void testRefused(void) {
     Host h = {0};
@@ -296,6 +394,9 @@ int main(void) {
     }
     testPresenter();
     testPopups();
+#ifdef _WIN32
+    testTextPattern();
+#endif
     if (getenv("CASCADE_TEST_CLIPBOARD")) testClipboard();
     testRefused();
     if (!failures) puts("ok");

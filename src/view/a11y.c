@@ -363,6 +363,133 @@ void viewA11yNotify(CscdView* v, CscdSv type, CscdElement* target) {
     else if (cscdSvEqC(type, "toggle")) v->onA11y(v->onA11yUser, target, CSCD_A11Y_EVENT_STATE);
 }
 
+/* the element of the accessible tree that holds n (itself when it is one; the root when none does) */
+static CscdElement* holder(const CscdView* v, CscdNode* n) {
+    for (; n; n = n->parent) {
+        CscdElement* e = cscdNodeAsElement(n);
+        if (e && (cscdAccessibleIncluded(e) || e == cscdAccessibleRoot(v))) return e;
+    }
+    return cscdAccessibleRoot(v);
+}
+
+static void pushOnce(CscdPtrVec* to, void* p) {
+    if (!p) return;
+    for (size_t i = 0; i < to->len; ++i) if (to->items[i] == p) return;
+    cscdVecPush(to, p);
+}
+
+/* the live regions n is in, outermost last */
+static void livesOf(CscdNode* n, CscdPtrVec* to) {
+    for (; n; n = n->parent) {
+        CscdElement* e = cscdNodeAsElement(n);
+        if (e && cscdAccessibleLive(e)) pushOnce(to, e);
+    }
+}
+
+/* What the changes since the last restyle did to the accessible tree, element by element: the elements whose
+ * children changed, those whose name did (their text), the live regions they are in. Too many, or none known: the
+ * whole tree (NULL). */
 void viewA11yStructure(CscdView* v) {
-    if (v->onA11y && viewOn(v, CSCD_FEATURE_ACCESSIBILITY)) v->onA11y(v->onA11yUser, NULL, CSCD_A11Y_EVENT_STRUCTURE);
+    if (!v->onA11y || !viewOn(v, CSCD_FEATURE_ACCESSIBILITY)) return;
+    CscdDocument* d = v->doc;
+    const size_t known = d->nodeChanges.len + d->attrChanged.len + d->textChanged.len;
+    if (d->nodeChangesFull || known == 0 || known > 64) {
+        v->onA11y(v->onA11yUser, NULL, CSCD_A11Y_EVENT_STRUCTURE);
+        return;
+    }
+    CscdPtrVec children = {0}, names = {0}, lives = {0};
+    for (size_t i = 0; i < d->nodeChanges.len; ++i) {
+        CscdNode* n = d->nodeChanges.items[i].node;
+        if (!n) continue;
+        /* (a node that came or went, or changed: what holds it has other children now) */
+        pushOnce(&children, holder(v, n->parent ? n->parent : n));
+        livesOf(n, &lives);
+    }
+    for (size_t i = 0; i < d->attrChanged.len; ++i) {
+        CscdElement* e = (CscdElement*)d->attrChanged.items[i];
+        pushOnce(&children, holder(v, e->node.parent ? e->node.parent : &e->node)); /* (a role, aria-hidden: in or out) */
+    }
+    for (size_t i = 0; i < d->textChanged.len; ++i) {
+        CscdElement* e = (CscdElement*)d->textChanged.items[i];
+        pushOnce(&names, holder(v, &e->node));
+        livesOf(&e->node, &lives);
+    }
+    /* (callbacks may change the page: the lists are ours) */
+    for (size_t i = 0; i < children.len; ++i) v->onA11y(v->onA11yUser, (CscdElement*)children.items[i], CSCD_A11Y_EVENT_STRUCTURE);
+    for (size_t i = 0; i < names.len; ++i) v->onA11y(v->onA11yUser, (CscdElement*)names.items[i], CSCD_A11Y_EVENT_NAME);
+    for (size_t i = 0; i < lives.len; ++i) v->onA11y(v->onA11yUser, (CscdElement*)lives.items[i], CSCD_A11Y_EVENT_LIVE);
+    cscdVecFree(&children);
+    cscdVecFree(&names);
+    cscdVecFree(&lives);
+}
+
+/* ---- a text field's text ------------------------------------------------------------------------------------------ */
+
+static bool textField(const CscdElement* e) { return e && isTextControl(e); }
+
+bool cscdAccessibleTextSelection(const CscdElement* e, size_t* start, size_t* end) {
+    if (!textField(e)) return false;
+    CscdStr value = cscdElementValue(e);
+    const size_t len = value.len;
+    cscdStrFree(&value);
+    const size_t a = e->valueDirty ? cscdMinz(e->selAnchor, len) : len, z = e->valueDirty ? cscdMinz(e->caret, len) : len;
+    *start = cscdMinz(a, z);
+    *end = cscdMaxz(a, z);
+    return true;
+}
+
+void cscdAccessibleTextRects(CscdView* v, CscdElement* e, size_t start, size_t end, CscdRectVec* out) {
+    if (!textField(e)) return;
+    cscdViewUpdate(v); /* (a focus or an edit since the last frame: its boxes made again) */
+    if (!e->layout || !e->style) return;
+    if (!e->valueDirty) { /* (its text not taken in yet: the field) */
+        cscdVecPush(out, cscdViewElementRect(v, e));
+        return;
+    }
+    const size_t a = cscdMinz(start, end), z = cscdMaxz(start, end);
+    size_t la, lz;
+    const CscdRect ra = viewFieldPosRect(v, e, a, &la), rz = viewFieldPosRect(v, e, z, &lz);
+    if (la == lz) {
+        cscdVecPush(out, cscdRect(cscdMinf(ra.x, rz.x), ra.y, cscdMaxf(1.f, fabsf(rz.x - ra.x)), ra.h));
+        return;
+    }
+    /* (the first line from a, the lines between whole, the last to z) */
+    CscdLayoutBox* b = e->layout;
+    const CscdRect r = cscdViewElementRect(v, e);
+    const CscdRect cb = cscdRectTranslated(cscdBoxContentBox(b), (float)(r.x - b->x), (float)(r.y - b->y));
+    const float step = lz > la ? (rz.y - ra.y) / (float)(lz - la) : ra.h;
+    cscdVecPush(out, cscdRect(ra.x, ra.y, cscdMaxf(1.f, cscdRectRight(cb) - ra.x), ra.h));
+    for (size_t l = la + 1; l < lz; ++l) cscdVecPush(out, cscdRect(cb.x, ra.y + step * (float)(l - la), cb.w, ra.h));
+    cscdVecPush(out, cscdRect(cb.x, rz.y, cscdMaxf(1.f, rz.x - cb.x), rz.h));
+}
+
+size_t cscdAccessibleTextOffsetAt(CscdView* v, CscdElement* e, float x, float y) {
+    if (!textField(e)) return 0;
+    cscdViewUpdate(v);
+    if (!e->layout || !e->valueDirty) return 0;
+    return viewTextHit(v, e, x, y);
+}
+
+bool cscdAccessibleSelectText(CscdView* v, CscdElement* e, size_t start, size_t end) {
+    if (!textField(e)) return false;
+    if (v->doc->focused != e) cscdViewFocus(v, e);
+    if (v->doc->focused != e || !e->valueDirty) return false;
+    const size_t len = e->editValue.len;
+    e->selAnchor = cscdMinz(start, len);
+    e->caret = cscdMinz(end, len);
+    viewEnsureCaretVisible(v, e);
+    cscdViewInvalidate(v);
+    return true;
+}
+
+int cscdAccessibleLive(const CscdElement* e) {
+    if (!e) return 0;
+    const CscdSv live = cscdElementAttrC(e, "aria-live");
+    if (cscdSvIEqC(live, "assertive")) return 2;
+    if (cscdSvIEqC(live, "polite")) return 1;
+    if (cscdSvIEqC(live, "off")) return 0;
+    const CscdSv role = cscdElementAttrC(e, "role");
+    if (cscdSvIEqC(role, "alert")) return 2;
+    if (cscdSvIEqC(role, "status") || cscdSvIEqC(role, "log") || cscdSvIEqC(role, "timer") || cscdSvIEqC(role, "marquee")) return 1;
+    return 0;
 }

@@ -418,8 +418,20 @@ CscdElement* cscdAccessibleElement(const CscdView* v, uint32_t id);
 typedef enum CscdAccessibleAction { CSCD_A11Y_ACTIVATE, CSCD_A11Y_FOCUS, CSCD_A11Y_SET_VALUE, CSCD_A11Y_SCROLL_INTO_VIEW } CscdAccessibleAction;
 bool cscdAccessibleDo(CscdView* v, CscdElement* e, CscdAccessibleAction action, CscdSv value);
 /* What changed, for the system to announce (e NULL with STRUCTURE: anywhere). */
+/* A text field's text as readers go through it: its selection (bytes of cscdAccessibleValue's text; start == end:
+ * the caret), where a stretch of it shows (viewport CSS px, a rectangle a line, appended), the place at a point,
+ * and a selection made (the field focused). */
+bool cscdAccessibleTextSelection(const CscdElement* e, size_t* start, size_t* end);
+void cscdAccessibleTextRects(CscdView* v, CscdElement* e, size_t start, size_t end, CscdRectVec* out);
+size_t cscdAccessibleTextOffsetAt(CscdView* v, CscdElement* e, float x, float y);
+bool cscdAccessibleSelectText(CscdView* v, CscdElement* e, size_t start, size_t end);
+/* A live region (aria-live polite or assertive; role status, log, alert...): 0 none, 1 polite, 2 assertive. */
+int cscdAccessibleLive(const CscdElement* e);
+/* STRUCTURE: e's children changed (NULL: anything may have); NAME: e's name did (its text); LIVE: what live region e
+ * holds changed, for readers to say. */
 typedef enum CscdAccessibleEvent {
-    CSCD_A11Y_EVENT_FOCUS, CSCD_A11Y_EVENT_VALUE, CSCD_A11Y_EVENT_STATE, CSCD_A11Y_EVENT_STRUCTURE
+    CSCD_A11Y_EVENT_FOCUS, CSCD_A11Y_EVENT_VALUE, CSCD_A11Y_EVENT_STATE, CSCD_A11Y_EVENT_STRUCTURE, CSCD_A11Y_EVENT_NAME,
+    CSCD_A11Y_EVENT_LIVE
 } CscdAccessibleEvent;
 typedef void (*CscdAccessibleEventFn)(void* user, CscdElement* e, CscdAccessibleEvent event);
 void cscdViewOnAccessibleEvent(CscdView* v, CscdAccessibleEventFn fn, void* user);

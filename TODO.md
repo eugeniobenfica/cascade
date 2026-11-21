@@ -183,7 +183,13 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       a dragging session on macOS); the clipboard's HTML, images and files both ways (`cscdViewSetClipboard`:
       CF_HTML, CF_DIB, CF_HDROP; X11's and Wayland's media types; the pasteboard's types).
 - [ ] Drags out to other apps on X11 (XDND as the source) and Wayland (`wl_data_device.start_drag`).
-- [ ] UI Automation TextPattern and live regions; push accessibility updates per element instead of the whole tree.
+- [x] UI Automation's text pattern on text fields (ranges by character, word, line, all; their text, rectangles and
+      selection; `cscdAccessibleTextSelection`, `TextRects`, `TextOffsetAt`, `SelectText` under it); live regions
+      (`aria-live`, `role=status/alert/log`: `CSCD_A11Y_EVENT_LIVE`, said by UI Automation, VoiceOver's announcements,
+      AT-SPI's); accessibility updates element by element (`CSCD_A11Y_EVENT_STRUCTURE` with the element whose
+      children changed, `CSCD_A11Y_EVENT_NAME` with the one whose text did), the whole tree only for a new page or
+      many changes at once. A text-only change told readers nothing before.
+- [ ] The text interfaces of NSAccessibility (selected text ranges, line for index) and AT-SPI (Text) for fields.
 - [ ] `contenteditable` / rich text, and a text field that scales to large documents.
 
 ### Conformance

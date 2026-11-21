@@ -164,6 +164,7 @@ void* uikitA11yElements(CscdWindow* w); /* NSArray: the page's accessible elemen
 /* a11yWin32.c: UI Automation */
 void winA11yAttach(CscdWindow* w);
 bool winA11yGetObject(CscdWindow* w, uintptr_t wp, intptr_t lp, intptr_t* out); /* (WM_GETOBJECT) */
+void* winA11yProvider(CscdWindow* w, CscdElement* e); /* e's IRawElementProviderSimple, referenced (the tests') */
 void winA11yDetach(CscdWindow* w);
 #endif
 void windowRunPosted(CscdWindow* w);

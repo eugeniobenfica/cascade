@@ -566,6 +566,7 @@ bool viewRelayoutText(CscdView* v) {
         cscdVecPush(&blocks, b->element);
     }
     v->styledVersion = d->version;
+    viewA11yStructure(v); /* (names that are those texts, live regions they are in) */
     d->textChanged.len = 0;
     relayoutAround(v, &blocks);
     cscdVecFree(&blocks);
