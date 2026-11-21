@@ -34,11 +34,11 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **The clipboard's HTML, images and files**, both ways, in each system's formats: `cscdViewCopyHtml`,
   `cscdViewCopyFiles`, `cscdViewClipboardHtml`, `cscdViewClipboardImage`; the hooks in one table
   (`cscdViewSetClipboard`).
-- **Drags out to other apps** on Windows and macOS (`cscdViewOnDragOut`, `cscdViewDragOutEnded` for a host's own).
+- **Drags out to other apps** on Windows, macOS, X11 and Wayland (`cscdViewOnDragOut`, `cscdViewDragOutEnded` for a host's own).
 - **Input methods on Wayland** (`text-input-v3`).
 - Fixed: two fonts made GSUB take minutes (a substitution run let the text grow 64 times over each time, compounding;
   a multiple substitution moved the rest of the text once per glyph it added).
-- **Menus, `<select>` lists and tooltips go past the window's edges** on Windows, X11 and macOS, each in a window of
+- **Menus, `<select>` lists and tooltips go past the window's edges** on Windows, X11, Wayland and macOS, each in a window of
   its own (still the page's elements and CSS). New: `cscdViewSetPopupArea`, `cscdViewPopups`, `cscdViewPaintPopup`
   for a host that shows them itself.
 - Fixed: a menu row whose `mouseenter` listener removed it was read after it was freed.

@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -202,8 +203,10 @@ static const struct wl_message xdgWmBaseRequests[] = {
 static const struct wl_message xdgWmBaseEvents[] = {{"ping", "u", xdgTypes}};
 const struct wl_interface xdg_wm_base_interface = {"xdg_wm_base", 2, 4, xdgWmBaseRequests, 1, xdgWmBaseEvents};
 
-static const struct wl_message xdgPositionerRequests[] = {{"destroy", "", xdgTypes}};
-const struct wl_interface xdg_positioner_interface = {"xdg_positioner", 2, 1, xdgPositionerRequests, 0, NULL};
+static const struct wl_message xdgPositionerRequests[] = {
+    {"destroy", "", xdgTypes}, {"set_size", "ii", xdgTypes}, {"set_anchor_rect", "iiii", xdgTypes}, {"set_anchor", "u", xdgTypes},
+    {"set_gravity", "u", xdgTypes}, {"set_constraint_adjustment", "u", xdgTypes}, {"set_offset", "ii", xdgTypes}};
+const struct wl_interface xdg_positioner_interface = {"xdg_positioner", 2, 7, xdgPositionerRequests, 0, NULL};
 
 static const struct wl_message xdgSurfaceRequests[] = {
     {"destroy", "", xdgTypes}, {"get_toplevel", "n", xdgTypes + 7}, {"get_popup", "n?oo", xdgTypes + 8},
@@ -259,6 +262,9 @@ static void fillXdgTypes(void) {
 }
 
 /* opcodes */
+enum { WM_BASE_CREATE_POSITIONER = 1, POSITIONER_DESTROY = 0, POSITIONER_SET_SIZE = 1, POSITIONER_SET_ANCHOR_RECT = 2,
+       POSITIONER_SET_ANCHOR = 3, POSITIONER_SET_GRAVITY = 4, POSITIONER_SET_CONSTRAINT_ADJUSTMENT = 5, POSITIONER_SET_OFFSET = 6,
+       XDG_SURFACE_GET_POPUP = 2, POPUP_DESTROY = 0, POPUP_GRAB = 1 };
 enum { TIM_DESTROY = 0, TIM_GET_TEXT_INPUT = 1, TI_DESTROY = 0, TI_ENABLE = 1, TI_DISABLE = 2, TI_SET_CONTENT_TYPE = 5,
        TI_SET_CURSOR_RECTANGLE = 6, TI_COMMIT = 7 };
 enum { REGISTRY_BIND = 0, COMPOSITOR_CREATE_SURFACE = 0, SUBCOMPOSITOR_GET_SUBSURFACE = 1, SUBSURFACE_DESTROY = 0, SUBSURFACE_SET_POSITION = 1,
@@ -267,7 +273,7 @@ enum { REGISTRY_BIND = 0, COMPOSITOR_CREATE_SURFACE = 0, SUBCOMPOSITOR_GET_SUBSU
        SEAT_GET_POINTER = 0, SEAT_GET_KEYBOARD = 1, POINTER_SET_CURSOR = 0, POINTER_RELEASE = 1, KEYBOARD_RELEASE = 0,
        DDM_CREATE_DATA_SOURCE = 0, DDM_GET_DATA_DEVICE = 1, DATA_DEVICE_SET_SELECTION = 1, DATA_DEVICE_RELEASE = 2,
        DATA_OFFER_ACCEPT = 0, DATA_OFFER_RECEIVE = 1, DATA_OFFER_DESTROY = 2, DATA_OFFER_FINISH = 3, DATA_OFFER_SET_ACTIONS = 4,
-       DATA_SOURCE_OFFER = 0, DATA_SOURCE_DESTROY = 1, DISPLAY_GET_REGISTRY = 1, OUTPUT_RELEASE = 3,
+       DATA_SOURCE_OFFER = 0, DATA_SOURCE_DESTROY = 1, DATA_SOURCE_SET_ACTIONS = 2, DATA_DEVICE_START_DRAG = 0, DISPLAY_GET_REGISTRY = 1, OUTPUT_RELEASE = 3,
        WM_BASE_DESTROY = 0, WM_BASE_GET_XDG_SURFACE = 2, WM_BASE_PONG = 3, XDG_SURFACE_DESTROY = 0, XDG_SURFACE_GET_TOPLEVEL = 1,
        XDG_SURFACE_SET_WINDOW_GEOMETRY = 3, XDG_SURFACE_ACK_CONFIGURE = 4, TOPLEVEL_DESTROY = 0, TOPLEVEL_SET_TITLE = 2, TOPLEVEL_SET_APP_ID = 3,
        TOPLEVEL_SHOW_WINDOW_MENU = 4, TOPLEVEL_MOVE = 5, TOPLEVEL_RESIZE = 6, TOPLEVEL_SET_MAX_SIZE = 7, TOPLEVEL_SET_MIN_SIZE = 8,
@@ -334,11 +340,17 @@ struct CscdWindowNative {
     CscdRect textInputRect; /* (as last told) */
     CscdStr pendingPreedit, pendingCommit;
     bool pendingHasCommit;
+    /* menus and tooltips in popups of their own (xdg_popup): bottom first */
+    CSCD_VEC(struct WlPopup*) popups;
     /* the clipboard */
     void* selectionOffer;
     CscdStrVec selectionTypes;
     void* ownSource;
     ClipData clip; /* (what ownSource offers) */
+    /* a drag out to another app: its source, what it carries, the action the target chose */
+    void* dragSource;
+    ClipData dragData;
+    uint32_t dragAction;
     /* a drag from another app */
     void* dragOffer;
     CscdStrVec dragTypes;
@@ -781,6 +793,7 @@ static void kbLeave(void* d, void* kb, uint32_t serial, void* surface) {
     (void)kb; (void)serial; (void)surface;
     CscdWindowNative* n = (CscdWindowNative*)d;
     n->repeatKey = 0;
+    if (n->popups.len) return; /* (the keys went to a menu's popup, which grabbed them: the menus stay) */
     cscdViewCloseMenus(n->w->view);
     cscdViewHideTooltip(n->w->view);
     cscdViewCancelDrag(n->w->view);
@@ -906,6 +919,23 @@ static CscdCursor edgeCursor(uint32_t edge) {
     }
 }
 
+/* (a menu's or a tooltip's popup: see the popups below) */
+typedef struct WlPopup {
+    CscdWindowNative* n;
+    void *surface, *xdgSurface, *popup;
+    ShmBuffer buffers[2];
+    CscdIRect rect;     /* (device pixels, from the client area's top left: where the view drew it) */
+    bool grab, configured, hasImage;
+    CscdImage pending;  /* (the image to show once configured) */
+} WlPopup;
+
+/* the popup whose surface that is, or NULL */
+static WlPopup* popupOf(CscdWindowNative* n, void* surface) {
+    for (size_t i = 0; surface && i < n->popups.len; ++i)
+        if (n->popups.items[i]->surface == surface) return n->popups.items[i];
+    return NULL;
+}
+
 static void ptrEnter(void* d, void* p, uint32_t serial, void* surface, wl_fixed_t x, wl_fixed_t y) {
     (void)p;
     CscdWindowNative* n = (CscdWindowNative*)d;
@@ -918,6 +948,10 @@ static void ptrEnter(void* d, void* p, uint32_t serial, void* surface, wl_fixed_
 static void ptrLeave(void* d, void* p, uint32_t serial, void* surface) {
     (void)p; (void)serial;
     CscdWindowNative* n = (CscdWindowNative*)d;
+    if (popupOf(n, surface)) { /* (off a popup: nothing to the page) */
+        n->pointerSurface = NULL;
+        return;
+    }
     if (surface == n->surface && !n->buttons) cscdViewMouseLeave(n->w->view);
     if (surface == n->titleSurface && n->titleHover) { n->titleHover = 0; n->titleDirty = true; }
     n->pointerSurface = NULL;
@@ -927,6 +961,12 @@ static void ptrMotion(void* d, void* p, uint32_t time, wl_fixed_t x, wl_fixed_t 
     CscdWindowNative* n = (CscdWindowNative*)d;
     n->px = fixedToFloat(x);
     n->py = fixedToFloat(y);
+    const WlPopup* pp = popupOf(n, n->pointerSurface);
+    if (pp) {
+        const float dpr = n->w->dpr > 0 ? n->w->dpr : 1;
+        cscdViewMouseMove(n->w->view, pp->rect.x / dpr + n->px, pp->rect.y / dpr + n->py, n->buttons, n->mods);
+        return;
+    }
     if (n->pointerSurface == n->titleSurface) {
         int hover = 0;
         for (int b = 1; b <= 3; ++b)
@@ -946,6 +986,18 @@ static void ptrButton(void* d, void* p, uint32_t serial, uint32_t time, uint32_t
     const int b = button == 0x110 ? 0 : button == 0x111 ? 2 : button == 0x112 ? 1 : -1;
     if (b < 0) return;
     const int bit = b == 0 ? 1 : b == 2 ? 2 : 4;
+    const WlPopup* pp = popupOf(n, n->pointerSurface);
+    if (pp) {
+        const float dpr = n->w->dpr > 0 ? n->w->dpr : 1, vx = pp->rect.x / dpr + n->px, vy = pp->rect.y / dpr + n->py;
+        if (state == 1) {
+            n->buttons |= bit;
+            cscdViewMouseDown(n->w->view, vx, vy, b, n->mods, clickPress(&n->clicks, time, (int)(vx * dpr), (int)(vy * dpr), 400));
+        } else {
+            n->buttons &= ~bit;
+            cscdViewMouseUp(n->w->view, vx, vy, b, n->mods);
+        }
+        return;
+    }
     if (n->pointerSurface == n->titleSurface) {
         if (state == 1 && b == 0) {
             const int clicks = clickPress(&n->clicks, time, (int)n->px, (int)n->py, 400);
@@ -978,6 +1030,11 @@ static void ptrAxis(void* d, void* p, uint32_t time, uint32_t axis, wl_fixed_t v
     else n->wheelX += fixedToFloat(value) * 10;
     if (!n->pointer || W.proxyGetVersion((struct wl_proxy*)n->pointer) < 5) { /* (no frame events: at once) */
         if (n->pointerSurface == n->surface) cscdViewWheel(n->w->view, n->px, n->py, n->wheelX, n->wheelY, n->mods);
+        else if (popupOf(n, n->pointerSurface)) { /* (a long menu's list scrolls) */
+            const WlPopup* pp = popupOf(n, n->pointerSurface);
+            const float dpr = n->w->dpr > 0 ? n->w->dpr : 1;
+            cscdViewWheel(n->w->view, pp->rect.x / dpr + n->px, pp->rect.y / dpr + n->py, n->wheelX, n->wheelY, n->mods);
+        }
         n->wheelX = n->wheelY = 0;
     }
 }
@@ -1221,6 +1278,68 @@ static void offerClip(CscdWindowNative* n) {
     W.displayFlush(n->dpy);
 }
 
+/* ---- drags out to other apps: a data source the compositor carries (wl_data_device.start_drag) ----------------
+ * It offers what the drag carries (its text, its files); the app it is dropped on reads it (send), and the source
+ * hears how it ended (finished, and the action taken; or cancelled), which the page hears as dragend. */
+
+static void dragTarget(void* d, void* s, const char* mime) { (void)d; (void)s; (void)mime; }
+static void dragSend(void* d, void* s, const char* mime, int32_t fd) {
+    (void)s;
+    CscdWindowNative* n = (CscdWindowNative*)d;
+    const ClipFormat* f = mime ? clipDataFind(&n->dragData, mime) : NULL;
+    for (size_t at = 0; f && at < f->data.len;) {
+        const ssize_t put = write(fd, f->data.items + at, f->data.len - at);
+        if (put <= 0) break;
+        at += (size_t)put;
+    }
+    close(fd);
+}
+static void dragOver(CscdWindowNative* n, void* s, CscdSv effect) {
+    if (n->dragSource != s) return;
+    WL_DESTROY(s, DATA_SOURCE_DESTROY);
+    n->dragSource = NULL;
+    clipDataClear(&n->dragData);
+    cscdViewDragOutEnded(n->w->view, effect);
+}
+static void dragCancelled(void* d, void* s) { dragOver((CscdWindowNative*)d, s, CSCD_SV("none")); }
+static void dragDropped(void* d, void* s) { (void)d; (void)s; }
+static void dragFinished(void* d, void* s) {
+    CscdWindowNative* n = (CscdWindowNative*)d;
+    dragOver(n, s, n->dragAction == 2 ? CSCD_SV("move") : CSCD_SV("copy"));
+}
+static void dragAction(void* d, void* s, uint32_t a) {
+    (void)s;
+    ((CscdWindowNative*)d)->dragAction = a;
+}
+static const struct {
+    void (*target)(void*, void*, const char*);
+    void (*send)(void*, void*, const char*, int32_t);
+    void (*cancelled)(void*, void*);
+    void (*dropPerformed)(void*, void*);
+    void (*finished)(void*, void*);
+    void (*action)(void*, void*, uint32_t);
+} dragSourceListener = {dragTarget, dragSend, dragCancelled, dragDropped, dragFinished, dragAction};
+
+static bool wlDragOut(void* user, const CscdDataTransfer* dt) {
+    CscdWindow* w = (CscdWindow*)user;
+    CscdWindowNative* n = w->native;
+    if (!n || !n->dataDevice || !n->dataDeviceManager || n->dragSource || !n->inputSerial) return false;
+    const CscdSv text = cscdDataTransferGetData(dt, CSCD_SV("text/plain"));
+    if (dt->files.len) clipDataSetFiles(&n->dragData, &dt->files);
+    else if (text.len) clipDataSetText(&n->dragData, text);
+    else return false;
+    void* source = WL_NEW(n->dataDeviceManager, DDM_CREATE_DATA_SOURCE, W.dataSource, NULL);
+    WL_LISTEN(source, &dragSourceListener, n);
+    for (size_t i = 0; i < n->dragData.len; ++i) WL_CALL(source, DATA_SOURCE_OFFER, cscdStrC(&n->dragData.items[i].mime));
+    if (W.proxyGetVersion((struct wl_proxy*)source) >= 3) WL_CALL(source, DATA_SOURCE_SET_ACTIONS, 1u | 2u); /* (copy, move) */
+    n->dragSource = source;
+    n->dragAction = 1;
+    /* (the press that started it: the compositor's drag from there) */
+    WL_CALL(n->dataDevice, DATA_DEVICE_START_DRAG, source, n->surface, NULL, n->inputSerial);
+    W.displayFlush(n->dpy);
+    return true;
+}
+
 static void clipSetText(void* user, CscdSv text) {
     CscdWindowNative* n = ((CscdWindow*)user)->native;
     clipDataSetText(&n->clip, text);
@@ -1299,6 +1418,139 @@ static void clipGetFiles(void* user, CscdStrVec* out) {
     CscdStr s = {0};
     if (clipRead(n, "text/uri-list", &s)) clipFilePaths(cscdStrSv(&s), out);
     cscdStrFree(&s);
+}
+
+/* ---- popups: menus, <select> lists and tooltips as xdg_popups ------------------------------------------------------
+ * The compositor places them (Wayland tells a window nothing of the screen): at the place the view chose for each,
+ * against an anchor inside its parent (the window, or the menu that opened it), sliding or flipping it to keep it on
+ * the screen. A menu takes a grab: a press elsewhere closes it (popup_done). Its pointer input goes to the view at view
+ * coordinates; the keys stay the window's. */
+
+
+
+static void wlPopupDraw(WlPopup* p) {
+    CscdWindowNative* n = p->n;
+    if (!p->configured || !p->hasImage) return;
+    ShmBuffer* b = !p->buffers[0].busy ? &p->buffers[0] : !p->buffers[1].busy ? &p->buffers[1] : NULL;
+    if (!b) return;
+    if (b->width != p->pending.width || b->height != p->pending.height) {
+        if (!shmMake(n, b, p->pending.width, p->pending.height)) return;
+    }
+    memcpy(b->pixels, p->pending.pixels, (size_t)p->pending.width * (size_t)p->pending.height * 4);
+    b->busy = true;
+    WL_CALL(p->surface, SURFACE_SET_BUFFER_SCALE, n->scale);
+    WL_CALL(p->surface, SURFACE_ATTACH, b->buffer, 0, 0);
+    WL_CALL(p->surface, SURFACE_DAMAGE_BUFFER, 0, 0, p->pending.width, p->pending.height);
+    WL_CALL0(p->surface, SURFACE_COMMIT);
+}
+
+static void popupSurfaceConfigure(void* d, void* xs, uint32_t serial) {
+    WlPopup* p = (WlPopup*)d;
+    WL_CALL(xs, XDG_SURFACE_ACK_CONFIGURE, serial);
+    p->configured = true;
+    wlPopupDraw(p);
+}
+static const struct { void (*configure)(void*, void*, uint32_t); } popupSurfaceListener = {popupSurfaceConfigure};
+
+static void popupConfigure(void* d, void* pp, int32_t x, int32_t y, int32_t w, int32_t h) { (void)d; (void)pp; (void)x; (void)y; (void)w; (void)h; }
+static void popupDone(void* d, void* pp) {
+    (void)pp;
+    WlPopup* p = (WlPopup*)d;
+    /* (the compositor took it away: a press elsewhere) */
+    cscdViewCloseMenus(p->n->w->view);
+    cscdViewHideTooltip(p->n->w->view);
+}
+static const struct {
+    void (*configure)(void*, void*, int32_t, int32_t, int32_t, int32_t);
+    void (*done)(void*, void*);
+} popupListener = {popupConfigure, popupDone};
+
+
+bool wlPopupArea(CscdWindow* w, CscdIRect* area) {
+    CscdWindowNative* n = w->native;
+    if (!n || !n->wmBase || !w->hwnd || !w->shown) return false;
+    /* (the screen is the compositor's to know: room all around, which it keeps the popups inside) */
+    *area = cscdIRect(-16384, -16384, 32768 + w->clientW, 32768 + w->clientH);
+    return true;
+}
+
+void* wlPopupShow(CscdWindow* w, void* popup, CscdIRect rect, const CscdImage* image, bool input) {
+    CscdWindowNative* n = w->native;
+    WlPopup* p = (WlPopup*)popup;
+    const float dpr = w->dpr > 0 ? w->dpr : 1;
+    if (p && (p->rect.x != rect.x || p->rect.y != rect.y || p->rect.w != rect.w || p->rect.h != rect.h)) {
+        /* (moved or resized: an xdg_popup is placed once; made again) */
+        wlPopupHide(w, p);
+        p = NULL;
+    }
+    if (!p) {
+        p = CSCD_NEW(WlPopup);
+        p->n = n;
+        p->rect = rect;
+        p->grab = input;
+        /* the parent: the last menu that holds a grab (a grabbing popup goes on the topmost one), else the window */
+        WlPopup* parent = NULL;
+        for (size_t i = n->popups.len; i-- > 0 && !parent;)
+            if (n->popups.items[i]->grab) parent = n->popups.items[i];
+        const int lw = cscdMaxi(1, (int)lroundf(rect.w / dpr)), lh = cscdMaxi(1, (int)lroundf(rect.h / dpr));
+        /* where it goes, in the parent's window geometry (the window's starts at its title bar) */
+        int px = (int)lroundf(rect.x / dpr), py = (int)lroundf(rect.y / dpr) + titleHeight(n);
+        int gw = (int)(w->clientW / dpr), gh = (int)(w->clientH / dpr) + titleHeight(n);
+        if (parent) {
+            px = (int)lroundf((rect.x - parent->rect.x) / dpr);
+            py = (int)lroundf((rect.y - parent->rect.y) / dpr);
+            gw = (int)lroundf(parent->rect.w / dpr);
+            gh = (int)lroundf(parent->rect.h / dpr);
+        }
+        /* (an anchor inside it, the rest an offset) */
+        const int ax = cscdClampi(px, 0, cscdMaxi(0, gw - 1)), ay = cscdClampi(py, 0, cscdMaxi(0, gh - 1));
+        p->surface = WL_NEW(n->compositor, COMPOSITOR_CREATE_SURFACE, W.surface, NULL);
+        p->xdgSurface = WL_NEW(n->wmBase, WM_BASE_GET_XDG_SURFACE, &xdg_surface_interface, NULL, p->surface);
+        WL_LISTEN(p->xdgSurface, &popupSurfaceListener, p);
+        void* pos = WL_NEW(n->wmBase, WM_BASE_CREATE_POSITIONER, &xdg_positioner_interface, NULL);
+        WL_CALL(pos, POSITIONER_SET_SIZE, lw, lh);
+        WL_CALL(pos, POSITIONER_SET_ANCHOR_RECT, ax, ay, 1, 1);
+        WL_CALL(pos, POSITIONER_SET_ANCHOR, 5u /* top_left */);
+        WL_CALL(pos, POSITIONER_SET_GRAVITY, 8u /* bottom_right */);
+        WL_CALL(pos, POSITIONER_SET_OFFSET, px - ax, py - ay);
+        WL_CALL(pos, POSITIONER_SET_CONSTRAINT_ADJUSTMENT, 1u | 2u | 8u /* slide x, slide y, flip y */);
+        p->popup = WL_NEW(p->xdgSurface, XDG_SURFACE_GET_POPUP, &xdg_popup_interface, NULL, parent ? parent->xdgSurface : n->xdgSurface, pos);
+        WL_DESTROY(pos, POSITIONER_DESTROY);
+        WL_LISTEN(p->popup, &popupListener, p);
+        /* (a grab needs the press or key that opened it: none, in a program that opens a menu itself, no grab) */
+        if (input && n->seat && n->inputSerial) WL_CALL(p->popup, POPUP_GRAB, n->seat, n->inputSerial);
+        else p->grab = false;
+        WL_CALL0(p->surface, SURFACE_COMMIT); /* (no buffer yet: the configure comes first) */
+        cscdVecPush(&n->popups, p);
+    }
+    p->rect = rect;
+    cscdImageFini(&p->pending);
+    cscdImageInit(&p->pending, image->width, image->height);
+    memcpy(p->pending.pixels, image->pixels, (size_t)image->width * (size_t)image->height * 4);
+    p->hasImage = true;
+    wlPopupDraw(p);
+    W.displayFlush(n->dpy);
+    return p;
+}
+
+void wlPopupHide(CscdWindow* w, void* popup) {
+    WlPopup* p = (WlPopup*)popup;
+    if (!p) return;
+    CscdWindowNative* n = w->native;
+    for (size_t i = 0; n && i < n->popups.len; ++i)
+        if (n->popups.items[i] == p) {
+            cscdVecRemove(&n->popups, i);
+            break;
+        }
+    if (n && n->pointerSurface == p->surface) n->pointerSurface = NULL;
+    WL_DESTROY(p->popup, POPUP_DESTROY);
+    WL_DESTROY(p->xdgSurface, XDG_SURFACE_DESTROY);
+    shmFree(&p->buffers[0]);
+    shmFree(&p->buffers[1]);
+    WL_DESTROY(p->surface, SURFACE_DESTROY);
+    cscdImageFini(&p->pending);
+    cscdFree(p);
+    if (n && n->dpy) W.displayFlush(n->dpy);
 }
 
 /* ---- the input method's events: what it composes and what it commits, applied at done ---- */
@@ -1441,6 +1693,8 @@ void wlWindowDestroyNative(CscdWindow* w) {
     cscdVecFree(&n->offers);
     cscdVecFree(&n->offerTypes);
     clipDataFree(&n->clip);
+    cscdVecFree(&n->popups);
+    clipDataFree(&n->dragData);
     cscdStrFree(&n->pendingPreedit);
     cscdStrFree(&n->pendingCommit);
     cscdFree(n);
@@ -1529,6 +1783,7 @@ void wlWindowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
     cscdViewSetViewport(w->view, w->clientW / w->dpr, w->clientH / w->dpr, w->dpr);
     const CscdClipboardHooks clip = {clipSetText, clipGetText, clipSetHtml, clipGetHtml, clipSetImage, clipGetImage, clipSetFiles, clipGetFiles, w};
     cscdViewSetClipboard(w->view, &clip);
+    cscdViewOnDragOut(w->view, wlDragOut, w);
 }
 
 void* wlWindowSurface(const CscdWindow* w) { return &w->native->handle; }

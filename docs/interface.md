@@ -194,9 +194,9 @@ cscdViewBindMenuBar(ui, fileEntry, fillFileMenu, app, NULL); /* a menu bar entry
 
 `cscdViewOnMenuItem` decorates each row as it is made: paint its icon slot, for example.
 
-In a desktop window (Windows, X11, macOS) menus, `<select>` lists and tooltips go past the window's edges: each
-shows in a window of its own, placed in the screen's work area as the system's menus are, and still made of the
-page's elements, styled by its CSS. On Wayland and on phones they stay inside the window. A host with windows of
+In a desktop window (Windows, X11, Wayland, macOS) menus, `<select>` lists and tooltips go past the window's edges:
+each shows in a window of its own (on Wayland an `xdg_popup` the compositor places), still made of the page's
+elements, styled by its CSS. On phones they stay inside the window. A host with windows of
 its own does the same with `cscdViewSetPopupArea` (where they may go), `cscdViewPopups` (where each one is) and
 `cscdViewPaintPopup` (its pixels), sending the input its popup windows get to the view at view coordinates.
 
@@ -247,7 +247,7 @@ pointer (`cscdDataTransferSetDragImage` replaces it).
 Files and text dragged in from other applications arrive the same way, in
 `cscdEventDataTransfer(e)->files` and `cscdDataTransferGetData(cscdEventDataTransfer(e), CSCD_SV("text/plain"))`.
 
-A drag that leaves the window goes on as the system's (Windows, macOS), with its `text/plain` and its
+A drag that leaves the window goes on as the system's (Windows, macOS, X11, Wayland), with its `text/plain` and its
 files: another application can take it, and the source's `dragend` says how (`dropEffect`). A host
 of your own does this with `cscdViewOnDragOut` and `cscdViewDragOutEnded`.
 

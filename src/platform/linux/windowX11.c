@@ -222,6 +222,7 @@ struct CscdWindowNative {
     CscdCursor shown;
     /* the CLIPBOARD selection while this window owns it */
     ClipData clip;
+    ClipData dragData; /* (what a drag out carries, as the XdndSelection) */
     /* a drag from another app (XDND) */
     Window dndSource;
     int dndVersion;
@@ -379,8 +380,10 @@ static void answerSelectionRequest(CscdWindowNative* n, const XSelectionRequestE
     reply.xselection.time = r->time;
     reply.xselection.property = XNONE;
     const Atom prop = r->property != XNONE ? r->property : r->target;
-    if (r->selection == atom(n, CLIPBOARD) && n->clip.len) {
-        const bool text = clipDataFind(&n->clip, "UTF8_STRING") != NULL;
+    /* (the clipboard's, or a drag's we are the source of) */
+    const ClipData* from = r->selection == atom(n, CLIPBOARD) ? &n->clip : r->selection == atom(n, XdndSelection) ? &n->dragData : NULL;
+    if (from && from->len) {
+        const bool text = clipDataFind(from, "UTF8_STRING") != NULL;
         /* the biggest property one request can set (BIG-REQUESTS makes it many megabytes) */
         long words = XExtendedMaxRequestSize(dpy);
         if (!words) words = XMaxRequestSize(dpy);
@@ -388,7 +391,7 @@ static void answerSelectionRequest(CscdWindowNative* n, const XSelectionRequestE
         if (r->target == atom(n, TARGETS)) {
             CSCD_VEC(Atom) list = {0};
             cscdVecPush(&list, atom(n, TARGETS));
-            for (size_t i = 0; i < n->clip.len; ++i) cscdVecPush(&list, XInternAtom(dpy, cscdStrC(&n->clip.items[i].mime), False));
+            for (size_t i = 0; i < from->len; ++i) cscdVecPush(&list, XInternAtom(dpy, cscdStrC(&from->items[i].mime), False));
             if (text) {
                 cscdVecPush(&list, XA_STRING);
                 cscdVecPush(&list, atom(n, TEXT));
@@ -400,7 +403,7 @@ static void answerSelectionRequest(CscdWindowNative* n, const XSelectionRequestE
             /* (TEXT and STRING: the UTF-8 text, as before) */
             char* name = XGetAtomName(dpy, r->target);
             const bool asText = r->target == atom(n, TEXT) || r->target == XA_STRING;
-            const ClipFormat* fmt = asText ? clipDataFind(&n->clip, "UTF8_STRING") : name ? clipDataFind(&n->clip, name) : NULL;
+            const ClipFormat* fmt = asText ? clipDataFind(from, "UTF8_STRING") : name ? clipDataFind(from, name) : NULL;
             if (name) XFree(name);
             if (fmt && fmt->data.len <= limit) {
                 const Atom type = r->target == atom(n, TEXT) ? atom(n, UTF8_STRING) : r->target;
@@ -459,6 +462,7 @@ void windowDestroyNative(CscdWindow* w) {
     for (int i = 0; i < 2; ++i) if (n->wake[i] >= 0) close(n->wake[i]);
     platformCloseLibrary(n->xcursorLib);
     clipDataFree(&n->clip);
+    clipDataFree(&n->dragData);
     cscdVecFree(&n->dndTypes);
     cscdFree(n);
     w->native = NULL;
@@ -569,6 +573,132 @@ static void clipGetFiles(void* user, CscdStrVec* out) {
     if (clipRead(n, "text/uri-list", atom(n, URI_LIST), &list)) filePaths(cscdStrSv(&list), out);
     else if (!ownsClipboard(n) && readSelection(n, atom(n, CLIPBOARD), atom(n, GNOME_COPIED_FILES), &list)) filePaths(cscdStrSv(&list), out); /* "copy" or "cut" first */
     cscdStrFree(&list);
+}
+
+/* ---- drags out to other apps: XDND as the source -----------------------------------------------------------------
+ * The pointer grabbed until the button goes up; the window under it that speaks XDND (XdndAware) told the drag comes
+ * (Enter, the types), where it is (Position) and that it was dropped (Drop); it reads the data as the XdndSelection,
+ * answered from what the drag carries (its text, its files). The page hears how it ended: copied, or not. */
+
+/* the window under the root point (x, y) that takes drags (XdndAware: its version), 0 for none, or ours */
+static Window xdndTarget(CscdWindowNative* n, int x, int y, int* version) {
+    Window at = n->root, child = XNONE;
+    int cx, cy;
+    for (int depth = 0; depth < 32; ++depth) {
+        if (at != n->root) {
+            Atom type = XNONE;
+            int format = 0;
+            unsigned long count = 0, after = 0;
+            unsigned char* data = NULL;
+            if (XGetWindowProperty(n->dpy, at, atom(n, XdndAware), 0, 1, False, XA_ATOM, &type, &format, &count, &after, &data) == Success &&
+                type == XA_ATOM && count == 1 && data) {
+                *version = (int)*(Atom*)data;
+                XFree(data);
+                return at == n->win ? XNONE : at;
+            }
+            if (data) XFree(data);
+        }
+        if (!XTranslateCoordinates(n->dpy, n->root, at, x, y, &cx, &cy, &child) || child == XNONE) break;
+        at = child;
+    }
+    return XNONE;
+}
+
+static bool x11DragOut(void* user, const CscdDataTransfer* dt) {
+    CscdWindow* w = (CscdWindow*)user;
+    CscdWindowNative* n = w->native;
+    if (!n || !n->dpy || !w->hwnd) return false;
+    const CscdSv text = cscdDataTransferGetData(dt, CSCD_SV("text/plain"));
+    if (dt->files.len) clipDataSetFiles(&n->dragData, &dt->files);
+    else if (text.len) clipDataSetText(&n->dragData, text);
+    else return false;
+    Display* dpy = n->dpy;
+    XSetSelectionOwner(dpy, atom(n, XdndSelection), n->win, n->lastTime);
+    /* the types it carries: three in the Enter message, all of them in XdndTypeList */
+    CSCD_VEC(Atom) types = {0};
+    for (size_t i = 0; i < n->dragData.len; ++i) cscdVecPush(&types, XInternAtom(dpy, cscdStrC(&n->dragData.items[i].mime), False));
+    XChangeProperty(dpy, n->win, atom(n, XdndTypeList), XA_ATOM, 32, PropModeReplace, (const unsigned char*)types.items, (int)types.len);
+    if (XGrabPointer(dpy, n->win, False, ButtonReleaseMask | PointerMotionMask, GrabModeAsync, GrabModeAsync, XNONE, XNONE, CurrentTime) != GrabSuccess) {
+        cscdVecFree(&types);
+        clipDataClear(&n->dragData);
+        return false;
+    }
+    Window target = XNONE;
+    int version = 0;
+    bool accepted = false, over = false, dropped = false;
+    Time time = n->lastTime;
+    while (!over) {
+        XEvent e;
+        XNextEvent(dpy, &e);
+        switch (e.type) {
+        case MotionNotify: {
+            time = e.xmotion.time;
+            int v = 0;
+            const Window t = xdndTarget(n, e.xmotion.x_root, e.xmotion.y_root, &v);
+            if (t != target) {
+                if (target) sendDnd(n, target, XdndLeave, 0, 0, 0, 0);
+                target = t;
+                version = v < 5 ? v : 5;
+                accepted = false;
+                if (target)
+                    sendDnd(n, target, XdndEnter, ((long)version << 24) | (types.len > 3 ? 1 : 0), types.len > 0 ? (long)types.items[0] : 0,
+                            types.len > 1 ? (long)types.items[1] : 0, types.len > 2 ? (long)types.items[2] : 0);
+            }
+            if (target)
+                sendDnd(n, target, XdndPosition, 0, ((long)e.xmotion.x_root << 16) | (e.xmotion.y_root & 0xFFFF), (long)time,
+                        (long)atom(n, XdndActionCopy));
+            break;
+        }
+        case ButtonRelease:
+            time = e.xbutton.time;
+            if (target && accepted) {
+                sendDnd(n, target, XdndDrop, 0, (long)time, 0, 0);
+                dropped = true;
+            } else if (target) {
+                sendDnd(n, target, XdndLeave, 0, 0, 0, 0);
+            }
+            over = true;
+            break;
+        case KeyPress:
+            if (XLookupKeysym(&e.xkey, 0) == XK_Escape) {
+                if (target) sendDnd(n, target, XdndLeave, 0, 0, 0, 0);
+                over = true;
+            }
+            break;
+        case ClientMessage:
+            if (e.xclient.message_type == atom(n, XdndStatus) && (Window)e.xclient.data.l[0] == target) accepted = (e.xclient.data.l[1] & 1) != 0;
+            break;
+        case SelectionRequest:
+            answerSelectionRequest(n, &e.xselectionrequest);
+            break;
+        case Expose:
+            w->dirty = true;
+            break;
+        default:
+            break;
+        }
+    }
+    XUngrabPointer(dpy, CurrentTime);
+    bool finished = false;
+    if (dropped) {
+        /* (it reads the data, then says it is done: a few seconds at most) */
+        const double deadline = cscdNowSeconds() + 5;
+        while (!finished && waitForEvents(n, deadline)) {
+            while (XPending(dpy)) {
+                XEvent e;
+                XNextEvent(dpy, &e);
+                if (e.type == SelectionRequest) answerSelectionRequest(n, &e.xselectionrequest);
+                else if (e.type == ClientMessage && e.xclient.message_type == atom(n, XdndFinished) && (Window)e.xclient.data.l[0] == target) {
+                    finished = version < 5 || (e.xclient.data.l[1] & 1);
+                    if (!finished) break;
+                } else if (e.type == Expose) w->dirty = true;
+            }
+            if (finished) break;
+        }
+    }
+    cscdVecFree(&types);
+    cscdViewDragOutEnded(w->view, finished ? CSCD_SV("copy") : CSCD_SV("none"));
+    return true;
 }
 
 /* ---- the window ------------------------------------------------------------------------------------- */
@@ -692,6 +822,7 @@ void windowCreateNative(CscdWindow* w, const CscdWindowOptions* opts) {
     cscdViewSetViewport(w->view, w->clientW / w->dpr, w->clientH / w->dpr, w->dpr);
     const CscdClipboardHooks clip = {clipSetText, clipGetText, clipSetHtml, clipGetHtml, clipSetImage, clipGetImage, clipSetFiles, clipGetFiles, w};
     cscdViewSetClipboard(w->view, &clip);
+    cscdViewOnDragOut(w->view, x11DragOut, w);
 }
 
 void* windowSurface(const CscdWindow* w) { return &w->native->surface; }

@@ -176,13 +176,17 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       of its own: a layered tool window on Windows, an override-redirect one on X11 (a 32-bit visual where there is
       one), a non-activating child panel on macOS. The keys stay with the window. Wayland (an `xdg_popup` with its
       positioner) and the phones keep them inside the window.
-- [ ] Popups on Wayland through `xdg_popup` (the compositor places them; no screen coordinates there).
+- [x] Popups on Wayland through `xdg_popup`: each placed by the compositor against an anchor in its parent (the window
+      or the menu that opened it), slid or flipped to stay on the screen; menus take a grab (a press elsewhere closes
+      them); the pointer on them goes to the view at view coordinates.
 - [x] Input methods on Wayland (`text-input-v3`: enabled with a focused text field, the caret its cursor rectangle,
       the composition and the committed text applied at `done`); keyboard shortcuts (`cscdViewAddShortcut`, and the
       shortcuts a menu bar's items show); drags out to other apps (`cscdViewOnDragOut`: OLE's DoDragDrop on Windows,
       a dragging session on macOS); the clipboard's HTML, images and files both ways (`cscdViewSetClipboard`:
       CF_HTML, CF_DIB, CF_HDROP; X11's and Wayland's media types; the pasteboard's types).
-- [ ] Drags out to other apps on X11 (XDND as the source) and Wayland (`wl_data_device.start_drag`).
+- [x] Drags out to other apps on X11 (XDND as the source: the window under the pointer that takes drags told Enter,
+      Position, Drop; the data read as the XdndSelection) and Wayland (`wl_data_device.start_drag` with a data source
+      of the drag's text and files).
 - [x] UI Automation's text pattern on text fields (ranges by character, word, line, all; their text, rectangles and
       selection; `cscdAccessibleTextSelection`, `TextRects`, `TextOffsetAt`, `SelectText` under it); live regions
       (`aria-live`, `role=status/alert/log`: `CSCD_A11Y_EVENT_LIVE`, said by UI Automation, VoiceOver's announcements,

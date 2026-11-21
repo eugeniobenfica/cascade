@@ -166,6 +166,7 @@ jobs:
             test -s shots/wayland-$b.png
           done
           grep -q "Wayland shared memory" shots/wayland-software.txt
+          CASCADE_TEST_WINDOW=1 timeout 120 build/cascade-window-tests # (the popups as xdg_popups among them)
           kill $weston
       - name: Screen reader (AT-SPI)
         # the gallery's tree as Orca would see it: the application, its frame, the document and more

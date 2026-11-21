@@ -117,7 +117,7 @@ CscdWindow* cscdWindowNew(const CscdWindowOptions* opts) {
 }
 
 static void popupsHideAll(CscdWindow* w) {
-    for (size_t i = 0; i < w->popups.len; ++i) platformPopupHide(w, w->popups.items[i].native);
+    for (size_t i = w->popups.len; i-- > 0;) platformPopupHide(w, w->popups.items[i].native); /* (top first) */
     w->popups.len = 0;
 }
 
@@ -134,15 +134,15 @@ static void syncPopups(CscdWindow* w) {
     cscdViewSetPopupArea(w->view, cscdRect(area.x / dpr, area.y / dpr, area.w / dpr, area.h / dpr));
     CscdPopup list[16];
     const size_t n = cscdMinz(cscdViewPopups(w->view, list, 16), 16);
-    /* (those gone first) */
-    size_t keep = 0;
-    for (size_t i = 0; i < w->popups.len; ++i) {
+    /* (those gone first, the top one first: a popup under another may not go before it) */
+    for (size_t i = w->popups.len; i-- > 0;) {
         bool open = false;
         for (size_t j = 0; j < n; ++j) open = open || list[j].id == w->popups.items[i].id;
-        if (open) w->popups.items[keep++] = w->popups.items[i];
-        else platformPopupHide(w, w->popups.items[i].native);
+        if (!open) {
+            platformPopupHide(w, w->popups.items[i].native);
+            cscdVecRemove(&w->popups, i);
+        }
     }
-    w->popups.len = keep;
     for (size_t j = 0; j < n; ++j) {
         const CscdRect r = list[j].rect;
         const int x = cscdIntOf(floorf(r.x * dpr)), y = cscdIntOf(floorf(r.y * dpr));
