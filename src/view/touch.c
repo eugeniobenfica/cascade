@@ -122,7 +122,7 @@ static CscdElement* scrollableFrom(CscdView* v, float x, float y, float dx, floa
         if (!b || !b->style || !b->parent) continue;
         const CscdComputedStyle* s = b->style;
         CscdRect pb = cscdBoxPaddingBox(b);
-        float maxY = cscdMaxf(0.f, b->overflow.h - pb.h), maxX = cscdMaxf(0.f, b->overflow.w - pb.w);
+        float maxY = cscdMaxf(0.f, (float)b->overflow.h - pb.h), maxX = cscdMaxf(0.f, (float)b->overflow.w - pb.w);
         bool sy = (s->overflowY == CSCD_OVERFLOW_AUTO || s->overflowY == CSCD_OVERFLOW_SCROLL) && maxY > 0.5f;
         bool sx = (s->overflowX == CSCD_OVERFLOW_AUTO || s->overflowX == CSCD_OVERFLOW_SCROLL) && maxX > 0.5f;
         if (cscdElementIs(a, "textarea")) {

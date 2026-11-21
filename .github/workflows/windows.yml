@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build
         run: |
-          cmake -S . -B build -A x64 # (the runner's Visual Studio, whichever it is)
+          cmake -S . -B build -A x64 -DCASCADE_WERROR=ON # (the runner's Visual Studio, whichever it is)
           cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure

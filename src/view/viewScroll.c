@@ -63,7 +63,7 @@ static CscdElement* scrollableAt(CscdView* v, float x, float y, float dx, float 
         if (!b || !b->style || !b->parent) continue;
         const CscdComputedStyle* s = b->style;
         CscdRect pb = cscdBoxPaddingBox(b);
-        float maxY = cscdMaxf(0.f, b->overflow.h - pb.h), maxX = cscdMaxf(0.f, b->overflow.w - pb.w);
+        float maxY = cscdMaxf(0.f, (float)b->overflow.h - pb.h), maxX = cscdMaxf(0.f, (float)b->overflow.w - pb.w);
         bool sy = (s->overflowY == CSCD_OVERFLOW_AUTO || s->overflowY == CSCD_OVERFLOW_SCROLL) && maxY > 0.5f;
         bool sx = (s->overflowX == CSCD_OVERFLOW_AUTO || s->overflowX == CSCD_OVERFLOW_SCROLL) && maxX > 0.5f;
         if (cscdElementIs(a, "textarea")) {
@@ -82,9 +82,17 @@ static CscdElement* scrollableAt(CscdView* v, float x, float y, float dx, float 
     return NULL;
 }
 
+/* (whether what is drawn between layout places x0..x1, y0..y1 lands on device pixels the same way however far it is
+ * scrolled: the canvas's floats hold its device coordinates, the page's places times the scale, exactly below 2^17 px;
+ * further down a long page they round, and a frame moved by whole pixels is not the one painted there) */
+static bool exactOnDevice(const CscdView* v, double x0, double y0, double x1, double y1) {
+    const double lim = 131072.0 / v->dpr;
+    return x0 > -lim && y0 > -lim && x1 < lim && y1 < lim;
+}
+
 void cscdViewScrollTo(CscdView* v, float x, float y) {
     float maxY = cscdMaxf(0.f, cscdViewContentHeight(v) - v->vh);
-    float maxX = v->root ? cscdMaxf(0.f, cscdRectRight(v->root->overflow) - v->vw) : 0;
+    float maxX = v->root ? cscdMaxf(0.f, (float)cscdBoxRectRight(v->root->overflow) - v->vw) : 0;
     float nx = cscdClampf(x, 0.f, maxX), ny = cscdClampf(y, 0.f, maxY);
     if (nx == v->scrollX && ny == v->scrollY) return;
     /* Moved by whole device pixels, a page that moves whole: the last frame is moved, and only what comes into view
@@ -94,7 +102,9 @@ void cscdViewScrollTo(CscdView* v, float x, float y) {
     const bool whole = ox == roundf(ox) && oy == roundf(oy) && px == roundf(px) && py == roundf(py);
     const bool blit = whole && viewOn(v, CSCD_FEATURE_PARTIAL_REPAINT) && v->incrementalValid && !v->fullPaint && !v->shiftPending &&
                       !v->damage.len && !v->dragActive && !v->inspecting && (float)abs(sy) < v->vh * dpr / 2 &&
-                      (float)abs(sx) < v->vw * dpr / 2 && paintPageMovesWhole(v);
+                      (float)abs(sx) < v->vw * dpr / 2 && !v->frameTransformed && paintPageMovesWhole(v) &&
+                      exactOnDevice(v, cscdMinf(v->scrollX, nx), cscdMinf(v->scrollY, ny), cscdMaxf(v->scrollX, nx) + v->vw,
+                                    cscdMaxf(v->scrollY, ny) + v->vh);
     v->scrollX = nx;
     v->scrollY = ny;
     if (!blit) {
@@ -103,11 +113,12 @@ void cscdViewScrollTo(CscdView* v, float x, float y) {
     }
     v->shiftX = sx;
     v->shiftY = sy;
+    v->shiftArea = cscdIRect(0, 0, cscdIntOf(ceilf(v->vw * dpr)), cscdIntOf(ceilf(v->vh * dpr)));
     v->shiftPending = true;
     const float mx = abs(sx) / dpr + 1, my = abs(sy) / dpr + 1; /* (a pixel more: the strips are cut on whole pixels) */
     /* (strips that touch without overlapping: overlapping damage merges into the box around it) */
     const float top = sy > 0 ? my : 0, bottom = sy < 0 ? my : 0;
-    const float hbar = cscdRectRight(v->root->overflow) > v->vw + 0.5f ? 12 : 0; /* (a page wider than the window) */
+    const float hbar = (float)cscdBoxRectRight(v->root->overflow) > v->vw + 0.5f ? 12.f : 0.f; /* (a page wider than the window) */
     if (top > 0) viewAddDamage(v, cscdRect(0, 0, v->vw, top));
     if (bottom > 0) viewAddDamage(v, cscdRect(0, v->vh - bottom, v->vw, bottom));
     if (hbar > 0) viewAddDamage(v, cscdRect(0, v->vh - hbar, v->vw, hbar));
@@ -163,6 +174,50 @@ void cscdViewWheel(CscdView* v, float x, float y, float dx, float dy, CscdModifi
     if (cscdDocumentBody(v->doc)) viewSendSimple(v, "scroll", cscdDocumentBody(v->doc));
 }
 
+/* The box of e scrolled from (ox, oy): moved by whole device pixels, a box whose inside is its last frame moved
+ * (paintBoxScrollsWhole), that frame is moved inside it and only the rest of the box is painted (what came into view,
+ * its scrollbars, its edges). False: not so. */
+static bool scrolledByMoving(CscdView* v, CscdElement* e, float ox, float oy) {
+    const CscdLayoutBox* b = e->layout;
+    const float dpr = v->dpr;
+    const float px = e->scrollLeft * dpr, py = e->scrollTop * dpr, qx = ox * dpr, qy = oy * dpr;
+    if (!b || px != roundf(px) || py != roundf(py) || qx != roundf(qx) || qy != roundf(qy) || v->frameTransformed) return false;
+    if (!viewOn(v, CSCD_FEATURE_PARTIAL_REPAINT) || !v->incrementalValid || v->fullPaint || v->shiftPending || v->dragActive || v->inspecting) return false;
+    /* the inside of its padding box, its scrollbars aside, on whole device pixels in the window */
+    const CscdRect box = cscdViewElementRect(v, e);
+    CscdRect in = cscdRect(box.x + b->border[3], box.y + b->border[0], box.w - b->border[1] - b->border[3], box.h - b->border[0] - b->border[2]);
+    in.w -= 12;
+    in.h -= 12;
+    in = cscdRectIntersect(in, cscdRect(0, 0, v->vw - 12, v->vh - 12));
+    const int x0 = (int)ceilf(in.x * dpr), y0 = (int)ceilf(in.y * dpr), x1 = (int)floorf(cscdRectRight(in) * dpr), y1 = (int)floorf(cscdRectBottom(in) * dpr);
+    const int sx = (int)lroundf(qx - px), sy = (int)lroundf(qy - py);
+    if (x1 - x0 <= abs(sx) || y1 - y0 <= abs(sy)) return false;
+    for (size_t i = 0; i < v->damage.len; ++i) /* (a repaint not made yet would be moved as it is) */
+        if (!cscdRectEmpty(cscdRectIntersect(v->damage.items[i], box))) return false;
+    const CscdRect area = cscdRect(x0 / dpr, y0 / dpr, (x1 - x0) / dpr, (y1 - y0) / dpr);
+    if (!paintBoxScrollsWhole(v, b, area)) return false;
+    /* (its contents' places, scrolled either way, on device pixels exactly) */
+    if (!exactOnDevice(v, b->x - cscdMaxf(ox, e->scrollLeft), b->y - cscdMaxf(oy, e->scrollTop),
+                       b->x + b->overflow.w + b->w, b->y + b->overflow.h + b->h))
+        return false;
+    v->shiftX = sx;
+    v->shiftY = sy;
+    v->shiftArea = cscdIRect(x0, y0, x1 - x0, y1 - y0);
+    v->shiftPending = true;
+    /* what stays: the area moved, within it; the rest of the box (a pixel more around it) in four bands that only touch */
+    const int k0 = cscdMaxi(x0, x0 + sx), k1 = cscdMini(x1, x1 + sx), l0 = cscdMaxi(y0, y0 + sy), l1 = cscdMini(y1, y1 + sy);
+    const CscdRect keep = cscdRect(k0 / dpr, l0 / dpr, (k1 - k0) / dpr, (l1 - l0) / dpr);
+    const CscdRect all = cscdRect(box.x - 1, box.y - 1, box.w + 2, box.h + 2);
+    viewAddDamage(v, cscdRect(all.x, all.y, all.w, keep.y - all.y));
+    viewAddDamage(v, cscdRect(all.x, cscdRectBottom(keep), all.w, cscdRectBottom(all) - cscdRectBottom(keep)));
+    viewAddDamage(v, cscdRect(all.x, keep.y, keep.x - all.x, keep.h));
+    viewAddDamage(v, cscdRect(cscdRectRight(keep), keep.y, cscdRectRight(all) - cscdRectRight(keep), keep.h));
+    v->hitsStale = true;
+    v->dirty = true;
+    viewNotifyInvalidate(v);
+    return true;
+}
+
 void viewScrolled(CscdView* v, CscdElement* e) {
     /* what it contains moved inside its box: that box is painted again, and the hit areas found again */
     const CscdRect r = viewPaintArea(v, e);
@@ -187,16 +242,18 @@ void viewScrollBy(CscdView* v, CscdElement* e, float dx, float dy) {
     if (cscdElementIs(e, "textarea")) viewTextAreaRange(v, e, &maxX, &maxY);
     else {
         CscdRect pb = cscdBoxPaddingBox(b);
-        maxY = cscdMaxf(0.f, b->overflow.h - pb.h);
-        maxX = cscdMaxf(0.f, b->overflow.w - pb.w);
+        maxY = cscdMaxf(0.f, (float)b->overflow.h - pb.h);
+        maxX = cscdMaxf(0.f, (float)b->overflow.w - pb.w);
     }
     float ny = cscdClampf(e->scrollTop + dy, 0.f, maxY), nx = cscdClampf(e->scrollLeft + dx, 0.f, maxX);
     if (ny == e->scrollTop && nx == e->scrollLeft) return;
+    const float ox = e->scrollLeft, oy = e->scrollTop;
     e->scrollTop = ny;
     e->scrollLeft = nx;
+    const bool moved = scrolledByMoving(v, e, ox, oy); /* (before the event: what it changes is painted after the move) */
     const size_t mark = viewWatchMark(v);
     viewWatch(v, &e);
     viewSendSimple(v, "scroll", e);
-    if (e) viewScrolled(v, e);
+    if (e && !moved) viewScrolled(v, e);
     viewUnwatch(v, mark);
 }

@@ -50,6 +50,8 @@ void cscdRecMutexUnlock(CscdRecMutex* m);
 
 typedef void (*CscdThreadFn)(void* arg);
 bool cscdThreadStart(CscdThread* t, CscdThreadFn fn, void* arg); /* false: no thread was made */
+/* The same with a stack of stackBytes (0: the system's default), as small as a macOS or iOS secondary thread's. */
+bool cscdThreadStartSized(CscdThread* t, CscdThreadFn fn, void* arg, size_t stackBytes);
 void cscdThreadJoin(CscdThread* t);
 /* Names the calling thread for debuggers and profilers (cut to 15 bytes where the system wants). */
 void cscdThreadSetName(const char* name);

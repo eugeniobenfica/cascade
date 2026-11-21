@@ -390,7 +390,7 @@ void viewEnsureCaretVisible(CscdView* v, CscdElement* e) {
 CscdRect viewFieldPosRect(CscdView* v, CscdElement* e, size_t pos, size_t* line) {
     CscdLayoutBox* b = e->layout;
     CscdRect r = cscdViewElementRect(v, e);
-    CscdRect cb = cscdRectTranslated(cscdBoxContentBox(b), r.x - b->x, r.y - b->y);
+    CscdRect cb = cscdRectTranslated(cscdBoxContentBox(b), (float)(r.x - b->x), (float)(r.y - b->y));
     CscdFont f = cscdFontForStyle(e->style);
     float ls = e->style->letterSpacing;
     CscdSv val = cscdStrSv(&e->editValue);
@@ -514,7 +514,7 @@ CscdRect cscdViewTextRangeRect(CscdView* v, size_t start, size_t end) {
     /* (to the end of its first line) */
     CscdLayoutBox* b = e->layout;
     const CscdRect r = cscdViewElementRect(v, e);
-    const CscdRect cb = cscdRectTranslated(cscdBoxContentBox(b), r.x - b->x, r.y - b->y);
+    const CscdRect cb = cscdRectTranslated(cscdBoxContentBox(b), (float)(r.x - b->x), (float)(r.y - b->y));
     return cscdRect(ra.x, ra.y, cscdMaxf(1.f, cscdRectRight(cb) - ra.x), ra.h);
 }
 

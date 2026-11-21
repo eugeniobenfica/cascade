@@ -34,7 +34,7 @@ static double monotonicSeconds(void) {
 #endif
 }
 
-double viewNow(const CscdView* v) { return monotonicSeconds() - v->epoch; }
+double viewNow(const CscdView* v) { return v->clockAt >= 0 ? v->clockAt : monotonicSeconds() - v->epoch; }
 
 void cscdActionFree(CscdAction* a) {
     if (a->freeUser && a->user) a->freeUser(a->user);
@@ -161,6 +161,7 @@ bool cscdViewFeature(const CscdView* v, CscdFeature f) { return f < CSCD_FEATURE
 CscdView* cscdViewNew(void) {
     CscdView* v = CSCD_NEW(CscdView);
     v->epoch = monotonicSeconds();
+    v->clockAt = -1;
     v->textScale = 1;
     v->doc = cscdDocumentNew();
     viewHookDocument(v);
@@ -241,6 +242,7 @@ void viewClearSources(CscdView* v) {
 
 void cscdViewFree(CscdView* v) {
     if (!v) return;
+    viewKeptLayersSweep(v, true);
     viewFreeLists(v);
     viewA11yFree(v);
     cscdVecFree(&v->paintDamage);
@@ -331,6 +333,7 @@ void viewAddDamage(CscdView* v, CscdRect r) {
 }
 
 void cscdViewInvalidateElement(CscdView* v, CscdElement* e) {
+    ++v->paintedGen;
     const CscdRect r = viewPaintArea(v, e);
     if (cscdRectEmpty(r)) {
         cscdViewInvalidate(v);
@@ -459,7 +462,7 @@ bool cscdViewUpdate(CscdView* v) {
         if (v->styleDirty) viewRestyle(v, NULL);
         if (v->layoutDirty) { viewRelayout(v); v->dirty = v->fullPaint = true; }
     }
-    if (v->transitions.len || v->animations.len) v->dirty = v->fullPaint = true;
+    if (v->transitions.len || v->animations.len) v->dirty = true; /* (painted where the animation step said: its damage, or the whole) */
     viewHandlesCheck(v);
     if (focusedIsTextField(v)) {
         /* caret blink */
@@ -555,8 +558,19 @@ static void clearPixels(CscdImage* target, int x0, int y0, int x1, int y1) {
         for (int y = y0; y < y1; ++y) memset(cscdImageRow(target, y) + x0, 0, (size_t)(x1 - x0) * sizeof(uint32_t));
 }
 
+void viewKeptLayersSweep(CscdView* v, bool all) {
+    size_t w = 0;
+    for (size_t i = 0; i < v->keptLayers.len; ++i) {
+        if (!all && v->keptLayers.items[i].usedIn == v->paintCount) v->keptLayers.items[w++] = v->keptLayers.items[i];
+        else cscdRelease(v->keptLayers.items[i].img);
+    }
+    v->keptLayers.len = w;
+    if (all) cscdVecFree(&v->keptLayers);
+}
+
 void cscdViewPaint(CscdView* v, CscdImage* target, bool incremental) {
     cscdViewUpdate(v);
+    ++v->paintCount;
     const double t0 = cscdNowSeconds();
     v->paintDamage.len = 0;
     v->paintDamageAll = true;
@@ -572,12 +586,17 @@ void cscdViewPaint(CscdView* v, CscdImage* target, bool incremental) {
     const bool partial = incremental && v->incrementalValid && !v->fullPaint && areas.len && (!v->shiftPending || sameSize);
     const bool shifted = partial && v->shiftPending;
     if (shifted) {
-        const int sx = v->shiftX, sy = v->shiftY, w = target->width, h = target->height;
-        const int n = w - abs(sx);
-        if (sy <= 0)
-            for (int y = 0; y < h + sy; ++y) memmove(cscdImageRow(target, y) + (sx > 0 ? sx : 0), cscdImageRow(target, y - sy) + (sx < 0 ? -sx : 0), (size_t)n * 4);
-        else
-            for (int y = h - 1; y >= sy; --y) memmove(cscdImageRow(target, y) + (sx > 0 ? sx : 0), cscdImageRow(target, y - sy) + (sx < 0 ? -sx : 0), (size_t)n * 4);
+        /* the pixels of the area that stay in it, moved: those from (x - sx, y - sy) to (x, y) */
+        const int sx = v->shiftX, sy = v->shiftY;
+        const CscdIRect a = v->shiftArea;
+        const int x0 = cscdMaxi(a.x, a.x + sx), x1 = cscdMini(a.x + a.w, a.x + a.w + sx);
+        const int y0 = cscdMaxi(a.y, a.y + sy), y1 = cscdMini(a.y + a.h, a.y + a.h + sy);
+        if (x1 > x0 && y1 > y0 && x0 >= 0 && y0 >= 0 && x1 <= target->width && y1 <= target->height) {
+            if (sy <= 0)
+                for (int y = y0; y < y1; ++y) memmove(cscdImageRow(target, y) + x0, cscdImageRow(target, y - sy) + x0 - sx, (size_t)(x1 - x0) * 4);
+            else
+                for (int y = y1 - 1; y >= y0; --y) memmove(cscdImageRow(target, y) + x0, cscdImageRow(target, y - sy) + x0 - sx, (size_t)(x1 - x0) * 4);
+        }
     }
     v->shiftPending = false;
     /* A frame with enough to paint is recorded, then drawn by bands of rows on several threads (the
@@ -622,6 +641,7 @@ void cscdViewPaint(CscdView* v, CscdImage* target, bool incremental) {
         v->paintDamageAll = false;
     } else {
         if (v->transparent) clearPixels(target, 0, 0, target->width, target->height);
+        v->frameTransformed = false; /* (painted whole: what it holds now) */
         paintCanvas(v, c);
     }
     cscdCanvasFree(c); /* (a recording canvas notes the layers it closes as it goes) */
@@ -632,6 +652,7 @@ void cscdViewPaint(CscdView* v, CscdImage* target, bool incremental) {
     v->incrementalValid = incremental;
     v->fullPaint = false;
     v->damage.len = 0;
+    viewKeptLayersSweep(v, false); /* (those this frame did not draw: their animation ended, or they changed) */
     cscdVecFree(&areas);
     notePaint(v, t0, (double)painted * v->dpr * v->dpr, partial);
 }
@@ -694,7 +715,7 @@ void cscdViewClearTimer(CscdView* v, int id) {
 
 float cscdViewContentHeight(const CscdView* v) {
     if (!v->root) return 0;
-    return cscdMaxf(cscdRectBottom(v->root->overflow), v->root->y + v->root->h + v->root->margin[2]);
+    return cscdMaxf((float)cscdBoxRectBottom(v->root->overflow), (float)(v->root->y + v->root->h + v->root->margin[2]));
 }
 
 /* ---- queries ------------------------------------------------------------------------------------- */
@@ -730,8 +751,8 @@ CscdElement* cscdViewElementAt(CscdView* v, float x, float y) {
 static CscdRect boxRect(const CscdLayoutBox* b) {
     CscdRect r = cscdBoxBorderBox(b);
     if (b->kind == CSCD_BOX_INLINE && b->inlineFrags.len) {
-        r = b->inlineFrags.items[0].rect;
-        for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
+        r = cscdBoxRectF(b->inlineFrags.items[0].rect);
+        for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, cscdBoxRectF(b->inlineFrags.items[i].rect));
     }
     return r;
 }
@@ -749,8 +770,8 @@ CscdRect cscdViewElementRect(CscdView* v, CscdElement* e) {
 }
 
 CscdRect cscdElementBoundingClientRect(const CscdElement* e) { return e->layout ? boxRect(e->layout) : cscdRect(0, 0, 0, 0); }
-float cscdElementScrollWidth(const CscdElement* e) { return e->layout ? cscdMaxf(e->layout->overflow.w, cscdBoxPaddingBox(e->layout).w) : 0; }
-float cscdElementScrollHeight(const CscdElement* e) { return e->layout ? cscdMaxf(e->layout->overflow.h, cscdBoxPaddingBox(e->layout).h) : 0; }
+float cscdElementScrollWidth(const CscdElement* e) { return e->layout ? cscdMaxf((float)e->layout->overflow.w, cscdBoxPaddingBox(e->layout).w) : 0; }
+float cscdElementScrollHeight(const CscdElement* e) { return e->layout ? cscdMaxf((float)e->layout->overflow.h, cscdBoxPaddingBox(e->layout).h) : 0; }
 
 /* ---- small accessors ----------------------------------------------------------------------------- */
 

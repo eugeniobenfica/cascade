@@ -3,6 +3,7 @@
  * and scrollbars. */
 #include "text/bidiInternal.h"
 #include "core/thread.h"
+#include "paint/canvasInternal.h"
 #include "view/viewInternal.h"
 
 #include "cascade/css.h"
@@ -531,7 +532,7 @@ NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
     if (b->kind == CSCD_BOX_INLINE) {
         for (size_t i = 0; i < b->inlineFrags.len; ++i) {
             const CscdInlineFrag f = b->inlineFrags.items[i];
-            CscdRRect rr = borderRRect(b, f.rect);
+            CscdRRect rr = borderRRect(b, cscdBoxRectF(f.rect));
             if (!f.first) { rr.rx[0] = rr.ry[0] = rr.rx[3] = rr.ry[3] = 0; }
             if (!f.last) { rr.rx[1] = rr.ry[1] = rr.rx[2] = rr.ry[2] = 0; }
             for (size_t k = s->boxShadow.len; k-- > 0;) {
@@ -542,10 +543,10 @@ NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
             float saveL = b->border[3], saveR = b->border[1], pl = b->padding[3], pr = b->padding[1];
             if (!f.first) { b->border[3] = 0; b->padding[3] = 0; }
             if (!f.last) { b->border[1] = 0; b->padding[1] = 0; }
-            paintBackground(P, b, f.rect, rr, true, f.first && f.last);
+            paintBackground(P, b, cscdBoxRectF(f.rect), rr, true, f.first && f.last);
             paintBorder(P, b, rr, s->border, f.first, f.last);
             b->border[3] = saveL; b->border[1] = saveR; b->padding[3] = pl; b->padding[1] = pr;
-            record(P, b->element, f.rect, false, b, -1);
+            record(P, b->element, cscdBoxRectF(f.rect), false, b, -1);
         }
         return;
     }
@@ -618,13 +619,13 @@ static void decorationLine(const DecoLine* D, float y) {
     if (style == CSCD_DECO_WAVY) {
         CscdPath p = {0};
         float amp = thick * 1.5f, step = thick * 3;
-        cscdPathMoveTo(&p, f->x, y);
+        cscdPathMoveTo(&p, (float)f->x, y);
         for (float x = 0; x < w; x += step * 2) {
-            cscdPathQuadTo(&p, f->x + x + step / 2, y - amp, f->x + x + step, y);
-            cscdPathQuadTo(&p, f->x + x + step * 1.5f, y + amp, f->x + x + step * 2, y);
+            cscdPathQuadTo(&p, (float)f->x + x + step / 2, y - amp, (float)f->x + x + step, y);
+            cscdPathQuadTo(&p, (float)f->x + x + step * 1.5f, y + amp, (float)f->x + x + step * 2, y);
         }
         cscdCanvasSave(canvas);
-        cscdCanvasClipRect(canvas, cscdRect(f->x, y - amp * 2, w, amp * 4));
+        cscdCanvasClipRect(canvas, cscdRect((float)f->x, y - amp * 2, w, amp * 4));
         cscdCanvasStrokePath(canvas, &p, D->color, thick);
         cscdCanvasRestore(canvas);
         cscdPathFree(&p);
@@ -632,8 +633,8 @@ static void decorationLine(const DecoLine* D, float y) {
     }
     if (style == CSCD_DECO_DOTTED || style == CSCD_DECO_DASHED) {
         CscdPath p = {0};
-        cscdPathMoveTo(&p, f->x, y + thick / 2);
-        cscdPathLineTo(&p, f->x + w, y + thick / 2);
+        cscdPathMoveTo(&p, (float)f->x, y + thick / 2);
+        cscdPathLineTo(&p, (float)f->x + w, y + thick / 2);
         CscdStrokeStyle ss = cscdStrokeStyle(thick);
         if (style == CSCD_DECO_DOTTED) setDash(&ss, thick, thick);
         else setDash(&ss, thick * 3, thick * 2);
@@ -642,8 +643,8 @@ static void decorationLine(const DecoLine* D, float y) {
         cscdPathFree(&p);
         return;
     }
-    cscdCanvasFillRect(canvas, cscdRect(f->x, y, w, thick), D->color);
-    if (style == CSCD_DECO_DOUBLE) cscdCanvasFillRect(canvas, cscdRect(f->x, y + thick * 2, w, thick), D->color);
+    cscdCanvasFillRect(canvas, cscdRect((float)f->x, y, w, thick), D->color);
+    if (style == CSCD_DECO_DOUBLE) cscdCanvasFillRect(canvas, cscdRect((float)f->x, y + thick * 2, w, thick), D->color);
 }
 
 static void paintTextRun(Painter* P, CscdLayoutBox* tb, const CscdTextFrag* f, const CscdFont* font, const CscdShader* fill) {
@@ -664,7 +665,7 @@ static void paintTextRun(Painter* P, CscdLayoutBox* tb, const CscdTextFrag* f, c
             fonts[i] = *font;
             fonts[i].face = g->face;
             if (g->scale) fonts[i].size *= g->scale;
-            CscdGlyph gl = {g->glyph, f->x + g->x + extra, f->baseline + g->y, &fonts[i]};
+            CscdGlyph gl = {g->glyph, (float)f->x + g->x + extra, (float)f->baseline + g->y, &fonts[i]};
             glyphs[ng++] = gl;
         }
         if (f->justify > 0 && g->cluster < text.len && text.ptr[g->cluster] == ' ') extra += f->justify;
@@ -733,10 +734,10 @@ static void paintTextRun(Painter* P, CscdLayoutBox* tb, const CscdTextFrag* f, c
         if (s->underline) {
             float off = face ? -face->underlinePos * sc : font->size / 10;
             if (s->underlineUnder) off = cscdFontDescent(font) + thick; /* (below the descenders) */
-            decorationLine(&D, roundf(f->baseline + cscdMaxf(1.f, off)));
+            decorationLine(&D, roundf((float)f->baseline + cscdMaxf(1.f, off)));
         }
-        if (s->overline) decorationLine(&D, f->baseline - cscdFontAscent(font));
-        if (s->lineThrough) decorationLine(&D, f->baseline - (face ? face->strikePos * sc : cscdFontXHeight(font) / 2) - thick / 2);
+        if (s->overline) decorationLine(&D, (float)f->baseline - cscdFontAscent(font));
+        if (s->lineThrough) decorationLine(&D, (float)f->baseline - (face ? face->strikePos * sc : cscdFontXHeight(font) / 2) - thick / 2);
     }
     /* text-emphasis: a mark centered over (or under) each character that shows, half the size */
     if (s->emphasisShape) {
@@ -747,7 +748,7 @@ static void paintTextRun(Painter* P, CscdLayoutBox* tb, const CscdTextFrag* f, c
         mf.size = font->size / 2;
         mf.settings = NULL;
         const float mw = cscdFontMeasure(cscdSv(mark), &mf, 0, 0);
-        const float y = s->emphasisUnder ? f->baseline + cscdFontDescent(font) + cscdFontAscent(&mf) : f->baseline - cscdFontAscent(font) - cscdFontDescent(&mf);
+        const float y = s->emphasisUnder ? (float)f->baseline + cscdFontDescent(font) + cscdFontAscent(&mf) : (float)f->baseline - cscdFontAscent(font) - cscdFontDescent(&mf);
         const CscdColor mc = s->emphasisColorSet ? s->emphasisColor : s->color;
         for (size_t i = 0; i < shaped->len; ++i) {
             const CscdShapedGlyph* g = &shaped->items[i];
@@ -755,7 +756,7 @@ static void paintTextRun(Painter* P, CscdLayoutBox* tb, const CscdTextFrag* f, c
             size_t at = g->cluster;
             const uint32_t cp = cscdUtf8Next(text, &at);
             if (cp == ' ' || cp == 0xA0 || cp == 0x3000 || isPunctuation(cp)) continue; /* (not on spaces and punctuation) */
-            cscdCanvasDrawText(canvas, cscdSv(mark), f->x + g->x + (g->advance - mw) / 2, y, &mf, mc);
+            cscdCanvasDrawText(canvas, cscdSv(mark), (float)f->x + g->x + (g->advance - mw) / 2, y, &mf, mc);
         }
     }
     cscdFree(glyphs);
@@ -784,14 +785,14 @@ NOINLINE static void paintText(Painter* P, CscdLayoutBox* tb) {
         const CscdTextFrag* f = &tb->textFrags.items[i];
         if (!f->text.len) continue;
         if (!dry) {
-            const CscdRect r = {f->x - pad, f->top - pad, f->width + 2 * pad, f->height + 2 * pad};
+            const CscdRect r = {(float)f->x - pad, (float)f->top - pad, f->width + 2 * pad, f->height + 2 * pad};
             const CscdPoint p[4] = {cscdMatMap(m, cscdPoint(r.x, r.y)), cscdMatMap(m, cscdPoint(cscdRectRight(r), r.y)), cscdMatMap(m, cscdPoint(r.x, cscdRectBottom(r))),
                                   cscdMatMap(m, cscdPoint(cscdRectRight(r), cscdRectBottom(r)))};
             float x0 = p[0].x, y0 = p[0].y, x1 = x0, y1 = y0;
             for (int k = 0; k < 4; ++k) { x0 = cscdMinf(x0, p[k].x); y0 = cscdMinf(y0, p[k].y); x1 = cscdMaxf(x1, p[k].x); y1 = cscdMaxf(y1, p[k].y); }
             if (x1 > clip.x && x0 < cscdRectRight(clip) && y1 > clip.y && y0 < cscdRectBottom(clip)) paintTextRun(P, tb, f, &font, &fill);
         }
-        record(P, tb->element, cscdRect(f->x, f->top, f->width, f->height), true, tb, (int)i);
+        record(P, tb->element, cscdRect((float)f->x, (float)f->top, f->width, f->height), true, tb, (int)i);
     }
 }
 
@@ -1548,7 +1549,7 @@ NOINLINE static void paintReplaced(Painter* P, CscdLayoutBox* b) {
             CscdFont f = cscdFontForStyle(b->style);
             cscdCanvasSave(canvas);
             cscdCanvasClipRect(canvas, cscdBoxContentBox(b));
-            cscdCanvasDrawText(canvas, cscdElementAttrC(b->element, "alt"), cscdBoxContentX(b), cscdBoxContentY(b) + cscdFontAscent(&f), &f, b->style->color);
+            cscdCanvasDrawText(canvas, cscdElementAttrC(b->element, "alt"), (float)cscdBoxContentX(b), (float)cscdBoxContentY(b) + cscdFontAscent(&f), &f, b->style->color);
             cscdCanvasRestore(canvas);
         }
         break;
@@ -1565,12 +1566,12 @@ NOINLINE static void paintScrollbars(Painter* P, CscdLayoutBox* b) {
     const CscdComputedStyle* s = b->style;
     CscdElement* e = b->element;
     CscdRect pb = cscdBoxPaddingBox(b);
-    float maxY = cscdMaxf(0.f, b->overflow.h - pb.h), maxX = cscdMaxf(0.f, b->overflow.w - pb.w);
+    float maxY = cscdMaxf(0.f, (float)b->overflow.h - pb.h), maxX = cscdMaxf(0.f, (float)b->overflow.w - pb.w);
     bool showY = (s->overflowY == CSCD_OVERFLOW_SCROLL) || (s->overflowY == CSCD_OVERFLOW_AUTO && maxY > 0.5f);
     bool showX = (s->overflowX == CSCD_OVERFLOW_SCROLL) || (s->overflowX == CSCD_OVERFLOW_AUTO && maxX > 0.5f);
     CscdColor thumb = s->scrollbarThumbSet ? s->scrollbarThumb : cscdRgba(0, 0, 0, 90);
     if (s->scrollbarWidth == 2) return; /* (scrollbar-width: none: it scrolls, without bars) */
-    const float bw = s->scrollbarWidth == 1 ? 4 : 6, inset = bw + 2;
+    const float bw = s->scrollbarWidth == 1 ? 4.f : 6.f, inset = bw + 2;
     if (showY && maxY > 0) {
         float trackH = pb.h - 4;
         float th = cscdMaxf(20.f, trackH * pb.h / (pb.h + maxY));
@@ -1675,9 +1676,9 @@ static CscdRect inkBounds(const CscdLayoutBox* b) {
     CscdRect r = cscdBoxBorderBox(b);
     for (size_t i = 0; i < b->textFrags.len; ++i) {
         const CscdTextFrag* f = &b->textFrags.items[i];
-        r = cscdRectUnite(r, cscdRect(f->x, f->top, f->width, f->height));
+        r = cscdRectUnite(r, cscdRect((float)f->x, (float)f->top, f->width, f->height));
     }
-    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, cscdBoxRectF(b->inlineFrags.items[i].rect));
     const CscdComputedStyle* s = b->style;
     if (s) {
         float out = s->outlineStyle != CSCD_BORDER_NONE ? cscdMaxf(0.f, s->outlineWidth + s->outlineOffset) : 0;
@@ -1703,10 +1704,35 @@ static CscdRect inkOfTreeFrom(CscdView* v, const CscdLayoutBox* b, uint64_t kept
 
 static CscdRect inkOfTree(CscdView* v, const CscdLayoutBox* b) { return inkOfTreeFrom(v, b, 0); }
 
+/* a + d, and in *grow a float step of it when the float sum rounds (TwoSum: its error is exactly 0 when it does not) */
+static float movedEdge(float a, float d, float* grow) {
+    const float s = a + d, bb = s - a, err = (a - (s - bb)) + (d - bb);
+    if (err != 0) *grow = cscdMaxf(*grow, fabsf(s) * (1.f / 4194304)); /* (2^-22: twice a step) */
+    return s;
+}
+
+/* the inks of b and all in it, kept from the last layout and only moved since: each entry moved by (dx, dy), as it was
+ * where the move is exact in floats (below 2^17 px), else a float step wider all round (an ink only bounds what is
+ * drawn) */
+static CscdRect inkMoved(CscdView* v, const CscdLayoutBox* b, float dx, float dy) {
+    const CscdMapVal* at = cscdU64MapGet(&v->inkAt, CSCD_PKEY(b));
+    if (!at) return inkOfTreeFrom(v, b, 0); /* (none: as a box new to the table) */
+    const size_t slot = at->u;
+    const CscdRect r = v->inks.items[slot];
+    float grow = 0;
+    const float x0 = movedEdge(r.x, dx, &grow), y0 = movedEdge(r.y, dy, &grow);
+    const float x1 = movedEdge(r.x + r.w, dx, &grow), y1 = movedEdge(r.y + r.h, dy, &grow);
+    v->inks.items[slot] = grow > 0 ? cscdRect(x0 - grow, y0 - grow, x1 - x0 + 2 * grow, y1 - y0 + 2 * grow) : cscdRect(x0, y0, r.w, r.h);
+    for (size_t i = 0; i < b->children.len; ++i) inkMoved(v, cscdBoxChild(b, i), dx, dy);
+    return v->inks.items[slot];
+}
+
 static CscdRect inkOfTreeFrom(CscdView* v, const CscdLayoutBox* b, uint64_t kept) {
-    if (kept && b->keptIn == kept && b->x == b->keptX && b->y == b->keptY) {
-        const CscdMapVal* at = cscdU64MapGet(&v->inkAt, CSCD_PKEY(b));
-        if (at) return v->inks.items[at->u];
+    if (kept && b->keptIn == kept) {
+        if (b->x == b->keptX && b->y == b->keptY) {
+            const CscdMapVal* at = cscdU64MapGet(&v->inkAt, CSCD_PKEY(b));
+            if (at) return v->inks.items[at->u];
+        } else return inkMoved(v, b, (float)(b->x - b->keptX), (float)(b->y - b->keptY));
     }
     CscdRect r = cscdBoxBorderBox(b);
     const CscdComputedStyle* s = b->style;
@@ -1721,9 +1747,9 @@ static CscdRect inkOfTreeFrom(CscdView* v, const CscdLayoutBox* b, uint64_t kept
     }
     for (size_t i = 0; i < b->textFrags.len; ++i) {
         const CscdTextFrag* f = &b->textFrags.items[i];
-        r = cscdRectUnite(r, cscdRect(f->x - pad, f->top - pad, f->width + 2 * pad, f->height + 2 * pad));
+        r = cscdRectUnite(r, cscdRect((float)f->x - pad, (float)f->top - pad, f->width + 2 * pad, f->height + 2 * pad));
     }
-    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, cscdBoxRectF(b->inlineFrags.items[i].rect));
     if (s) {
         float out = s->outlineStyle != CSCD_BORDER_NONE ? cscdMaxf(0.f, s->outlineWidth + s->outlineOffset) : 0;
         for (size_t i = 0; i < s->boxShadow.len; ++i) {
@@ -1893,7 +1919,7 @@ static bool outOfSight(Painter* P, const CscdLayoutBox* b) {
 /* The 3D transform of b, in layout coordinates, with the perspective its parent gives it. */
 NOINLINE static Mat4 transform3D(CscdLayoutBox* b) {
     const CscdComputedStyle* s = b->style;
-    CscdRect r = b->kind == CSCD_BOX_INLINE && b->inlineFrags.len ? b->inlineFrags.items[0].rect : cscdBoxBorderBox(b);
+    CscdRect r = b->kind == CSCD_BOX_INLINE && b->inlineFrags.len ? cscdBoxRectF(b->inlineFrags.items[0].rect) : cscdBoxBorderBox(b);
     const float ox = r.x + cscdLenResolve(s->originX, r.w, 0), oy = r.y + cscdLenResolve(s->originY, r.h, 0), oz = s->originZ;
     Mat4 m = m4Translate(ox, oy, oz);
     for (size_t i = 0; i < s->transform.len; ++i) {
@@ -2016,10 +2042,10 @@ static bool pushContentClip(Painter* P, CscdLayoutBox* b) {
  * turned a quarter onto its box (clockwise, or the other way for sideways-lr). */
 static bool pushWritingMode(Painter* P, CscdLayoutBox* b) {
     if (!b->style || !b->style->verticalRoot || b->kind == CSCD_BOX_INLINE || b->kind == CSCD_BOX_TEXT) return false;
-    const float lx = b->x + b->logicalDX, ly = b->y + b->logicalDY;
+    const float lx = (float)(b->x + b->logicalDX), ly = (float)(b->y + b->logicalDY);
     CscdMatrix m;
-    if (b->style->writingMode == CSCD_WRITING_SIDEWAYS_LR) m = cscdMatrix(0, -1, 1, 0, b->x - ly, b->y + b->h + lx);
-    else m = cscdMatrix(0, 1, -1, 0, b->x + b->w + ly, b->y - lx);
+    if (b->style->writingMode == CSCD_WRITING_SIDEWAYS_LR) m = cscdMatrix(0, -1, 1, 0, (float)(b->x - ly), (float)(b->y + b->h + lx));
+    else m = cscdMatrix(0, 1, -1, 0, (float)(b->x + b->w + ly), (float)(b->y - lx));
     cscdCanvasSave(P->canvas);
     cscdCanvasConcat(P->canvas, m);
     return true;
@@ -2066,9 +2092,9 @@ static void paintLayer(Painter* P, CscdLayoutBox* b) {
         if (!cscdLenIsAuto(s->top)) {
             float stickTop = containerTop + scrollTop + cscdLenResolve(s->top, 0, 0);
             if (b->y < stickTop) {
-                dy = stickTop - b->y;
+                dy = (float)(stickTop - b->y);
                 /* stay inside the parent */
-                if (b->parent) dy = cscdMinf(dy, cscdMaxf(0.f, b->parent->y + b->parent->h - b->parent->border[2] - b->parent->padding[2] - (b->y + b->h)));
+                if (b->parent) dy = cscdMinf(dy, cscdMaxf(0.f, (float)(b->parent->y + b->parent->h - b->parent->border[2] - b->parent->padding[2] - (b->y + b->h))));
             }
         }
         cscdCanvasTranslate(canvas, 0, dy);
@@ -2080,10 +2106,12 @@ static void paintLayer(Painter* P, CscdLayoutBox* b) {
             return;
         }
         if (!m4FlatAffine(&m)) { /* a perspective: through an image of its own */
+            if (!cscdCanvasDryRun(canvas)) P->view->frameTransformed = true;
             paintProjective(P, b, &m);
             cscdCanvasRestore(canvas);
             return;
         }
+        if (!cscdCanvasDryRun(canvas)) P->view->frameTransformed = true;
         cscdCanvasConcat(canvas, m4Affine(&m));
     }
     paintLayerContent(P, b);
@@ -2100,10 +2128,103 @@ NOINLINE static void clipPathShape(Painter* P, CscdLayoutBox* b) {
     cscdPathFree(&p);
 }
 
+static bool cornersRound(const CscdComputedStyle* s) {
+    for (int i = 0; i < 4; ++i)
+        if (s->radius[i].x.px != 0 || s->radius[i].x.pct != 0 || s->radius[i].x.expr || s->radius[i].y.px != 0 || s->radius[i].y.pct != 0 ||
+            s->radius[i].y.expr)
+            return true;
+    return false;
+}
+
+/* (what can be kept: what it holds is drawn alike from one frame to the next as long as its places, its styles, and
+ * the view's painters, do not change; no picture, no field, no painter, no background image, no focus in it) */
+static bool keepable(const CscdView* v, const CscdLayoutBox* b, uint64_t* look) {
+    if (b->kind == CSCD_BOX_REPLACED || cscdStackLow()) return false;
+    const CscdComputedStyle* s = b->style;
+    if (s && (s->backgrounds.len || s->contentImage.len || s->listImage.len || cscdBackdropAny(&s->backdrop) || s->masks.len)) return false;
+    if (b->element && (cscdElementPainter(b->element)->fn || v->doc->focused == b->element || cscdElementIs(b->element, "input") ||
+                       cscdElementIs(b->element, "textarea") || cscdElementIs(b->element, "select")))
+        return false;
+    if (cscdBoxIsElements(b)) *look = (*look ^ cscdBoxOwnLook(b)) * 1099511628211ull;
+    for (size_t i = 0; i < b->children.len; ++i)
+        if (!keepable(v, cscdBoxChild(b, i), look)) return false;
+    return true;
+}
+
+/* A layer of opacity alone, of an element whose opacity alone animates, drawn from the image of what it holds kept
+ * from the frame before (the same pixels: what the layer would hold, drawn back with its opacity as a layer is); made
+ * when there is none, or what it holds changed. False: painted as usual. */
+static bool keptLayer(Painter* P, CscdLayoutBox* b) {
+    CscdView* v = P->view;
+    CscdCanvas* canvas = P->canvas;
+    const CscdComputedStyle* s = b->style;
+    if (P->projection || v->recordHits || cscdCanvasDryRun(canvas) || !b->element || b->anonymous || b->pseudo.len) return false;
+    if (!(s->opacity < 1) || s->blur > 0 || s->grayscale > 0 || s->brightness != 1 || s->saturate != 1 || s->invert > 0 || s->blend != CSCD_BM_NORMAL ||
+        s->masks.len || s->clipPath.len)
+        return false;
+    const CscdMatrix m = cscdCanvasMatrix(canvas);
+    if (m.b != 0 || m.c != 0) return false;
+    /* (no clip around it but rectangles: a rounded or shaped one would be a mask the image does not hold) */
+    for (const CscdLayoutBox* p = b->parent; p; p = p->parent)
+        if (p->style && (p->style->clipPath.len || p->style->masks.len || (cscdStyleClipsOverflow(p->style) && p->parent && cornersRound(p->style)))) return false;
+    if (!viewAnimatesOpacityOnly(v, b->element)) return false;
+    uint64_t look = 14695981039346656037ull ^ v->paintedGen;
+    if (!keepable(v, b, &look)) return false;
+    CscdRect area;
+    if (!paintAnimatedArea(v, b, &area)) return false;
+    const float dpr = v->dpr;
+    const int w = cscdCanvasWidth(canvas), h = cscdCanvasHeight(canvas);
+    const int ax0 = cscdMaxi(0, cscdIntOf(floorf(area.x * dpr))), ay0 = cscdMaxi(0, cscdIntOf(floorf(area.y * dpr)));
+    const int ax1 = cscdMini(w, cscdIntOf(ceilf(cscdRectRight(area) * dpr))), ay1 = cscdMini(h, cscdIntOf(ceilf(cscdRectBottom(area) * dpr)));
+    if (ax1 <= ax0 || ay1 <= ay0) return false;
+    const CscdRect clip = cscdCanvasDeviceClipBounds(canvas);
+    KeptLayer* k = NULL;
+    for (size_t i = 0; i < v->keptLayers.len && !k; ++i)
+        if (v->keptLayers.items[i].e == b->element) k = &v->keptLayers.items[i];
+    const bool same = k && k->b == b && k->epoch == v->doc->layoutEpoch && k->look == look && k->w == w && k->h == h &&
+                      memcmp(&k->m, &m, sizeof m) == 0 && clip.x >= k->valid.x && clip.y >= k->valid.y &&
+                      cscdRectRight(clip) <= k->valid.x + k->valid.w && cscdRectBottom(clip) <= k->valid.y + k->valid.h;
+    if (!same) {
+        if (!k) {
+            if (v->keptLayers.len >= 8) return false;
+            KeptLayer z;
+            memset(&z, 0, sizeof z);
+            z.e = b->element;
+            cscdVecPush(&v->keptLayers, z);
+            k = &cscdVecLast(&v->keptLayers);
+        }
+        if (!k->img || k->w != w || k->h != h) {
+            cscdRelease(k->img);
+            k->img = cscdImageNew(w, h);
+        } else
+            for (int y = k->valid.y; y < k->valid.y + k->valid.h; ++y) memset(cscdImageRow(k->img, y) + k->valid.x, 0, (size_t)k->valid.w * 4);
+        if (cscdImageEmpty(k->img)) return false;
+        /* what the layer would hold: its contents drawn, over nothing, where the frame draws them */
+        CscdCanvas* lc = cscdCanvasNew(k->img);
+        cscdCanvasClipRect(lc, cscdRect((float)ax0, (float)ay0, (float)(ax1 - ax0), (float)(ay1 - ay0)));
+        cscdCanvasSetMatrix(lc, m);
+        Painter lp = painter(v, lc);
+        paintStacking(&lp, b);
+        cscdCanvasFree(lc);
+        k->b = b;
+        k->epoch = v->doc->layoutEpoch;
+        k->look = look;
+        k->m = m;
+        k->w = w;
+        k->h = h;
+        k->valid = cscdIRect(ax0, ay0, ax1 - ax0, ay1 - ay0);
+        if (!(clip.x >= ax0 && clip.y >= ay0 && cscdRectRight(clip) <= ax1 && cscdRectBottom(clip) <= ay1)) return false;
+    }
+    k->usedIn = v->paintCount;
+    cscdCanvasDrawLayerImage(canvas, k->img, s->opacity);
+    return true;
+}
+
 static void paintLayerContent(Painter* P, CscdLayoutBox* b) {
     CscdCanvas* canvas = P->canvas;
     const CscdComputedStyle* s = b->style;
     if (!P->projection && outOfSight(P, b)) return;
+    if (keptLayer(P, b)) return;
     bool layer = s->opacity < 1 || s->blur > 0 || s->grayscale > 0 || s->brightness != 1 || s->saturate != 1 || s->invert > 0 || s->blend != CSCD_BM_NORMAL ||
                  s->masks.len;
     if (layer) {
@@ -2175,9 +2296,113 @@ static bool noStillIn(uint64_t stamp, CscdLayoutBox* b) {
     return none;
 }
 
+/* what b and all in it draw, in layout coordinates, as inkOfTreeFrom bounds it (without the table); false: something in
+ * it is drawn elsewhere than its box (a transform, a fixed or sticky box) */
+static bool animatedInk(const CscdLayoutBox* b, bool top, CscdRect* out) {
+    const CscdComputedStyle* s = b->style;
+    /* (a text has its element's style: the transform is that box's, not the text's) */
+    if (s && !top && b->kind != CSCD_BOX_TEXT && (s->transform.len || s->position == CSCD_POS_FIXED || s->position == CSCD_POS_STICKY || s->perspective > 0))
+        return false;
+    CscdRect r = cscdBoxBorderBox(b);
+    float pad = 0;
+    if (b->textFrags.len) {
+        pad = s ? s->font.size : 16;
+        if (s)
+            for (size_t i = 0; i < s->textShadow.len; ++i) {
+                const CscdShadow* sh = &s->textShadow.items[i];
+                pad = cscdMaxf(pad, (s->font.size) + fabsf(sh->x) + fabsf(sh->y) + 2 * sh->blur);
+            }
+    }
+    for (size_t i = 0; i < b->textFrags.len; ++i) {
+        const CscdTextFrag* f = &b->textFrags.items[i];
+        r = cscdRectUnite(r, cscdRect((float)f->x - pad, (float)f->top - pad, f->width + 2 * pad, f->height + 2 * pad));
+    }
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, cscdBoxRectF(b->inlineFrags.items[i].rect));
+    if (s) {
+        float o = s->outlineStyle != CSCD_BORDER_NONE ? cscdMaxf(0.f, s->outlineWidth + s->outlineOffset) : 0;
+        for (size_t i = 0; i < s->boxShadow.len; ++i) {
+            const CscdShadow* sh = &s->boxShadow.items[i];
+            if (!sh->inset) o = cscdMaxf(o, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 2 * sh->blur + 1 + cscdMaxf(0.f, sh->spread));
+        }
+        if (s->blur > 0) o += 3 * s->blur;
+        if (o > 0) r = cscdRectInset(r, -o, -o, -o, -o);
+    }
+    const bool clips = s && cscdStyleClipsOverflow(s) && b->parent;
+    for (size_t i = 0; i < b->children.len; ++i) {
+        CscdRect c;
+        if (cscdStackLow() || !animatedInk(cscdBoxChild(b, i), false, &c)) return false;
+        if (!clips) r = cscdRectUnite(r, c);
+    }
+    *out = r;
+    return true;
+}
+
+bool paintAnimatedArea(CscdView* v, CscdLayoutBox* b, CscdRect* out) {
+    if (!b || !b->style || b->style->position == CSCD_POS_STICKY) return false;
+    /* (nothing around it moves what it draws: no transform, no perspective, nothing fixed or sticky) */
+    CscdPoint d = {-v->scrollX, -v->scrollY};
+    for (const CscdLayoutBox* p = b->parent; p; p = p->parent) {
+        const CscdComputedStyle* ps = p->style;
+        if (!ps) continue;
+        if (ps->transform.len || ps->perspective > 0 || ps->position == CSCD_POS_FIXED || ps->position == CSCD_POS_STICKY) return false;
+        if (cscdStyleClipsOverflow(ps) && p->element && p->parent) { d.x -= p->element->scrollLeft; d.y -= p->element->scrollTop; }
+    }
+    if (b->style->position == CSCD_POS_FIXED) d = cscdPoint(0, 0);
+    CscdRect r;
+    if (!animatedInk(b, true, &r)) return false;
+    if (b->style->transform.len) { /* (its own transform: the bounds of its ink where the transform puts it) */
+        const Mat4 m = transform3D(b);
+        if (!m4FlatAffine(&m)) return false;
+        r = cscdMatMapRect(m4Affine(&m), r);
+    }
+    *out = cscdRect(r.x + d.x - 2, r.y + d.y - 2, r.w + 4, r.h + 4);
+    return isfinite(out->x) && isfinite(out->y) && isfinite(out->w) && isfinite(out->h);
+}
+
 bool paintPageMovesWhole(CscdView* v) {
     if (!v->root || !v->inkValid || v->inkRoot != v->root || !v->layersStamp) return false;
     return noStillIn(v->layersStamp, v->root);
+}
+
+/* (painted with what is under it, or moved: its pixels are not its own alone) */
+static bool blendsOrMoves(const CscdComputedStyle* s) {
+    return s->opacity < 1 || s->transform.len || s->blur > 0 || s->brightness != 1 || s->grayscale > 0 || s->saturate != 1 ||
+           s->invert > 0 || s->blend != CSCD_BM_NORMAL || s->masks.len || s->clipPath.len || cscdBackdropAny(&s->backdrop) ||
+           s->perspective > 0 || s->preserve3d;
+}
+
+static bool lengthZero(CscdLength l) { return l.px == 0 && l.pct == 0 && !l.expr; }
+
+bool paintBoxScrollsWhole(CscdView* v, const CscdLayoutBox* s, CscdRect area) {
+    if (!paintPageMovesWhole(v) || !s->style || !s->element || s->kind == CSCD_BOX_REPLACED || cscdElementIs(s->element, "textarea") ||
+        cscdElementIs(s->element, "input"))
+        return false;
+    /* its own background: one opaque color under all it holds, square */
+    const CscdComputedStyle* st = s->style;
+    if (st->backgroundColor.a != 255 || st->backgrounds.len || blendsOrMoves(st)) return false;
+    for (int i = 0; i < 4; ++i)
+        if (!lengthZero(st->radius[i].x) || !lengthZero(st->radius[i].y)) return false;
+    for (size_t i = 0; i < st->boxShadow.len; ++i)
+        if (st->boxShadow.items[i].inset) return false;
+    /* nothing around it scrolls, blends or moves it; no outline of theirs over it */
+    for (const CscdLayoutBox* p = s->parent; p; p = p->parent) {
+        if (!p->style) continue;
+        if (blendsOrMoves(p->style) || (p->parent && cscdStyleClipsOverflow(p->style)) || p->style->outlineStyle != CSCD_BORDER_NONE) return false;
+    }
+    /* nothing else over it: the boxes beside its ancestors (their whole ink) keep out of the area */
+    const CscdRect at = cscdRectTranslated(area, v->scrollX, v->scrollY); /* (layout coordinates: the page alone scrolls) */
+    for (const CscdLayoutBox* p = s; p->parent; p = p->parent)
+        for (size_t i = 0; i < p->parent->children.len; ++i) {
+            const CscdLayoutBox* c = cscdBoxChild(p->parent, i);
+            if (c == p) continue;
+            const CscdMapVal* ink = cscdU64MapGet(&v->inkAt, CSCD_PKEY(c));
+            if (!ink) {
+                if (c->kind == CSCD_BOX_TEXT && cscdRectEmpty(cscdRectIntersect(cscdBoxOwnInk(c), at))) continue;
+                return false;
+            }
+            if (!cscdRectEmpty(cscdRectIntersect(v->inks.items[ink->u], at))) return false;
+        }
+    return true;
 }
 
 static void collectLayers(uint64_t stamp, CscdLayoutBox* b, CscdPtrVec* neg, CscdPtrVec* zero, CscdPtrVec* pos) {
@@ -2229,8 +2454,8 @@ static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
                 CscdShader clipShader;
                 bool own = false;
                 if (bgs->len && bgs->items[0].clip == CSCD_BG_TEXT && c->inlineFrags.len) {
-                    CscdRect r = c->inlineFrags.items[0].rect;
-                    for (size_t k = 0; k < c->inlineFrags.len; ++k) r = cscdRectUnite(r, c->inlineFrags.items[k].rect);
+                    CscdRect r = cscdBoxRectF(c->inlineFrags.items[0].rect);
+                    for (size_t k = 0; k < c->inlineFrags.len; ++k) r = cscdRectUnite(r, cscdBoxRectF(c->inlineFrags.items[k].rect));
                     clipShader = gradientShader(&bgs->items[0], r);
                     own = true;
                     P->textShader = &clipShader;
@@ -2238,7 +2463,7 @@ static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
                 paintFlow(P, c, 2);
                 P->textShader = saved;
                 if (own) cscdShaderFini(&clipShader);
-                for (size_t k = 0; k < c->inlineFrags.len; ++k) paintOutline(P, c, c->inlineFrags.items[k].rect);
+                for (size_t k = 0; k < c->inlineFrags.len; ++k) paintOutline(P, c, cscdBoxRectF(c->inlineFrags.items[k].rect));
             }
             continue;
         }
@@ -2326,7 +2551,7 @@ static void paintStacking(Painter* P, CscdLayoutBox* b) {
     if (own) cscdShaderFini(&clipShader);
     if (b->style && cscdStyleClipsOverflow(b->style) && b->parent) paintScrollbars(P, b);
     if (b->kind != CSCD_BOX_INLINE) paintOutline(P, b, cscdBoxBorderBox(b));
-    else for (size_t i = 0; i < b->inlineFrags.len; ++i) paintOutline(P, b, b->inlineFrags.items[i].rect);
+    else for (size_t i = 0; i < b->inlineFrags.len; ++i) paintOutline(P, b, cscdBoxRectF(b->inlineFrags.items[i].rect));
     cscdVecFree(&neg);
     cscdVecFree(&zero);
     cscdVecFree(&pos);
@@ -2377,7 +2602,7 @@ void paintRoot(CscdView* v, CscdCanvas* canvas, CscdLayoutBox* root) {
     const bool darkCanvas = scheme == 2 || (viewDark(v) && scheme != 1);
     if (!v->transparent && darkCanvas && bgBox->style->backgroundColor.a == 0 && !bgBox->style->backgrounds.len) cscdCanvasFillRect(canvas, view, cscdRgb(18, 18, 18));
     {
-        CscdRRect rr = cscdRRect(cscdRect(0, 0, cscdMaxf(v->vw, cscdRectRight(root->overflow)), cscdMaxf(v->vh, cscdRectBottom(root->overflow))));
+        CscdRRect rr = cscdRRect(cscdRect(0, 0, cscdMaxf(v->vw, (float)cscdBoxRectRight(root->overflow)), cscdMaxf(v->vh, (float)cscdBoxRectBottom(root->overflow))));
         CscdLayoutBox* b = bgBox;
         CscdComputedStyle* s = b->style;
         if (s->backgroundColor.a) cscdCanvasFillRect(canvas, rr.rect, s->backgroundColor);

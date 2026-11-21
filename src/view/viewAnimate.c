@@ -74,6 +74,12 @@ static bool startsProp(Interp* I, const char* prefix) {
 
 /* o takes the value of the property p between a and b at t; returns whether p is one that moves
  * (layout: whether it changes the layout). */
+/* (the properties it animates that the elements in it inherit: those are worked out again from its value) */
+static bool inheritedProp(CscdSv p) {
+    return cscdSvEqC(p, "all") || cscdSvEqC(p, "color") || cscdSvEqC(p, "fill") || cscdSvEqC(p, "stroke") || cscdSvEqC(p, "font-size") ||
+           cscdSvEqC(p, "letter-spacing");
+}
+
 static bool interpolate(CscdComputedStyle* o, const CscdComputedStyle* a, const CscdComputedStyle* b, float t, CscdSv p, bool* layout) {
     *layout = false;
     Interp I = {p.ptr ? p.ptr : "", p.len, cscdSvEqC(p, "all"), false};
@@ -283,6 +289,35 @@ void cscdStyleApplyDeclaration(CscdComputedStyle* s, const CscdComputedStyle* pa
     cscdApplyStateFini(&st);
 }
 
+static bool holds(const CscdElement* a, const CscdElement* x) {
+    for (const CscdNode* n = x ? x->node.parent : NULL; n; n = n->parent)
+        if (n == &a->node) return true;
+    return false;
+}
+
+bool viewAnimatesOpacityOnly(const CscdView* v, const CscdElement* e) {
+    bool any = false;
+    for (size_t i = 0; i < v->transitions.len; ++i) {
+        const RunningTransition* r = &v->transitions.items[i];
+        if (r->e == e) {
+            if (!cscdStrEqC(&r->prop, "opacity")) return false;
+            any = true;
+        } else if (holds(e, r->e)) return false;
+    }
+    for (size_t i = 0; i < v->animations.len; ++i) {
+        const RunningAnimation* r = &v->animations.items[i];
+        if (r->e == e) {
+            const CscdKeyframesRule* kf = cscdStyleEngineKeyframes(v->styles, cscdStrSv(&r->a.name));
+            if (!kf) return false;
+            for (size_t k = 0; k < kf->frames.len; ++k)
+                for (size_t d = 0; d < kf->frames.items[k].declarations.len; ++d)
+                    if (!cscdStrEqC(&kf->frames.items[k].declarations.items[d].property, "opacity")) return false;
+            any = true;
+        } else if (holds(e, r->e)) return false;
+    }
+    return any;
+}
+
 void viewRemoveAnimation(CscdView* v, size_t i) {
     cscdStrFree(&v->animations.items[i].a.name);
     cscdRelease(v->animations.items[i].base);
@@ -293,9 +328,24 @@ void viewTickAnimations(CscdView* v, double t) {
     if (!v->transitions.len && !v->animations.len) return; /* (nothing moving: nothing to repaint) */
     v->inkValid = false; /* (the styles the boxes show change in place) */
     v->inkEpoch = 0;
+    /* where each animated element is drawn before this step (with where it is drawn after it, the damage, when nothing
+     * moves in the layout; else the window) */
+    CscdRectVec was = {0};
+    CscdPtrVec moving = {0}; /* (those animated now: one that ends in this step is drawn where it ends too) */
+    bool whole = !viewOn(v, CSCD_FEATURE_PARTIAL_REPAINT) || v->fullPaint || v->layoutDirty || !v->root;
+    for (size_t i = 0; i < v->transitions.len + v->animations.len && !whole; ++i) {
+        CscdElement* e = i < v->transitions.len ? v->transitions.items[i].e : v->animations.items[i - v->transitions.len].e;
+        CscdRect r;
+        if (!e->layout || !paintAnimatedArea(v, e->layout, &r)) whole = true;
+        else {
+            cscdVecPush(&was, r);
+            cscdVecPush(&moving, e);
+        }
+    }
     for (size_t i = 0; i < v->transitions.len; ++i) cscdNodeTouch(&v->transitions.items[i].e->node);
     for (size_t i = 0; i < v->animations.len; ++i) cscdNodeTouch(&v->animations.items[i].e->node);
     bool needLayout = false;
+    CscdPtrVec inherit = {0}; /* (elements whose animated values the elements in them inherit) */
     for (size_t i = 0; i < v->transitions.len;) {
         RunningTransition* r = &v->transitions.items[i];
         if (!r->e->style) { removeTransition(v, i); continue; }
@@ -305,6 +355,7 @@ void viewTickAnimations(CscdView* v, double t) {
         bool layout;
         interpolate(r->e->style, r->from, r->to, k, cscdStrSv(&r->prop), &layout);
         needLayout = needLayout || layout;
+        if (inheritedProp(cscdStrSv(&r->prop)) && !viewContainsPtr(&inherit, r->e)) cscdVecPush(&inherit, r->e);
         if (p >= 1) removeTransition(v, i);
         else ++i;
     }
@@ -326,7 +377,7 @@ void viewTickAnimations(CscdView* v, double t) {
         bool reverse = r->a.reverse;
         if (r->a.alternate && ((long long)whole % 2 == 1)) reverse = !reverse;
         if (reverse) p = 1 - p;
-        if (el < 0) p = reverse ? 1 : 0;
+        if (el < 0) p = reverse ? 1.f : 0.f;
         CscdComputedStyle* base = r->base;
         /* keyframe styles */
         const CscdKeyframe* a = &kf->frames.items[0];
@@ -362,6 +413,7 @@ void viewTickAnimations(CscdView* v, double t) {
                 bool layout;
                 const CscdSv pr = cscdStrSv(&props.items[q]);
                 interpolate(r->e->style, sa, sb, k, cscdCanonicalProperty(pr), &layout);
+                if (inheritedProp(cscdCanonicalProperty(pr)) && !viewContainsPtr(&inherit, r->e)) cscdVecPush(&inherit, r->e);
                 if (cscdSvEqC(pr, "inset") || cscdSvEqC(pr, "margin") || cscdSvEqC(pr, "padding")) interpolate(r->e->style, sa, sb, k, pr, &layout);
                 needLayout = needLayout || layout;
             }
@@ -374,6 +426,7 @@ void viewTickAnimations(CscdView* v, double t) {
                 for (size_t q = 0; q < props.len; ++q) {
                     bool l;
                     interpolate(r->e->style, base, base, 1, cscdCanonicalProperty(cscdStrSv(&props.items[q])), &l);
+                    if (inheritedProp(cscdCanonicalProperty(cscdStrSv(&props.items[q]))) && !viewContainsPtr(&inherit, r->e)) cscdVecPush(&inherit, r->e);
                     needLayout = needLayout || l;
                 }
             }
@@ -384,5 +437,22 @@ void viewTickAnimations(CscdView* v, double t) {
     }
     cscdStrVecFree(&props);
     if (needLayout) v->layoutDirty = true;
-    v->dirty = v->fullPaint = true;
+    v->dirty = true;
+    /* what the elements in them inherit, from the values just set (as a browser's: they follow it every frame) */
+    for (size_t i = 0; i < inherit.len; ++i) viewInheritAnimated(v, (CscdElement*)inherit.items[i], !needLayout);
+    cscdVecFree(&inherit);
+    /* (only the colors, opacities, transforms... changed: what those elements drew, and draw now) */
+    if (!needLayout && !whole) {
+        for (size_t i = 0; i < moving.len && !whole; ++i) {
+            CscdElement* e = (CscdElement*)moving.items[i];
+            CscdRect r;
+            if (!e->layout || !paintAnimatedArea(v, e->layout, &r)) whole = true;
+            else cscdVecPush(&was, r);
+        }
+    }
+    cscdVecFree(&moving);
+    if (needLayout || whole) v->fullPaint = true;
+    else
+        for (size_t i = 0; i < was.len; ++i) viewAddDamage(v, was.items[i]);
+    cscdVecFree(&was);
 }

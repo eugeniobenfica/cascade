@@ -271,7 +271,7 @@ bool cscdParseImageValue(const CscdCssValue* x, CscdApplyState* st, CscdBackgrou
                     if (cscdCssIsIdent(&p->items[k], "right")) cx = 1;
                 }
                 if (cx && cy) { L->toCorner = true; L->cornerX = cx; L->cornerY = cy; }
-                else L->angle = cy < 0 ? 0 : cy > 0 ? 180 : cx > 0 ? 90 : 270;
+                else L->angle = cy < 0 ? 0.f : cy > 0 ? 180.f : cx > 0 ? 90.f : 270.f;
                 first = 1;
             } else if (cscdSvStartsC(cscdStrSv(&x->tok.text), "-webkit-") && p->items[0].tok.type == CSCD_TOK_IDENT) {
                 /* legacy: side where it starts */

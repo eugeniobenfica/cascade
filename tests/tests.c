@@ -150,6 +150,16 @@ static void testSelectors(void) {
     CHECK(ALL("li:not(.k)") == 3);
     CHECK(ALL(":is(p, span)") == 2);
     CHECK(ONE("div:has(> span)") != NULL);
+    /* relative selectors: each with its own combinator, its leftmost compound standing to the element */
+    CHECK(eq(textOf(ONE("li:has(+ .k)")), "1"));
+    CHECK(ALL("li:has(~ [data-v])") == 3);
+    CHECK(ALL("li:has(+ .k, ~ [data-v])") == 3);
+    CHECK(ONE("li:has(+ li + [data-v])") != NULL && eq(textOf(ONE("li:has(+ li + [data-v])")), "2"));
+    CHECK(ONE("ul:has(> li.k)") != NULL && ONE("ul:has(> p)") == NULL);
+    CHECK(ONE("li:has(li)") == NULL);           /* (in it, not around it) */
+    CHECK(ONE("div:has(ul li)") == NULL);       /* (the ul is outside the div: not relative to it) */
+    CHECK(ONE("ul:has(:not(.k) + .k)") != NULL);
+    CHECK(ALL(":is(li:has(+ .k))") == 1 && ALL("li:not(:has(~ li))") == 1);
     CHECK(ONE("p:empty") != NULL);
     CHECK(eq(textOf(ONE("#l > li.k")), "2"));
 #undef ALL
@@ -3824,6 +3834,31 @@ static void testNthInLongLists(void) {
 /* A class, an inline style or a data- attribute that only changes how things look: what is painted again is the
  * elements that look different, not the window; one that moves things paints them where they were and are; and the
  * window again when most of it changed. */
+/* :has() of siblings: a change after an element restyles it (its anchor is a sibling before the change, not an
+ * ancestor), without restyling the page */
+static void testHasSiblings(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewSetViewport(v, 300, 200, 1);
+    cscdViewLoadHTML(v, CSCD_SV("<style>.a:has(+ .on) { color: red } .x:has(~ .gone) { color: blue } .w :is(.a:has(~ .on)) i { color: green }"
+                                "</style><div class=w><p class=a id=a>a<i id=i>i</i></p><p id=b>b</p><p class=x id=x>x</p><p>y</p></div>"),
+                     CSCD_SV("."));
+    cscdViewUpdate(v);
+    CscdElement *a = byId(v, "a"), *x = byId(v, "x"), *i = byId(v, "i");
+    CHECK(a->style->color.r == 0 && i->style->color.g == 0);
+    cscdElementAddClass(byId(v, "b"), CSCD_SV("on"));
+    cscdViewUpdate(v);
+    CHECK(a->style->color.r == 255 && i->style->color.g > 0);
+    CHECK(cscdViewFrameStats(v).stylesComputed < 10); /* (the anchor's parent's children, not the page) */
+    CscdElement* g = cscdElementAppendElement(cscdNodeParentElement(&x->node), CSCD_SV("p"));
+    cscdElementSetAttribute(g, CSCD_SV("class"), CSCD_SV("gone"));
+    cscdViewUpdate(v);
+    CHECK(x->style->color.b == 255);
+    cscdElementRemove(g);
+    cscdViewUpdate(v);
+    CHECK(x->style->color.b == 0);
+    cscdViewFree(v);
+}
+
 static void testAttributeRepaints(void) {
     CscdView* v = cscdViewNew();
     cscdViewSetFeature(v, CSCD_FEATURE_ANIMATIONS, false);
@@ -3880,8 +3915,10 @@ static void testAttributeRepaints(void) {
 }
 
 /* A tree as deep as cascade takes, built from code (the parser stops at 512 by itself): deeper is refused, as is a
- * loop, and what is there styles, lays out and paints within the main thread's stack. */
-static void testTreeDepth(void) {
+ * loop, and what is there styles, lays out and paints within the thread's stack (the main thread's, and one of 512 KB
+ * as a macOS or iOS secondary thread has: what is deeper than it holds is left out, not overflowed). */
+static void treeDepthOn(void* unused) {
+    (void)unused;
     CscdView* v = cscdViewNew();
     cscdViewOnWarning(v, NULL, NULL);
     cscdViewSetViewport(v, 200, 120, 1);
@@ -3915,7 +3952,116 @@ static void testTreeDepth(void) {
     CHECK(cscdNodeAppendChild(&body->node, &tall->node) == &tall->node); /* (one level up: it fits) */
     paintOnce(v);
     CHECK(top->layout != NULL);
+    /* (the page as text, its accessibility tree, a copy of it, and taken apart) */
+    CscdStr html = cscdElementOuterHTML(body);
+    CHECK(html.len > 0);
+    cscdStrFree(&html);
+    CscdElement* copy = cscdElementClone(top, true);
+    if (copy) cscdNodeDestroy(&copy->node);
     cscdViewFree(v);
+}
+
+static void testTreeDepth(void) {
+    treeDepthOn(NULL);
+    CscdThread t;
+    CHECK(cscdThreadStartSized(&t, treeDepthOn, NULL, 512u << 10));
+    cscdThreadJoin(&t);
+}
+
+static int nonFinite(const CscdLayoutBox* b) {
+    int bad = !isfinite(b->x) || !isfinite(b->y) || !isfinite(b->w) || !isfinite(b->h) || !isfinite(b->overflow.y) || !isfinite(b->overflow.h);
+    for (size_t i = 0; i < b->textFrags.len; ++i) bad += !isfinite(b->textFrags.items[i].x) || !isfinite(b->textFrags.items[i].baseline);
+    for (size_t i = 0; i < b->children.len; ++i) bad += nonFinite(cscdBoxChild(b, i));
+    return bad;
+}
+
+/* Lengths past what floats hold (1e39px is infinite, and infinity less infinity NaN) lay out within the range of
+ * layout units, +-2^25 px, as browsers' do: no place is infinite or NaN (a field's text was drawn at NaN). */
+static void testHugeLengths(void) {
+    const char* const pages[] = {
+        "<style>body{height:90011111111111111111111111111111111111111111111111111111111111111111111111111px;display:flex;align-items:center}</style><input value=hello>",
+        "<style>body{height:1e39px}</style><div style='margin-top:1e38px'>x</div><input value=hi>",
+        "<style>div{width:1e39px;letter-spacing:1e38px}</style><div><input value=abc></div>",
+        "<style>p{font-size:1e30px;padding:1e38px 1e38px}</style><p>text <input value=abc></p>",
+        "<div style='display:grid;grid-template-columns:1e39px 1fr'><b>a</b><i>b</i></div><table><td style='width:1e39px'>c</table>",
+    };
+    for (size_t k = 0; k < CSCD_COUNT(pages); ++k) {
+        CscdView* v = cscdViewNew();
+        cscdViewOnWarning(v, NULL, NULL);
+        cscdViewSetViewport(v, 400, 300, 1);
+        cscdViewLoadHTML(v, cscdSv(pages[k]), CSCD_SV("."));
+        paintOnce(v);
+        CHECK(v->root && nonFinite(v->root) == 0);
+        cscdViewFree(v);
+    }
+}
+
+/* An animation of how things look (a transform, an opacity, a color its children inherit) paints, each frame, only where
+ * the animated elements were and are drawn: the same pixels as a window painted whole at the same moment. */
+static void animationDamageOn(const char* page, void (*change)(CscdView* v, int frame)) {
+    CscdView* v = cscdViewNew();
+    CscdView* w = cscdViewNew();
+    CscdImage a, b;
+    cscdImageInit(&a, 300, 200);
+    cscdImageInit(&b, 300, 200);
+    CscdView* both[2] = {v, w};
+    for (int k = 0; k < 2; ++k) {
+        cscdViewOnWarning(both[k], NULL, NULL);
+        cscdViewSetViewport(both[k], 300, 200, 1);
+        both[k]->clockAt = 0;
+        cscdViewLoadHTML(both[k], cscdSv(page), CSCD_SV("."));
+    }
+    int partial = 0, differ = 0;
+    double area = 0;
+    for (int i = 0; i < 40; ++i) {
+        v->clockAt = w->clockAt = i / 60.0;
+        if (change) { change(v, i); change(w, i); }
+        cscdViewPaint(v, &a, i > 0); /* (a host that only paints: one step of the animation a frame) */
+        cscdViewPaint(w, &b, false);
+        const CscdFrameStats st = cscdViewFrameStats(v);
+        if (i >= 2 && st.partialPaint) {
+            ++partial;
+            area = cscdMaxf((float)area, (float)st.paintedArea);
+        }
+        differ += memcmp(a.pixels, b.pixels, (size_t)a.width * a.height * 4) != 0;
+    }
+    CHECK(differ == 0);
+    CHECK(partial >= 30);              /* (every frame once it runs: the damage, not the window) */
+    CHECK(area > 0 && area < 300 * 200 * 0.6);
+    cscdImageFini(&a);
+    cscdImageFini(&b);
+    cscdViewFree(v);
+    cscdViewFree(w);
+}
+
+static void keptLayerChanges(CscdView* v, int frame) {
+    CscdElement* x = cscdViewQuerySelector(v, CSCD_SV("#x"));
+    if (frame == 12) cscdElementToggleClass(x, CSCD_SV("hot"));
+    if (frame == 20) cscdElementSetText(x, CSCD_SV("other words"));
+    if (frame == 28) cscdElementToggleClass(cscdViewQuerySelector(v, CSCD_SV("#k b")), CSCD_SV("deep"));
+}
+
+static void testAnimationDamage(void) {
+    /* (each alone, its damage not merged with another's: a box moved and turned several pixels a frame, an opacity, a
+     * color the elements in it inherit) */
+    animationDamageOn("<style>body{margin:0;font:14px sans-serif} p{margin:4px}"
+                      "@keyframes slide { from { transform: translate(0, 0) rotate(0deg); } to { transform: translate(150px, 60px) rotate(90deg); } }"
+                      "#s { width: 50px; height: 24px; background: #8b5cf6; animation: slide .4s linear infinite alternate; }</style>"
+                      "<p>one</p><div id=s>s</div><p>two</p>", NULL);
+    animationDamageOn("<style>body{margin:0;font:14px sans-serif} p{margin:4px}"
+                      "@keyframes pulse { from { opacity: 1; } to { opacity: .2; } }"
+                      "#o { width: 70px; height: 20px; background: #0a0; box-shadow: 0 2px 6px #000; animation: pulse .5s infinite alternate; }</style>"
+                      "<p>one</p><div id=o></div><p>two</p>", NULL);
+    animationDamageOn("<style>body{margin:0;font:14px sans-serif} p{margin:4px}"
+                      "@keyframes tint { from { color: #222; } to { color: #c06; } } #t { animation: tint .4s infinite alternate; }"
+                      "#t b { font-weight: 700; }</style><p>one</p><p id=t>tinted <b>bold</b> <span>and more</span></p><p>last</p>", NULL);
+    /* an opacity alone animated, its layer kept from frame to frame: what it holds changes while it runs (a color in
+     * place, a text, its own background), and the kept one is made again */
+    animationDamageOn("<style>body{margin:0;font:14px sans-serif} p{margin:4px}"
+                      "@keyframes pulse { from { opacity: 1; } to { opacity: .3; } }"
+                      "#k { width: 160px; padding: 4px; background: #eef; animation: pulse .6s infinite alternate; } .hot { color: #c00; }"
+                      ".deep { background: #fd8; }</style><p>one</p><div id=k><b>kept</b> <span id=x>layer text</span></div><p>two</p>",
+                      keptLayerChanges);
 }
 
 static void testHostileRequests(void) {
@@ -3984,6 +4130,7 @@ static void testHostileRequests(void) {
 int main(void) {
     testParser();
     testSelectors();
+    testHasSiblings();
     testCascade();
     testBlockLayout();
     testFlex();
@@ -4055,6 +4202,8 @@ int main(void) {
     testSelectorSearch();
     testManyAttributes();
     testHostileRequests();
+    testHugeLengths();
+    testAnimationDamage();
     testTreeDepth();
     testAttributeRepaints();
     testShadowPatches();

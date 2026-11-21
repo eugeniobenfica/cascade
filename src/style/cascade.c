@@ -364,7 +364,9 @@ typedef struct PseudoSet { CscdComputedStyle* s[6]; } PseudoSet;
 
 typedef struct HasAnchor {
     const CscdCompound* compound;
+    const CscdCompound* also; /* (inside :is(), :not()...: the compound of the same element around it, or NULL) */
     unsigned bits;
+    bool siblings; /* (its argument looks at siblings) */
 } HasAnchor;
 typedef CSCD_VEC(HasAnchor) HasAnchorVec;
 
@@ -390,8 +392,8 @@ struct CscdStyleEngine {
     bool stateNested;          /* one is inside :is(), :not(), :has()...: every element's change matters */
     bool structSiblings;       /* a rule sees an element's place among its siblings: + ~ :nth-* :first-child :empty... */
     bool structHas;            /* a rule has :has(): a change anywhere may restyle its ancestors */
-    HasAnchorVec hasAnchors;   /* the compounds holding a :has() of descendants or children, and what they reach */
-    bool hasComplex;           /* a :has() of siblings, or inside :is(), :not(), :has()...: a change may reach anything */
+    HasAnchorVec hasAnchors;   /* the compounds whose element a :has() is about, and what they reach */
+    bool hasSiblings;          /* one :has() looks at siblings: its anchors are siblings too, not only ancestors */
     CscdPtrVec emptyCompounds; /* const CscdCompound*: those with :empty (an element whose children come or go) */
     bool emptyNested;          /* one inside :is(), :not()...: every element's children matter */
     CscdStrMap reachClass, reachId, reachAttr; /* name -> CSCD_REACH_* bits */
@@ -648,21 +650,7 @@ static void noteStructure(CscdStyleEngine* se, const CscdSelector* s, bool neste
         for (size_t k = 0; k < c->parts.len; ++k) {
             const CscdSimpleSelector* p = &c->parts.items[k];
             if (p->kind == CSCD_SEL_PSEUDO_CLASS) {
-                if (cscdStrEqC(&p->name, "has")) {
-                    se->structHas = true;
-                    bool siblings = nested;
-                    for (size_t a = 0; a < p->args.len && !siblings; ++a) siblings = seesSiblings(&p->args.items[a]);
-                    if (siblings) se->hasComplex = true; /* (its anchors are not only ancestors) */
-                    else {
-                        unsigned bits = CSCD_REACH_SELF;
-                        if (i + 1 < s->compounds.len) {
-                            const CscdCombinator next = s->compounds.items[i + 1].combinator;
-                            bits = next == CSCD_COMB_ADJACENT || next == CSCD_COMB_SIBLING ? CSCD_REACH_SIBLINGS : CSCD_REACH_DESCENDANTS;
-                        }
-                        const HasAnchor anchor = {c, bits};
-                        cscdVecPush(&se->hasAnchors, anchor);
-                    }
-                }
+                if (cscdStrEqC(&p->name, "has")) se->structHas = true;
                 if (cscdStrEqC(&p->name, "empty")) {
                     if (nested) se->emptyNested = true;
                     else cscdVecPush(&se->emptyCompounds, (void*)c);
@@ -670,6 +658,45 @@ static void noteStructure(CscdStyleEngine* se, const CscdSelector* s, bool neste
                 for (size_t n = 0; n < CSCD_COUNT(kPlaces); ++n) se->structSiblings = se->structSiblings || cscdStrEqC(&p->name, kPlaces[n]);
             }
             for (size_t a = 0; a < p->args.len; ++a) noteStructure(se, &p->args.items[a], true);
+        }
+    }
+}
+
+/* The anchors of the :has() in s: the compound whose element each is about, and what a change of that element's style
+ * reaches. In a selector of the sheet, a compound is its own anchor (reaching itself as the subject, else what its
+ * combinator leads to); in an argument of :is(), :not(), :where()..., the subject compound is about the element of the
+ * compound around it (subject, bits), and an earlier one about an element around that one, whose change reaches its
+ * siblings and all they hold. The :has() inside a :has() argument need none: what reaches them reaches an anchor of the
+ * outer one, which is an ancestor or a sibling of them. */
+static void noteHas(CscdStyleEngine* se, const CscdSelector* s, const CscdCompound* subject, unsigned subjectBits) {
+    for (size_t i = 0; i < s->compounds.len; ++i) {
+        const CscdCompound* c = &s->compounds.items[i];
+        const bool last = i + 1 == s->compounds.len;
+        const CscdCompound* anchor = c;
+        const CscdCompound* also = NULL;
+        unsigned bits;
+        if (subject) {
+            if (last) { /* (the same element as the compound around: both must match it) */
+                also = subject;
+                bits = subjectBits;
+            } else bits = CSCD_REACH_SIBLINGS;
+        } else if (last) bits = CSCD_REACH_SELF;
+        else {
+            const CscdCombinator next = s->compounds.items[i + 1].combinator;
+            bits = next == CSCD_COMB_ADJACENT || next == CSCD_COMB_SIBLING ? CSCD_REACH_SIBLINGS : CSCD_REACH_DESCENDANTS;
+        }
+        for (size_t k = 0; k < c->parts.len; ++k) {
+            const CscdSimpleSelector* p = &c->parts.items[k];
+            const bool has = p->kind == CSCD_SEL_PSEUDO_CLASS && cscdStrEqC(&p->name, "has");
+            if (has) {
+                bool siblings = false;
+                for (size_t a = 0; a < p->args.len && !siblings; ++a) siblings = seesSiblings(&p->args.items[a]);
+                const HasAnchor h = {anchor, also, bits, siblings};
+                cscdVecPush(&se->hasAnchors, h);
+                se->hasSiblings = se->hasSiblings || siblings;
+                continue;
+            }
+            for (size_t a = 0; a < p->args.len; ++a) noteHas(se, &p->args.items[a], anchor, bits);
         }
     }
 }
@@ -682,16 +709,21 @@ bool cscdStyleEngineEmptyMatters(const CscdStyleEngine* se, const CscdElement* e
 }
 
 unsigned cscdStyleEngineStructureReach(const CscdStyleEngine* se) {
-    if (!se->indexValid || (se->structHas && se->hasComplex)) return CSCD_REACH_ALL;
+    if (!se->indexValid) return CSCD_REACH_ALL;
     return (se->structSiblings ? CSCD_REACH_SIBLINGS : CSCD_REACH_SELF) | (se->structHas ? CSCD_REACH_HAS : 0);
 }
 
-unsigned cscdStyleEngineHasReach(const CscdStyleEngine* se, const CscdElement* e) {
-    if (!se->indexValid || se->hasComplex) return CSCD_REACH_ALL;
+bool cscdStyleEngineHasSiblings(const CscdStyleEngine* se) { return !se->indexValid || se->hasSiblings; }
+
+unsigned cscdStyleEngineHasReach(const CscdStyleEngine* se, const CscdElement* e, bool asSibling) {
+    if (!se->indexValid) return CSCD_REACH_ALL;
     unsigned bits = 0;
     for (size_t i = 0; i < se->hasAnchors.len; ++i) {
         const HasAnchor* a = &se->hasAnchors.items[i];
-        if ((bits | a->bits) != bits && cscdCompoundMatchesIgnoring(a->compound, e, CSCD_SV("has"))) bits |= a->bits;
+        if (asSibling && !a->siblings) continue;
+        if ((bits | a->bits) != bits && cscdCompoundMatchesIgnoring(a->compound, e, CSCD_SV("has")) &&
+            (!a->also || cscdCompoundMatchesIgnoring(a->also, e, CSCD_SV("has"))))
+            bits |= a->bits;
     }
     return bits;
 }
@@ -727,7 +759,7 @@ unsigned cscdStyleEngineReach(const CscdStyleEngine* se, CscdReachKind kind, Csc
     const CscdMapVal* v = cscdStrMapGet(m, name);
     cscdStrFree(&low);
     const unsigned bits = v ? (unsigned)v->u : 0;
-    return (bits & CSCD_REACH_HAS) && se->hasComplex ? bits | CSCD_REACH_ALL : bits;
+    return bits;
 }
 
 /* the attribute names a selector tests, in it and in its :is(), :not(), :has()... */
@@ -754,6 +786,7 @@ bool cscdStyleEngineSelectsAttribute(const CscdStyleEngine* se, CscdSv name) {
     return found;
 }
 bool cscdStyleEngineHasContainers(const CscdStyleEngine* se) { return se->hasContainers; }
+bool cscdStyleEngineReadsAttributes(const CscdStyleEngine* se) { return !se->indexValid || se->valuesUseAttr; }
 
 static void addIndexed(CscdStrMap* m, CscdSv key, Indexed ix) {
     bool inserted = false;
@@ -771,7 +804,7 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
     cscdStrMapClear(&se->selectedAttrs);
     cscdVecClear(&se->stateCompounds);
     se->stateNested = false;
-    se->structSiblings = se->structHas = se->hasComplex = false;
+    se->structSiblings = se->structHas = se->hasSiblings = false;
     se->hasAnchors.len = 0;
     cscdVecClear(&se->emptyCompounds);
     se->emptyNested = false;
@@ -792,6 +825,7 @@ static void buildIndex(CscdStyleEngine* se, const CscdMediaContext* media) {
                 noteAttributes(se, sel);
                 noteStates(se, sel);
                 noteStructure(se, sel, false);
+                noteHas(se, sel, NULL, 0);
                 noteReach(se, sel, CSCD_REACH_SELF, 0, 0);
                 Indexed ix = {rule, sel, si, sheet->origin};
                 const CscdCompound* last = &cscdVecLast(&sel->compounds);
@@ -1320,6 +1354,26 @@ static PseudoSet* pseudoSetFor(CscdStyleEngine* se, const CscdElement* e) {
     return (PseudoSet*)v->p;
 }
 
+/* e and all in it without a style (as a subtree not yet in the page: not laid out, not painted); a loop, not a
+ * recursion, as it is called where the stack is nearly used up */
+static void unstyleSubtree(CscdElement* e) {
+    CscdPtrVec todo = {0};
+    cscdVecPush(&todo, e);
+    while (todo.len) {
+        CscdElement* x = (CscdElement*)cscdVecPop(&todo);
+        if (x->style) {
+            cscdNodeTouch(&x->node);
+            cscdRelease(x->style);
+            x->style = NULL;
+        }
+        for (size_t i = 0; i < x->node.children.len; ++i) {
+            CscdElement* c = cscdNodeAsElement(cscdNodeChild(&x->node, i));
+            if (c) cscdVecPush(&todo, c);
+        }
+    }
+    cscdVecFree(&todo);
+}
+
 static void computeTree(CscdStyleEngine* se, CscdElement* e, const CscdComputedStyle* parent, const CscdStyleEnvironment* env) {
     const bool root = e->node.parent && e->node.parent->type == CSCD_NODE_DOCUMENT;
     /* the rules matching e and each of its pseudo elements, in one pass over the index */
@@ -1355,7 +1409,11 @@ static void computeTree(CscdStyleEngine* se, CscdElement* e, const CscdComputedS
     }
     for (size_t i = 0; i < e->node.children.len; ++i) {
         CscdElement* ce = cscdNodeAsElement(cscdNodeChild(&e->node, i));
-        if (ce) computeTree(se, ce, s, childEnv);
+        if (!ce) continue;
+        /* (deeper than the thread's stack holds: left without a style, so neither laid out nor painted, as layout and
+         * painting leave what is deeper than they can go) */
+        if (cscdStackLow()) unstyleSubtree(ce);
+        else computeTree(se, ce, s, childEnv);
     }
 }
 

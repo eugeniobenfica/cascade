@@ -7,6 +7,32 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 
 ## Unreleased
 
+- **Places in layout are doubles** (`CscdLayoutBox.x`/`y`, baselines, text fragments, lines; `inlineFrags[].rect` and
+  `overflow` are a `CscdBoxRect` of doubles, `cscdBoxRectF` gives it as floats); sizes stay floats. A box is moved
+  instead of laid out again wherever it is on the page, and the layout made from the last one is the one made from
+  scratch to the bit past 2^17 px too. `cscdBoxShift` takes doubles. 20,000 rows, a row taller at the top: ~76 → ~28 ms.
+- **A change that only changes how things look** (a class, an attribute) is restyled in place, without a layout.
+- **Animations paint only what they change**: the window was painted whole every frame of any animation. An opacity
+  animation draws back an image of what its element holds, kept from frame to frame (same pixels). Values an animation
+  sets that are inherited (color, font size) are inherited every frame.
+- **SSE2 / NEON** for the shadow blur, scaled images and radial, linear and conic gradients.
+- **Lengths past what floats hold** (1e39px) lay out within ±2^25 px: they made NaN places (a field's text drawn at NaN).
+- The style recursion stops before the thread's stack runs out (a 512 KB thread with 1024 levels: tested).
+- Fixed: the frame moved on scroll while something turned was in it (its device places round otherwise: a pixel a level
+  off); the key name of a key released on Wayland could be read before it was written; 4 MSVC warnings, and warnings
+  are errors on every CI platform.
+- **Layout units.** Every place and size layout keeps is on the 1/64 px grid (`laySnap`), as browsers' LayoutUnit: a
+  box measured at one place and put at another, or kept from the last layout and moved, is exactly where laying it out
+  there puts it. Moved rows are shifted, not laid out again (1,000 rows below a change: 4 ms → 0.5); the oracle compares
+  geometry to the bit. Pixel references moved by at most 4 levels on a few edges.
+- **`:has()` takes relative selectors** (`:has(+ .x)`, `:has(~ .x .y)`, `:has(> .a, + .b)`), matched from the element
+  rather than anywhere in the page; a change restyles the elements whose `:has()` could see it, siblings before it
+  included, inside `:is()`/`:not()` too (`cscdStyleEngineHasReach(se, e, asSibling)`, `cscdStyleEngineHasSiblings`).
+- **Opaque scrollers scroll by moving their last frame** inside their padding box, when nothing else is drawn over it.
+- **SSE2 / NEON** for glyphs, color glyphs and the edges of filled shapes.
+- Fixed: a few ulps of drift between a box laid out in place and the same box measured elsewhere and moved, which showed
+  as an edge a level off at 1.5x.
+
 - **Long lists paint what shows.** The children of a box with many are found between two binary searches over their
   inks, and whether a subtree holds a positioned box or a stacking context is remembered on its boxes (kept with them
   across layouts): a full paint of 20,000 rows 11.5 ms → 1.2, its hit areas 7.8 → 0.02. Layout no longer clamps the

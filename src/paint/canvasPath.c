@@ -543,7 +543,7 @@ static void swapVec(CscdFloatVec* a, CscdFloatVec* b) {
     *b = t;
 }
 
-void cscdGaussianBlur(CscdFloatVec* buf, int w, int h, float sigma) {
+void cscdGaussianBlurScalar(CscdFloatVec* buf, int w, int h, float sigma) {
     if (sigma <= 0.01f || w <= 0 || h <= 0) return;
     int sizes[3];
     boxBlurSizes(sigma, sizes);
@@ -603,6 +603,73 @@ static void boxBlurH4(const float* src, float* dst, int w, int h, int r) {
             if (sub >= 0) acc = f4Sub(acc, f4Load(s + 4 * sub));
         }
     }
+}
+
+/* boxBlurH down the columns (of rows w wide): the same operations, in the same order, for each column, sixteen or
+ * four columns at once (a lane each), so that it is what boxBlurH gives on the transposed rows, to the bit */
+static void boxBlurV(const float* src, float* dst, int w, int h, int r) {
+    if (r <= 0) { memcpy(dst, src, sizeof(float) * (size_t)w * h); return; }
+    const float invS = 1.f / (2 * r + 1);
+    const F4 inv = f4Splat(invS);
+    const int end = r < h - 1 ? r : h - 1;
+    int x = 0;
+    for (; x + 16 <= w; x += 16) { /* (a whole cache line a row) */
+        F4 a0 = f4Zero(), a1 = f4Zero(), a2 = f4Zero(), a3 = f4Zero();
+        for (int y = 0; y <= end; ++y) {
+            const float* s = src + (size_t)y * w + x;
+            a0 = f4Add(a0, f4Load(s)); a1 = f4Add(a1, f4Load(s + 4)); a2 = f4Add(a2, f4Load(s + 8)); a3 = f4Add(a3, f4Load(s + 12));
+        }
+        for (int y = 0; y < h; ++y) {
+            float* d = dst + (size_t)y * w + x;
+            f4Store(d, f4Mul(a0, inv)); f4Store(d + 4, f4Mul(a1, inv)); f4Store(d + 8, f4Mul(a2, inv)); f4Store(d + 12, f4Mul(a3, inv));
+            const int add = y + r + 1, sub = y - r;
+            if (add < h) {
+                const float* s = src + (size_t)add * w + x;
+                a0 = f4Add(a0, f4Load(s)); a1 = f4Add(a1, f4Load(s + 4)); a2 = f4Add(a2, f4Load(s + 8)); a3 = f4Add(a3, f4Load(s + 12));
+            }
+            if (sub >= 0) {
+                const float* s = src + (size_t)sub * w + x;
+                a0 = f4Sub(a0, f4Load(s)); a1 = f4Sub(a1, f4Load(s + 4)); a2 = f4Sub(a2, f4Load(s + 8)); a3 = f4Sub(a3, f4Load(s + 12));
+            }
+        }
+    }
+    for (; x + 4 <= w; x += 4) {
+        F4 a = f4Zero();
+        for (int y = 0; y <= end; ++y) a = f4Add(a, f4Load(src + (size_t)y * w + x));
+        for (int y = 0; y < h; ++y) {
+            f4Store(dst + (size_t)y * w + x, f4Mul(a, inv));
+            const int add = y + r + 1, sub = y - r;
+            if (add < h) a = f4Add(a, f4Load(src + (size_t)add * w + x));
+            if (sub >= 0) a = f4Sub(a, f4Load(src + (size_t)sub * w + x));
+        }
+    }
+    for (; x < w; ++x) {
+        float a = 0;
+        for (int y = 0; y <= end; ++y) a += src[(size_t)y * w + x];
+        for (int y = 0; y < h; ++y) {
+            dst[(size_t)y * w + x] = a * invS;
+            const int add = y + r + 1, sub = y - r;
+            if (add < h) a += src[(size_t)add * w + x];
+            if (sub >= 0) a -= src[(size_t)sub * w + x];
+        }
+    }
+}
+
+/* cscdGaussianBlurScalar, its passes down the columns: the rows' passes on the image turned (each pass along a row is
+ * one down a column of the transposed image), then the columns' on it turned back */
+void cscdGaussianBlur(CscdFloatVec* buf, int w, int h, float sigma) {
+    if (sigma <= 0.01f || w <= 0 || h <= 0) return;
+    int sizes[3];
+    boxBlurSizes(sigma, sizes);
+    CscdFloatVec tmp = {0};
+    cscdVecResize(&tmp, buf->len);
+    transpose(buf->items, tmp.items, w, h); /* (h wide, w high: a row of the image is a column) */
+    swapVec(buf, &tmp);
+    for (int i = 0; i < 3; ++i) { boxBlurV(buf->items, tmp.items, h, w, (sizes[i] - 1) / 2); swapVec(buf, &tmp); }
+    transpose(buf->items, tmp.items, h, w);
+    swapVec(buf, &tmp);
+    for (int i = 0; i < 3; ++i) { boxBlurV(buf->items, tmp.items, w, h, (sizes[i] - 1) / 2); swapVec(buf, &tmp); }
+    cscdVecFree(&tmp);
 }
 
 static void transpose4(const float* src, float* dst, int w, int h) {

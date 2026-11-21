@@ -31,7 +31,7 @@ A window keeps its last frame and paints again only what changed, when that is k
 | `setText` replacing one text with another | layout | that text's block, and the few boxes that moved |
 | `:hover` / `:active` changes that only repaint (colors, backgrounds, shadows, outlines) | the styles of those elements and their descendants; no layout | those elements |
 | `:hover` / `:active` changes that change sizes | the styles of those elements and their descendants, and the layout | those elements, and the few boxes that moved |
-| A box scrolled | nothing | that box |
+| A box scrolled | nothing | that box; for an opaque one with nothing drawn over it, what comes into view inside it, its scrollbars and its edges (the rest is moved) |
 | The page scrolled by whole device pixels, nothing in it fixed, sticky or with a backdrop filter | nothing | what comes into view and the scrollbar (the last frame is moved) |
 | `class`, `style`, `id`, `data-*`, `aria-*`, `role`, `title` | the styles the rules say it reaches (that element and its subtree, its parent's for a `+` or `~` rule, the ancestors whose `:has()` could see it; nothing when no rule names it), and the layout of what changed | the elements that look different now, and the few boxes that moved |
 | New or removed elements, other attributes | the new subtree; the parent's children when a rule sees places among siblings (`+`, `~`, `:nth-*`, `:first-child`...); the parent when an `:empty` rule could match it; the ancestors whose `:has()` could see it (everything for a `:has()` of siblings, or one inside `:is()`, `:not()`...) | the boxes that came and went, and the few boxes that moved |
@@ -54,10 +54,17 @@ Most of a page is the same from one frame to the next, so cascade keeps what it 
   laid out again; a plain block (no formatting context of its own) is too, when no float is around
   it. What is painted again is found from what the layout touched, not by comparing every element
   before and after. A class on one row of twenty thousand: the whole update takes 6 ms (styles and
-  layout alone took over 200 before they were incremental). Moved, a box is shifted only when no
-  float rounds in doing it (every place along the shift, and the shift, on the 1/64 px grid, under
-  2^17 px); else it is laid out again. What counts in document order (counters, quotes, list
-  numbers) is always made again.
+  layout alone took over 200 before they were incremental). Layout keeps every place and size on
+  the grid of 1/64 px (layout units, as browsers'), so a box moved is exactly where a layout from
+  nothing would put it: a kept box at another place is shifted, not laid out again, anywhere on the
+  page (places are doubles, which hold that grid exactly; sizes are floats). A change that only
+  changes how things look is not laid out at all. What counts in document order (counters, quotes,
+  list numbers) is always made again.
+- **Animations paint what they change.** A step of an animation that moves no layout repaints
+  where each animated element was and is drawn, its transform included. An element whose opacity
+  alone animates keeps what it holds as an image, drawn back each frame with its opacity: the
+  pixels its layer would give. A transform is painted again, not drawn from an image: sampled, it
+  would not be the page painted at that moment.
 - **Painting visits what shows.** The children of a box with many are found between two binary
   searches over their inks; whether a subtree holds a positioned box or a stacking context is
   remembered on its boxes, which layout keeps. A full paint of twenty thousand rows: 1.2 ms.

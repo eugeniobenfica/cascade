@@ -535,14 +535,19 @@ unsigned cscdStyleEngineReach(const CscdStyleEngine* se, CscdReachKind kind, Csc
  * in it), its parent's children when a rule sees places among siblings (+ ~ :nth-* :first-child :empty...), the whole
  * document with :has(). */
 unsigned cscdStyleEngineStructureReach(const CscdStyleEngine* se);
-/* With CSCD_REACH_HAS: how far a change under e reaches through e's :has() (its descendants' or children's): what the
- * compounds holding a :has() that e matches (the :has() aside) reach from e, as cscdStyleEngineReach's bits; 0: none. */
-unsigned cscdStyleEngineHasReach(const CscdStyleEngine* se, const CscdElement* e);
+/* With CSCD_REACH_HAS: how far a change at or under an ancestor of e's, or under e, reaches through a :has() about e
+ * (as cscdStyleEngineReach's bits; 0: none): what the compounds a :has() is about reach from e, when e matches one (its
+ * :has() set aside). asSibling: e is a sibling before the change, or before one of its ancestors: only the :has() that
+ * look at siblings (:has(+ x), :has(~ x)) can see it; cscdStyleEngineHasSiblings says whether there are any. */
+unsigned cscdStyleEngineHasReach(const CscdStyleEngine* se, const CscdElement* e, bool asSibling);
+bool cscdStyleEngineHasSiblings(const CscdStyleEngine* se);
 /* Whether e's children coming or going could change its style (a rule's :empty compound could match it). */
 bool cscdStyleEngineEmptyMatters(const CscdStyleEngine* se, const CscdElement* e);
 /* A selector tests this attribute, or a value reads attributes (attr()): its changes need styles
  * computed again. True too while the rules' index is out of date. */
 bool cscdStyleEngineSelectsAttribute(const CscdStyleEngine* se, CscdSv name);
+/* Whether a declaration reads an attribute (attr()), which the boxes read again as they are made (or not known yet). */
+bool cscdStyleEngineReadsAttributes(const CscdStyleEngine* se);
 /* style of a pseudo element of e ("before", "after", "placeholder", "marker"), or NULL (borrowed) */
 CscdComputedStyle* cscdStyleEnginePseudoStyle(const CscdStyleEngine* se, const CscdElement* e, CscdSv pseudo);
 /* A new reference. */

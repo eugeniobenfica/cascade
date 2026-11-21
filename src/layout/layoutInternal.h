@@ -5,31 +5,44 @@
 
 #include "cascade/image.h"
 #include "cascade/layout.h"
+#include <math.h>
 
-typedef struct MarginSet { float pos, neg; } MarginSet;
-CSCD_INLINE void msAdd(MarginSet* m, float v) { if (v > 0) m->pos = cscdMaxf(m->pos, v); else m->neg = cscdMinf(m->neg, v); }
-CSCD_INLINE void msAddSet(MarginSet* m, MarginSet o) { m->pos = cscdMaxf(m->pos, o.pos); m->neg = cscdMinf(m->neg, o.neg); }
-CSCD_INLINE float msValue(MarginSet m) { return m.pos + m.neg; }
+/* Layout works in doubles (places past 2^17 px stay on the grid of layout units: see laySnap), as the float helpers do */
+CSCD_INLINE double layMin(double a, double b) { return b < a ? b : a; }
+CSCD_INLINE double layMax(double a, double b) { return a < b ? b : a; }
+CSCD_INLINE double layClamp(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
+CSCD_INLINE int layInt(double v) { return v >= 268435456. ? 268435456 : v <= -268435456. ? -268435456 : v == v ? (int)v : 0; }
+/* the style's float helpers on layout's doubles (a basis, an ascent: sizes, which floats hold) */
+CSCD_INLINE double layLen(CscdLength l, double basis, double def) { return cscdLenResolve(l, (float)basis, (float)def); }
+CSCD_INLINE double layLineHeight(const CscdComputedStyle* s, double ascent, double descent) { return cscdStyleLineHeight(s, (float)ascent, (float)descent); }
+typedef CscdBoxRect LayRect;
+typedef CSCD_VEC(double) LayDoubleVec;
+typedef struct LayPoint { double x, y; } LayPoint;
+
+typedef struct MarginSet { double pos, neg; } MarginSet;
+CSCD_INLINE void msAdd(MarginSet* m, double v) { if (v > 0) m->pos = layMax(m->pos, v); else m->neg = layMin(m->neg, v); }
+CSCD_INLINE void msAddSet(MarginSet* m, MarginSet o) { m->pos = layMax(m->pos, o.pos); m->neg = layMin(m->neg, o.neg); }
+CSCD_INLINE double msValue(MarginSet m) { return m.pos + m.neg; }
 
 /* A float: its margin box, and the outline of its shape-outside when it has one (the lines wrap
  * around that instead; the box keeps the points) */
-typedef struct FloatBox { CscdRect r; bool left; const CscdPointVec* shape; float shapeMargin; } FloatBox;
+typedef struct FloatBox { LayRect r; bool left; const CscdPointVec* shape; double shapeMargin; } FloatBox;
 typedef struct FloatCtx { CSCD_VEC(FloatBox) floats; } FloatCtx;
 /* Free horizontal band [l, r] for a line at y with height h inside [left, right]. */
-void fcBand(const FloatCtx* fc, float y, float h, float left, float right, float* outL, float* outR);
-float fcClearY(const FloatCtx* fc, CscdClear c);
-float fcBottom(const FloatCtx* fc);
+void fcBand(const FloatCtx* fc, double y, double h, double left, double right, double* outL, double* outR);
+double fcClearY(const FloatCtx* fc, CscdClear c);
+double fcBottom(const FloatCtx* fc);
 /* Places a float of the given margin-box size at or below y; returns its margin-box top-left. */
-CscdPoint fcPlace(FloatCtx* fc, float w, float h, float y, float left, float right, bool isLeft);
+LayPoint fcPlace(FloatCtx* fc, double w, double h, double y, double left, double right, bool isLeft);
 
 typedef struct BlockInput {
-    float x, y;               /* margin-box left edge of the containing block content area, border-box top */
-    float cbW;                /* containing block width (percentages, auto width) */
-    float cbH;                /* containing block height, -1 when indefinite */
-    float forcedW;            /* border-box width imposed by flex / grid / table (-1: none) */
-    float forcedH;            /* border-box height imposed by flex / grid / table (stretch) (-1: none) */
+    double x, y;               /* margin-box left edge of the containing block content area, border-box top */
+    double cbW;                /* containing block width (percentages, auto width) */
+    double cbH;                /* containing block height, -1 when indefinite */
+    double forcedW;            /* border-box width imposed by flex / grid / table (-1: none) */
+    double forcedH;            /* border-box height imposed by flex / grid / table (stretch) (-1: none) */
     bool shrinkToFit;         /* floats, inline-blocks, absolute boxes */
-    float availW;             /* available width for shrink-to-fit (-1: cbW) */
+    double availW;             /* available width for shrink-to-fit (-1: cbW) */
     FloatCtx* floats;
     bool marginTopCollapsed;  /* the top margin (and the first child's) was already applied by the parent */
     bool positionedByCaller;  /* x is the border-box left (no margin resolution against cbW) */
@@ -47,7 +60,7 @@ CSCD_INLINE BlockInput blockInput(void) {
 
 /* subgrid: the track sizes a parent grid gives a subgrid it lays out (an axis left empty: the
  * subgrid sizes it), and the row sizes a subgrid found for itself, for its parent */
-typedef struct SubgridTracks { CscdFloatVec cols, rows; float colGap, rowGap; } SubgridTracks;
+typedef struct SubgridTracks { CscdFloatVec cols, rows; double colGap, rowGap; } SubgridTracks;
 
 /* CSS counters, as the boxes are made in document order: each name's nested instances, with the
  * element whose children's scope made each one (it ends with that element) */
@@ -81,6 +94,21 @@ typedef struct Layouter {
     int deferredTo;
 } Layouter;
 
+/* Layout units: every place and size layout keeps is on the grid of 1/64 px (as browsers' LayoutUnit), where floats
+ * hold sums exactly (below 2^17 px): a box laid out at one place and moved to another is where laying it out there puts
+ * it, to the last bit, so that boxes kept from the last layout, or measured and then placed, are moved instead of laid
+ * out again. */
+/* (and within +-2^25 px, as browsers' LayoutUnit saturates: a length past what floats hold, 1e39px, is infinite, and
+ * places made from it, infinity less infinity, NaN; NaN is 0) */
+#define LAY_MAX 33554432.
+static inline double laySnap(double v) {
+    if (!(v > -LAY_MAX)) return v != v ? 0. : -LAY_MAX; /* (NaN, or below) */
+    if (v > LAY_MAX) return LAY_MAX;
+    return round(v * 64.) * (1. / 64.);
+}
+/* (a size on the grid, as a float: exact below 2^17 px, and the same float for the same size however it was made) */
+static inline float laySnapF(double v) { return (float)laySnap(v); }
+
 /* box tree */
 CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc);
 void layFixupChildren(Layouter* L, CscdLayoutBox* b);
@@ -88,35 +116,35 @@ void layFixupChildren(Layouter* L, CscdLayoutBox* b);
 /* layout */
 void layRoot(Layouter* L, CscdLayoutBox* root);
 MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in); /* returns the bottom margin set that may collapse further */
-float layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float cbH); /* lays out children inside the content box, returns content height */
-float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc);
-float layFlex(Layouter* L, CscdLayoutBox* b, float cbH);
-float layGrid(Layouter* L, CscdLayoutBox* b, float cbH);
-float layTable(Layouter* L, CscdLayoutBox* b, float cbH);
-void layReplaced(Layouter* L, CscdLayoutBox* b, float cbW, float cbH, float* contentW, float* contentH);
-void layFloat(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float y, float left, float right, float cbW);
-void layAbsolute(Layouter* L, CscdLayoutBox* b, CscdRect cb);
-void layAtomicInline(Layouter* L, CscdLayoutBox* b, float cbW, float cbH);
+double layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH); /* lays out children inside the content box, returns content height */
+double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc);
+double layFlex(Layouter* L, CscdLayoutBox* b, double cbH);
+double layGrid(Layouter* L, CscdLayoutBox* b, double cbH);
+double layTable(Layouter* L, CscdLayoutBox* b, double cbH);
+void layReplaced(Layouter* L, CscdLayoutBox* b, double cbW, double cbH, double* contentW, double* contentH);
+void layFloat(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double y, double left, double right, double cbW);
+void layAbsolute(Layouter* L, CscdLayoutBox* b, LayRect cb);
+void layAtomicInline(Layouter* L, CscdLayoutBox* b, double cbW, double cbH);
 
 /* sizes */
-void layResolveEdges(CscdLayoutBox* b, float cbW);
-float layMinContent(Layouter* L, CscdLayoutBox* b); /* border-box width */
-float layMaxContent(Layouter* L, CscdLayoutBox* b);
-float layIntrinsicInline(Layouter* L, CscdLayoutBox* b, bool min);
-float layIntrinsicFlex(Layouter* L, CscdLayoutBox* b, bool min);
-float layIntrinsicGrid(Layouter* L, CscdLayoutBox* b, bool min);
-float layIntrinsicTable(Layouter* L, CscdLayoutBox* b, bool min);
-float layMarginsFixed(CscdLayoutBox* b);
-CSCD_INLINE float layOuterMinContent(Layouter* L, CscdLayoutBox* b) { return layMinContent(L, b) + layMarginsFixed(b); }
-CSCD_INLINE float layOuterMaxContent(Layouter* L, CscdLayoutBox* b) { return layMaxContent(L, b) + layMarginsFixed(b); }
-float laySpecifiedWidth(Layouter* L, CscdLayoutBox* b, float cbW, bool* definite); /* border-box width from 'width' */
-float laySpecifiedHeight(CscdLayoutBox* b, float cbH, bool* definite);
-float layClampWidth(Layouter* L, CscdLayoutBox* b, float borderBoxW, float cbW);
-float layClampHeight(CscdLayoutBox* b, float borderBoxH, float cbH);
-float layMeasure(const CscdFont* f, CscdSv s, float letterSpacing, float wordSpacing);
+void layResolveEdges(CscdLayoutBox* b, double cbW);
+double layMinContent(Layouter* L, CscdLayoutBox* b); /* border-box width */
+double layMaxContent(Layouter* L, CscdLayoutBox* b);
+double layIntrinsicInline(Layouter* L, CscdLayoutBox* b, bool min);
+double layIntrinsicFlex(Layouter* L, CscdLayoutBox* b, bool min);
+double layIntrinsicGrid(Layouter* L, CscdLayoutBox* b, bool min);
+double layIntrinsicTable(Layouter* L, CscdLayoutBox* b, bool min);
+double layMarginsFixed(CscdLayoutBox* b);
+CSCD_INLINE double layOuterMinContent(Layouter* L, CscdLayoutBox* b) { return layMinContent(L, b) + layMarginsFixed(b); }
+CSCD_INLINE double layOuterMaxContent(Layouter* L, CscdLayoutBox* b) { return layMaxContent(L, b) + layMarginsFixed(b); }
+double laySpecifiedWidth(Layouter* L, CscdLayoutBox* b, double cbW, bool* definite); /* border-box width from 'width' */
+double laySpecifiedHeight(CscdLayoutBox* b, double cbH, bool* definite);
+double layClampWidth(Layouter* L, CscdLayoutBox* b, double borderBoxW, double cbW);
+double layClampHeight(CscdLayoutBox* b, double borderBoxH, double cbH);
+double layMeasure(const CscdFont* f, CscdSv s, double letterSpacing, double wordSpacing);
 void layComputeOverflow(CscdLayoutBox* b);
-void layApplyRelative(CscdLayoutBox* b, float cbW, float cbH);
-void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, float* w, float* h, float* ratio);
+void layApplyRelative(CscdLayoutBox* b, double cbW, double cbH);
+void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, double* ratio);
 bool layIsContainingBlock(const CscdLayoutBox* b);
 
 void layApplyCounters(Layouter* L, const CscdComputedStyle* s, const CscdElement* scope);

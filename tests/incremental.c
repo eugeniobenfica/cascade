@@ -19,7 +19,10 @@ static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; retur
 static const char kRulesHas[] = ".card:has(.on) { border: 2px solid #8b5cf6; }"
                                 ".grid:has(i) { gap: 9px; }"                       /* an element coming in under it */
                                 "#pl:has([hidden]) p { color: #06c; }"             /* an attribute, the anchor not the subject */
-                                ".card:has(> p:empty) { background: #ffe; }";
+                                ".card:has(> p:empty) { background: #ffe; }"
+                                ".cell:has(+ .on, ~ [hidden]) { outline: 2px solid #f80; }" /* siblings after it */
+                                ":is(.card:has(i)) b { color: #a0a; }"            /* inside :is() */
+                                ".plain p:not(:has(i)) { padding-left: 3px; }";   /* inside :not() */
 static const char kRulesPlaces[] =
     ".cell:nth-child(2n) { background: #ffe8e8; }"
     ".on + .cell { outline: 2px solid #f80; }"
@@ -29,6 +32,21 @@ static const char kRulesPlaces[] =
     "p:last-child { margin-bottom: 12px; }"
     "[hidden] + .cell, [hidden] ~ p { text-decoration: underline; padding-top: 3px; }";
 /* (in every version: an element emptied or filled restyles itself) */
+/* what animates: opacity, transforms, colors and shadows (painted again where they are), and a size (laid out again);
+ * each animated seed takes some of them (one that cannot be painted where it is makes the whole window painted) */
+static const char* const kAnimated[] = {
+    "@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } .turn { animation: spin 1.3s linear infinite; }",
+    "@keyframes pulse { from { opacity: 1; } to { opacity: .2; } } #c1 { animation: pulse .7s ease-in-out infinite alternate; }",
+    "@keyframes slide { from { transform: translate(0, 0) scale(1); } to { transform: translate(30px, 6px) scale(1.2); } }"
+    ".cell:nth-child(2) { animation: slide 1.1s infinite alternate; }",
+    "@keyframes glow { from { box-shadow: 0 0 0 #8b5cf6; background: #fff; } to { box-shadow: 0 0 12px #8b5cf6; background: #eef; } }"
+    "#c2 { animation: glow .9s infinite alternate; }",
+    "@keyframes grow { from { width: 40px; } to { width: 90px; } } #count { animation: grow 2s 3 alternate; }",
+    ".bar button { transition: background .25s, transform .3s; } .bar button:hover { transform: translateY(-2px); }",
+    ".fade { transition: opacity .4s; }",
+    ".on { transition: color .3s, background .3s; }",
+    "@keyframes tint { from { color: #333; } to { color: #c06; } } .plain { animation: tint .8s infinite alternate; }",
+};
 static const char kRulesEmpty[] = ".cell:empty, p:empty { min-height: 14px; background: #fee; }";
 static const char kPage[] =
     "<style>"
@@ -48,6 +66,8 @@ static const char kPage[] =
     ".wide { width: 160px; }"
     ".scroll { height: 70px; overflow: auto; border: 1px solid #ccc; margin: 6px; }"
     ".scroll p { margin: 4px; }"
+    ".pane { height: 64px; overflow: auto; background: #fff; margin: 4px 6px; border: 2px solid #9ab; }" /* (scrolls by moving) */
+    ".pane p { margin: 3px 6px; }"
     ".sticky { position: sticky; top: 0; background: #ffd; }"
     ".turn { transform: rotate(3deg); display: inline-block; }"
     ".fade { opacity: .6; }"
@@ -65,6 +85,7 @@ static const char kPage[] =
     "</style>"
     "<div class=bar><button id=b1>One</button><button id=b2 class=grow>Two</button><button id=b3>Three</button>"
     "<span id=count>0</span><progress id=pr value=20 max=100></progress></div>"
+    "<div class=pane id=pn><p>pane one</p><p class=cell>pane two</p><p>pane three, a longer line</p><p>four</p><p>five</p><p>six</p><p>seven</p></div>"
     "<div class=card id=c1><b>Title</b> <span class=hint id=h1>hint</span><p id=t1>Some text in a card.</p>"
     "<div class=inner><div><span class=hint id=h2>deep</span> <i class=tag2>tag</i></div></div></div>"
     "<div class=grid id=g><div class=cell>a</div><div class=cell>b</div><div class=cell>c</div>"
@@ -173,22 +194,38 @@ static void run(uint64_t seed, int rounds, float dpr) {
     rs = 88172645463325252ull ^ (seed * 0x9E3779B97F4A7C15ull);
     CscdView* v = cscdViewNew();
     cscdViewOnWarning(v, NULL, NULL);
-    cscdViewSetFeature(v, CSCD_FEATURE_ANIMATIONS, false);
+    /* (a third of the seeds: things animate, on a clock of the test's, a frame a round; the page from scratch is made at
+     * the same moment) */
+    const bool animate = seed % 3 == 1;
+    cscdViewSetFeature(v, CSCD_FEATURE_ANIMATIONS, animate);
+    v->clockAt = 0;
     cscdViewSetFeature(v, CSCD_FEATURE_SMOOTH_SCROLL, false);
     cscdViewSetFeature(v, CSCD_FEATURE_TOOLTIPS, false);
     cscdViewSetViewport(v, 400, 300, dpr);
     CscdStr page = {0};
-    const int version = (int)(seed % 3);
+    const int version = (int)(seed % 4); /* (0: :has() and places, 1: places, 2: neither, 3: :has() alone) */
     cscdStrAppendC(&page, "<style>");
-    if (version == 0) cscdStrAppendC(&page, kRulesHas);
+    if (version == 0 || version == 3) cscdStrAppendC(&page, kRulesHas);
     if (version <= 1) cscdStrAppendC(&page, kRulesPlaces);
     cscdStrAppendC(&page, kRulesEmpty);
+    if (animate)
+        for (size_t k = 0; k < CSCD_COUNT(kAnimated); ++k)
+            if ((seed / 3 + 1) * 2654435761u >> (k + 7) & 1) cscdStrAppendC(&page, kAnimated[k]);
     cscdStrAppendC(&page, "</style>");
     cscdStrAppend(&page, (CscdSv){kPage, sizeof kPage - 1});
     /* (half the seeds: nothing stays put as the page scrolls, which then moves the last frame instead of painting it) */
     if ((seed / 3) % 2) cscdStrAppendC(&page, "<style>.sticky { position: static; }</style>");
+    /* (and half of those: nothing turned either, unless an animation turns it) */
+    if ((seed / 3) % 4 == 1) cscdStrAppendC(&page, "<style>.turn { transform: none; }</style>");
     cscdViewLoadHTML(v, cscdStrSv(&page), CSCD_SV("."));
     cscdStrFree(&page);
+    /* (a quarter of the seeds: the lower half of the page past 2^18 px, where a float is coarser than layout units) */
+    if ((seed / 6) % 4 == 1) {
+        CscdElement* far = cscdElementNew(CSCD_SV("div"));
+        cscdElementSetStyle(far, CSCD_SV("height"), CSCD_SV("270000.3px"));
+        CscdElement* g = cscdViewQuerySelector(v, CSCD_SV("#g"));
+        if (!g || !cscdNodeInsertBefore(g->node.parent, &far->node, &g->node)) cscdNodeDestroy(&far->node);
+    }
     CscdImage frame;
     memset(&frame, 0, sizeof frame);
     char log[4096] = "";
@@ -201,6 +238,7 @@ static void run(uint64_t seed, int rounds, float dpr) {
             cscdImageInit(&frame, w, h);
             whole = true;
         }
+        v->clockAt = i / 60.0; /* (a frame a round) */
         cscdViewUpdate(v);
         cscdViewPaint(v, &frame, !whole);
         if (i > 0) {
@@ -229,7 +267,8 @@ static void run(uint64_t seed, int rounds, float dpr) {
             cscdStrFree(&why);
         }
         log[0] = 0;
-        const unsigned n = 1 + rnd() % 3;
+        /* (animated: half the rounds only let time pass, a frame painted with nothing else changed) */
+        const unsigned n = animate && rnd() % 2 ? 0 : 1 + rnd() % 3;
         for (unsigned k = 0; k < n; ++k) change(v, log, sizeof log);
     }
     cscdImageFini(&frame);

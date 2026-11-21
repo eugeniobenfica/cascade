@@ -124,96 +124,100 @@ void cscdLayoutBoxFree(CscdLayoutBox* b) {
     cscdFree(b);
 }
 
-void cscdBoxShift(CscdLayoutBox* b, float dx, float dy) {
+static void boxShiftBy(CscdLayoutBox* b, double dx, double dy);
+
+void cscdBoxShift(CscdLayoutBox* b, double dx, double dy) { boxShiftBy(b, laySnap(dx), laySnap(dy)); } /* (on the grid of layout units) */
+
+static void boxShiftBy(CscdLayoutBox* b, double dx, double dy) {
     if (dx == 0 && dy == 0) return;
     b->x += dx; b->y += dy;
     b->baseline += dy; b->lastBaseline += dy;
     b->staticX += dx; b->staticY += dy;
-    b->overflow = cscdRectTranslated(b->overflow, dx, dy);
+    b->overflow = cscdBoxRectTranslated(b->overflow, dx, dy);
     for (size_t i = 0; i < b->textFrags.len; ++i) { CscdTextFrag* f = &b->textFrags.items[i]; f->x += dx; f->baseline += dy; f->top += dy; }
-    for (size_t i = 0; i < b->inlineFrags.len; ++i) b->inlineFrags.items[i].rect = cscdRectTranslated(b->inlineFrags.items[i].rect, dx, dy);
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) b->inlineFrags.items[i].rect = cscdBoxRectTranslated(b->inlineFrags.items[i].rect, dx, dy);
     for (size_t i = 0; i < b->lines.len; ++i) { CscdLineInfo* l = &b->lines.items[i]; l->top += dy; l->baseline += dy; l->left += dx; }
-    for (size_t i = 0; i < b->children.len; ++i) cscdBoxShift(cscdBoxChild(b, i), dx, dy);
+    for (size_t i = 0; i < b->children.len; ++i) boxShiftBy(cscdBoxChild(b, i), dx, dy);
 }
 
 /* The rightmost (right: true) or leftmost x of a closed polygon between y0 and y1; false when it
  * does not reach into that band. */
-static bool shapeExtent(const CscdPointVec* poly, float y0, float y1, bool right, float* out) {
+static bool shapeExtent(const CscdPointVec* poly, double y0, double y1, bool right, double* out) {
     bool any = false;
-    float best = right ? -1e30f : 1e30f;
+    double best = right ? -1e30f : 1e30f;
     for (size_t i = 0; i < poly->len; ++i) {
         CscdPoint a = poly->items[i], b = poly->items[(i + 1) % poly->len];
         if (a.y > b.y) { const CscdPoint t = a; a = b; b = t; }
         if (b.y < y0 || a.y > y1) continue;
         /* the part of the edge inside the band: its ends */
-        const float ta = a.y < y0 && b.y > a.y ? (y0 - a.y) / (b.y - a.y) : 0, tb = b.y > y1 && b.y > a.y ? (y1 - a.y) / (b.y - a.y) : 1;
-        const float xa = a.x + (b.x - a.x) * ta, xb = a.x + (b.x - a.x) * tb;
-        best = right ? cscdMaxf(best, cscdMaxf(xa, xb)) : cscdMinf(best, cscdMinf(xa, xb));
+        const double ta = a.y < y0 && b.y > a.y ? (y0 - a.y) / (b.y - a.y) : 0, tb = b.y > y1 && b.y > a.y ? (y1 - a.y) / (b.y - a.y) : 1;
+        const double xa = a.x + (b.x - a.x) * ta, xb = a.x + (b.x - a.x) * tb;
+        best = right ? layMax(best, layMax(xa, xb)) : layMin(best, layMin(xa, xb));
         any = true;
     }
     *out = best;
     return any;
 }
 
-void fcBand(const FloatCtx* fc, float y, float h, float left, float right, float* outL, float* outR) {
+void fcBand(const FloatCtx* fc, double y, double h, double left, double right, double* outL, double* outR) {
     *outL = left;
     *outR = right;
     for (size_t i = 0; i < fc->floats.len; ++i) {
         const FloatBox* f = &fc->floats.items[i];
-        if (cscdRectBottom(f->r) <= y || f->r.y >= y + cscdMaxf(h, 0.01f)) continue;
+        if (cscdBoxRectBottom(f->r) <= y || f->r.y >= y + layMax(h, 0.01f)) continue;
         if (f->shape) { /* how far the shape reaches into the band, sideways */
-            float x;
-            if (!shapeExtent(f->shape, y - f->shapeMargin, y + cscdMaxf(h, 0.01f) + f->shapeMargin, f->left, &x)) continue;
-            if (f->left) *outL = cscdMaxf(*outL, cscdMinf(x + f->shapeMargin, cscdRectRight(f->r)));
-            else *outR = cscdMinf(*outR, cscdMaxf(x - f->shapeMargin, f->r.x));
+            double x;
+            if (!shapeExtent(f->shape, y - f->shapeMargin, y + layMax(h, 0.01f) + f->shapeMargin, f->left, &x)) continue;
+            if (f->left) *outL = layMax(*outL, layMin(x + f->shapeMargin, cscdBoxRectRight(f->r)));
+            else *outR = layMin(*outR, layMax(x - f->shapeMargin, f->r.x));
             continue;
         }
-        if (f->left) *outL = cscdMaxf(*outL, cscdRectRight(f->r));
-        else *outR = cscdMinf(*outR, f->r.x);
+        if (f->left) *outL = layMax(*outL, cscdBoxRectRight(f->r));
+        else *outR = layMin(*outR, f->r.x);
     }
 }
 
-float fcClearY(const FloatCtx* fc, CscdClear c) {
-    float y = -1e30f;
+double fcClearY(const FloatCtx* fc, CscdClear c) {
+    double y = -1e30f;
     for (size_t i = 0; i < fc->floats.len; ++i) {
         const FloatBox* f = &fc->floats.items[i];
-        if (c == CSCD_CLEAR_BOTH || (c == CSCD_CLEAR_LEFT && f->left) || (c == CSCD_CLEAR_RIGHT && !f->left)) y = cscdMaxf(y, cscdRectBottom(f->r));
+        if (c == CSCD_CLEAR_BOTH || (c == CSCD_CLEAR_LEFT && f->left) || (c == CSCD_CLEAR_RIGHT && !f->left)) y = layMax(y, cscdBoxRectBottom(f->r));
     }
     return y;
 }
 
-float fcBottom(const FloatCtx* fc) {
-    float y = -1e30f;
-    for (size_t i = 0; i < fc->floats.len; ++i) y = cscdMaxf(y, cscdRectBottom(fc->floats.items[i].r));
+double fcBottom(const FloatCtx* fc) {
+    double y = -1e30f;
+    for (size_t i = 0; i < fc->floats.len; ++i) y = layMax(y, cscdBoxRectBottom(fc->floats.items[i].r));
     return y;
 }
 
-CscdPoint fcPlace(FloatCtx* fc, float w, float h, float y, float left, float right, bool isLeft) {
+LayPoint fcPlace(FloatCtx* fc, double w, double h, double y, double left, double right, bool isLeft) {
     /* a float is never placed above an earlier one */
-    for (size_t i = 0; i < fc->floats.len; ++i) y = cscdMaxf(y, fc->floats.items[i].r.y);
+    for (size_t i = 0; i < fc->floats.len; ++i) y = layMax(y, fc->floats.items[i].r.y);
     for (int guard = 0; guard < 1000; ++guard) {
-        float l, r;
+        double l, r;
         fcBand(fc, y, h, left, right, &l, &r);
         bool any = false;
         for (size_t i = 0; i < fc->floats.len; ++i) {
             const FloatBox* f = &fc->floats.items[i];
-            if (!(cscdRectBottom(f->r) <= y || f->r.y >= y + cscdMaxf(h, 0.01f))) any = true;
+            if (!(cscdBoxRectBottom(f->r) <= y || f->r.y >= y + layMax(h, 0.01f))) any = true;
         }
         if (r - l >= w - 0.01f || !any) {
-            CscdPoint p = {isLeft ? l : r - w, y};
-            FloatBox fb = {cscdRect(p.x, p.y, w, h), isLeft, NULL, 0};
+            LayPoint p = {isLeft ? l : r - w, y};
+            FloatBox fb = {cscdBoxRect(p.x, p.y, w, h), isLeft, NULL, 0};
             cscdVecPush(&fc->floats, fb);
             return p;
         }
         /* move below the next float bottom */
-        float next = 1e30f;
+        double next = 1e30f;
         for (size_t i = 0; i < fc->floats.len; ++i)
-            if (cscdRectBottom(fc->floats.items[i].r) > y) next = cscdMinf(next, cscdRectBottom(fc->floats.items[i].r));
+            if (cscdBoxRectBottom(fc->floats.items[i].r) > y) next = layMin(next, cscdBoxRectBottom(fc->floats.items[i].r));
         if (next >= 1e29f) break;
         y = next;
     }
-    CscdPoint p = {isLeft ? left : right - w, y};
-    FloatBox fb = {cscdRect(p.x, p.y, w, h), isLeft, NULL, 0};
+    LayPoint p = {isLeft ? left : right - w, y};
+    FloatBox fb = {cscdBoxRect(p.x, p.y, w, h), isLeft, NULL, 0};
     cscdVecPush(&fc->floats, fb);
     return p;
 }
@@ -300,7 +304,7 @@ static int listOrdinalFrom(Layouter* L, CscdElement* li) {
     if (cscdElementHasAttributeC(li, "value")) return attrInt(li, "value");
     int n = 0;
     for (CscdElement* s = cscdNodePreviousElementSibling(&li->node); s; s = cscdNodePreviousElementSibling(&s->node)) {
-        if (s == L->lastListItem) return (int)cscdMinf(1e9f, (float)L->lastListOrdinal + n + 1);
+        if (s == L->lastListItem) return (int)layMin(1e9f, (double)L->lastListOrdinal + n + 1);
         if (s->style && s->style->display == CSCD_DISPLAY_LIST_ITEM) {
             if (cscdElementHasAttributeC(s, "value")) return attrInt(s, "value") + n + 1;
             ++n;
@@ -818,33 +822,33 @@ static CscdLayoutBox* reusable(Layouter* L, CscdElement* e) {
 
 /* ---- what an element's own boxes draw ------------------------------------------------------------------------------ */
 
-static CscdRect inkOfOne(const CscdLayoutBox* b) {
-    CscdRect r = cscdBoxBorderBox(b);
+static LayRect inkOfOne(const CscdLayoutBox* b) {
+    LayRect r = cscdBoxBorderBoxD(b);
     for (size_t i = 0; i < b->textFrags.len; ++i) {
         const CscdTextFrag* f = &b->textFrags.items[i];
-        r = cscdRectUnite(r, cscdRect(f->x, f->top, f->width, f->height));
+        r = cscdBoxRectUnite(r, cscdBoxRect(f->x, f->top, f->width, f->height));
     }
-    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdRectUnite(r, b->inlineFrags.items[i].rect);
+    for (size_t i = 0; i < b->inlineFrags.len; ++i) r = cscdBoxRectUnite(r, b->inlineFrags.items[i].rect);
     const CscdComputedStyle* s = b->style;
     if (s) {
         /* (a blur reaches 3 sigmas, half its radius each, and a device pixel more) */
-        float out = s->outlineStyle != CSCD_BORDER_NONE ? cscdMaxf(0.f, s->outlineWidth + s->outlineOffset) : 0;
+        double out = s->outlineStyle != CSCD_BORDER_NONE ? layMax(0.f, s->outlineWidth + s->outlineOffset) : 0;
         for (size_t i = 0; i < s->boxShadow.len; ++i) {
             const CscdShadow* sh = &s->boxShadow.items[i];
-            if (!sh->inset) out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 1.5f * sh->blur + 1 + cscdMaxf(0.f, sh->spread));
+            if (!sh->inset) out = layMax(out, layMax(fabs(sh->x), fabs(sh->y)) + 1.5f * sh->blur + 1 + layMax(0.f, sh->spread));
         }
         for (size_t i = 0; i < s->textShadow.len; ++i) {
             const CscdShadow* sh = &s->textShadow.items[i];
-            out = cscdMaxf(out, cscdMaxf(fabsf(sh->x), fabsf(sh->y)) + 1.5f * sh->blur + 1);
+            out = layMax(out, layMax(fabs(sh->x), fabs(sh->y)) + 1.5f * sh->blur + 1);
         }
-        if (out > 0) r = cscdRectUnite(r, cscdRect(r.x - out, r.y - out, r.w + 2 * out, r.h + 2 * out));
+        if (out > 0) r = cscdBoxRectUnite(r, cscdBoxRect(r.x - out, r.y - out, r.w + 2 * out, r.h + 2 * out));
     }
     return r;
 }
 
 static uint64_t mixLook(uint64_t h, uint64_t v) { return (h ^ v) * 1099511628211ull; }
-static uint64_t mixLookF(uint64_t h, float f) {
-    uint32_t bits;
+static uint64_t mixLookF(uint64_t h, double f) {
+    uint64_t bits;
     memcpy(&bits, &f, sizeof bits);
     return mixLook(h, bits);
 }
@@ -861,7 +865,7 @@ static bool drawsNothingItself(const CscdLayoutBox* b) {
     return !cscdStyleClipsOverflow(s) && !cscdStyleCreatesStackingContext(s);
 }
 
-static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* look) {
+static void ownWalk(const CscdLayoutBox* b, bool top, LayRect* ink, uint64_t* look) {
     if (!top && cscdBoxIsElements(b)) return; /* (another element's: its own) */
     uint64_t h = *look;
     if (b->anonymous) {
@@ -869,10 +873,10 @@ static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* l
          * pieces of its inline boxes, not its block, which spans whatever is beside them) */
         for (size_t i = 0; i < b->textFrags.len; ++i) {
             const CscdTextFrag* f = &b->textFrags.items[i];
-            *ink = cscdRectUnite(*ink, cscdRect(f->x, f->top, f->width, f->height));
+            *ink = cscdBoxRectUnite(*ink, cscdBoxRect(f->x, f->top, f->width, f->height));
         }
     } else {
-        *ink = cscdRectUnite(*ink, inkOfOne(b));
+        *ink = cscdBoxRectUnite(*ink, inkOfOne(b));
         h = mixLook(h, (uint64_t)(uintptr_t)b->style);
         if (!top || !drawsNothingItself(b)) h = mixLookF(mixLookF(mixLookF(mixLookF(h, b->x), b->y), b->w), b->h);
     }
@@ -883,7 +887,7 @@ static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* l
         h = mixLookF(mixLookF(mixLookF(mixLookF(h, f->x), f->baseline), f->width), f->justify);
     }
     for (size_t i = 0; i < b->inlineFrags.len; ++i) {
-        const CscdRect r = b->inlineFrags.items[i].rect;
+        const LayRect r = b->inlineFrags.items[i].rect;
         h = mixLookF(mixLookF(mixLookF(mixLookF(h, r.x), r.y), r.w), r.h);
     }
     if (top && b->element && b->style && cscdStyleClipsOverflow(b->style) && b->parent) /* (its scrollbars) */
@@ -892,15 +896,17 @@ static void ownWalk(const CscdLayoutBox* b, bool top, CscdRect* ink, uint64_t* l
     for (size_t i = 0; i < b->children.len; ++i) ownWalk(cscdBoxChild(b, i), false, ink, look);
 }
 
-CscdRect cscdBoxOwnInk(const CscdLayoutBox* b) {
-    CscdRect ink = cscdBoxBorderBox(b);
+static LayRect ownInkD(const CscdLayoutBox* b) {
+    LayRect ink = cscdBoxBorderBoxD(b);
     uint64_t look = 14695981039346656037ull;
     ownWalk(b, true, &ink, &look);
     return ink;
 }
 
+CscdRect cscdBoxOwnInk(const CscdLayoutBox* b) { return cscdBoxRectF(ownInkD(b)); }
+
 uint64_t cscdBoxOwnLook(const CscdLayoutBox* b) {
-    CscdRect ink = cscdBoxBorderBox(b);
+    LayRect ink = cscdBoxBorderBoxD(b);
     uint64_t look = 14695981039346656037ull;
     ownWalk(b, true, &ink, &look);
     return look;
@@ -908,10 +914,10 @@ uint64_t cscdBoxOwnLook(const CscdLayoutBox* b) {
 
 /* (what it was, for the damage, before it is made or laid out again) */
 static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was) {
-    CscdRect ink = cscdBoxBorderBox(was);
+    LayRect ink = cscdBoxBorderBoxD(was);
     uint64_t look = 14695981039346656037ull;
     ownWalk(was, true, &ink, &look);
-    to->prevInk = ink;
+    to->prevInk = cscdBoxRectF(ink);
     to->prevLook = look;
     to->hasPrev = true;
     if (to != was) ((CscdLayoutBox*)was)->followedIn = to->builtIn;
@@ -920,16 +926,16 @@ static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was) {
 /* A box kept from the layout before, laid out again (it moved, or its input is not the same): every box in it back to
  * what a new one is before its layout, what the build made kept. (Laid out over its old places, an inline box with no
  * text was shifted from where it was, not from nothing.) */
-static void forgetKeptLayoutBy(CscdLayoutBox* b, float dx, float dy);
+static void forgetKeptLayoutBy(CscdLayoutBox* b, double dx, double dy);
 
 /* (memo hits since it was taken only moved it, a flex or grid parent measuring it where it is not: what it drew was
  * where it was taken) */
 static void forgetKeptLayout(CscdLayoutBox* b) { forgetKeptLayoutBy(b, b->keptX - b->x, b->keptY - b->y); }
 
-static void forgetKeptLayoutBy(CscdLayoutBox* b, float dx, float dy) {
+static void forgetKeptLayoutBy(CscdLayoutBox* b, double dx, double dy) {
     if (cscdBoxIsElements(b)) {
         notePrevious(b, b); /* (before its own boxes, and its texts', are wiped) */
-        b->prevInk = cscdRectTranslated(b->prevInk, dx, dy);
+        b->prevInk = cscdRectTranslated(b->prevInk, (float)dx, (float)dy);
     }
     b->inlineOwner = b->inlineSlot = 0;
     cscdVecClear(&b->shape);
@@ -939,7 +945,7 @@ static void forgetKeptLayoutBy(CscdLayoutBox* b, float dx, float dy) {
     for (int i = 0; i < 4; ++i) b->margin[i] = b->border[i] = b->padding[i] = 0;
     b->baseline = b->lastBaseline = 0;
     b->hasBaseline = false;
-    b->overflow = cscdRect(0, 0, 0, 0);
+    b->overflow = cscdBoxRect(0, 0, 0, 0);
     b->staticX = b->staticY = 0;
     b->hasStaticPos = false;
     cscdTextFragVecClear(&b->textFrags);
@@ -1009,82 +1015,82 @@ CscdLayoutBox* layBuild(Layouter* L, CscdDocument* doc) {
 
 /* ---- sizes ------------------------------------------------------------------------------------------ */
 
-void layResolveEdges(CscdLayoutBox* b, float cbW) {
+void layResolveEdges(CscdLayoutBox* b, double cbW) {
     const CscdComputedStyle* s = b->style;
     for (int i = 0; i < 4; ++i) {
-        b->padding[i] = cscdMaxf(0.f, cscdLenResolve(s->padding[i], cbW, 0));
-        b->border[i] = s->border[i].width;
-        b->margin[i] = cscdLenIsAuto(s->margin[i]) ? 0 : cscdLenResolve(s->margin[i], cbW, 0);
+        b->padding[i] = laySnapF(layMax(0.f, layLen(s->padding[i], cbW, 0)));
+        b->border[i] = laySnapF(s->border[i].width);
+        b->margin[i] = cscdLenIsAuto(s->margin[i]) ? 0 : laySnapF(layLen(s->margin[i], cbW, 0));
     }
     if (b->kind == CSCD_BOX_TEXT) for (int i = 0; i < 4; ++i) b->padding[i] = b->border[i] = b->margin[i] = 0;
 }
 
-float layMarginsFixed(CscdLayoutBox* b) {
+double layMarginsFixed(CscdLayoutBox* b) {
     const CscdComputedStyle* s = b->style;
-    float m = 0;
+    double m = 0;
     if (!cscdLenIsAuto(s->margin[1]) && !cscdLenHasPercent(s->margin[1])) m += s->margin[1].px;
     if (!cscdLenIsAuto(s->margin[3]) && !cscdLenHasPercent(s->margin[3])) m += s->margin[3].px;
     return m;
 }
 
-float laySpecifiedWidth(Layouter* L, CscdLayoutBox* b, float cbW, bool* definite) {
+double laySpecifiedWidth(Layouter* L, CscdLayoutBox* b, double cbW, bool* definite) {
     const CscdComputedStyle* s = b->style;
     *definite = false;
     const CscdLength w = s->width;
     if (cscdLenIsAuto(w) || cscdLenIsNone(w)) return 0;
     if (cscdLenIsIntrinsic(w)) {
-        float v = w.kind == CSCD_LEN_MIN_CONTENT ? layMinContent(L, b) : w.kind == CSCD_LEN_MAX_CONTENT ? layMaxContent(L, b)
-                : cscdMinf(layMaxContent(L, b), cscdMaxf(layMinContent(L, b), cbW - layMarginsFixed(b)));
+        double v = w.kind == CSCD_LEN_MIN_CONTENT ? layMinContent(L, b) : w.kind == CSCD_LEN_MAX_CONTENT ? layMaxContent(L, b)
+                : layMin(layMaxContent(L, b), layMax(layMinContent(L, b), cbW - layMarginsFixed(b)));
         *definite = true;
         return v;
     }
     if (cscdLenHasPercent(w) && cbW < 0) return 0;
-    float v = cscdLenResolve(w, cscdMaxf(0.f, cbW), 0);
+    double v = layLen(w, layMax(0.f, cbW), 0);
     *definite = true;
     if (s->boxSizing == CSCD_BOX_CONTENT) v += b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
-    else v = cscdMaxf(v, b->padding[1] + b->padding[3] + b->border[1] + b->border[3]);
+    else v = layMax(v, b->padding[1] + b->padding[3] + b->border[1] + b->border[3]);
     return v;
 }
 
-float laySpecifiedHeight(CscdLayoutBox* b, float cbH, bool* definite) {
+double laySpecifiedHeight(CscdLayoutBox* b, double cbH, bool* definite) {
     const CscdComputedStyle* s = b->style;
     *definite = false;
     const CscdLength h = s->height;
     if (cscdLenIsAuto(h) || cscdLenIsNone(h) || cscdLenIsIntrinsic(h)) return 0;
     if (cscdLenHasPercent(h) && cbH < 0) return 0;
-    float v = cscdLenResolve(h, cscdMaxf(0.f, cbH), 0);
+    double v = layLen(h, layMax(0.f, cbH), 0);
     *definite = true;
     if (s->boxSizing == CSCD_BOX_CONTENT) v += b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
-    else v = cscdMaxf(v, b->padding[0] + b->padding[2] + b->border[0] + b->border[2]);
+    else v = layMax(v, b->padding[0] + b->padding[2] + b->border[0] + b->border[2]);
     return v;
 }
 
-float layClampWidth(Layouter* L, CscdLayoutBox* b, float w, float cbW) {
+double layClampWidth(Layouter* L, CscdLayoutBox* b, double w, double cbW) {
     const CscdComputedStyle* s = b->style;
-    float edges = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
-    float adj = s->boxSizing == CSCD_BOX_CONTENT ? edges : 0;
+    double edges = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    double adj = s->boxSizing == CSCD_BOX_CONTENT ? edges : 0;
     if (!cscdLenIsNone(s->maxWidth) && !(cscdLenHasPercent(s->maxWidth) && cbW < 0)) {
-        float mx = cscdLenIsIntrinsic(s->maxWidth) ? (s->maxWidth.kind == CSCD_LEN_MIN_CONTENT ? layMinContent(L, b) : layMaxContent(L, b))
-                                                 : cscdLenResolve(s->maxWidth, cscdMaxf(0.f, cbW), 0) + adj;
-        w = cscdMinf(w, mx);
+        double mx = cscdLenIsIntrinsic(s->maxWidth) ? (s->maxWidth.kind == CSCD_LEN_MIN_CONTENT ? layMinContent(L, b) : layMaxContent(L, b))
+                                                 : layLen(s->maxWidth, layMax(0.f, cbW), 0) + adj;
+        w = layMin(w, mx);
     }
     if (!cscdLenIsAuto(s->minWidth) && !(cscdLenHasPercent(s->minWidth) && cbW < 0)) {
-        float mn = cscdLenIsIntrinsic(s->minWidth) ? (s->minWidth.kind == CSCD_LEN_MIN_CONTENT ? layMinContent(L, b) : layMaxContent(L, b))
-                                                 : cscdLenResolve(s->minWidth, cscdMaxf(0.f, cbW), 0) + adj;
-        w = cscdMaxf(w, mn);
+        double mn = cscdLenIsIntrinsic(s->minWidth) ? (s->minWidth.kind == CSCD_LEN_MIN_CONTENT ? layMinContent(L, b) : layMaxContent(L, b))
+                                                 : layLen(s->minWidth, layMax(0.f, cbW), 0) + adj;
+        w = layMax(w, mn);
     }
-    return cscdMaxf(w, edges);
+    return layMax(w, edges);
 }
 
-float layClampHeight(CscdLayoutBox* b, float h, float cbH) {
+double layClampHeight(CscdLayoutBox* b, double h, double cbH) {
     const CscdComputedStyle* s = b->style;
-    float edges = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
-    float adj = s->boxSizing == CSCD_BOX_CONTENT ? edges : 0;
+    double edges = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
+    double adj = s->boxSizing == CSCD_BOX_CONTENT ? edges : 0;
     if (!cscdLenIsNone(s->maxHeight) && !cscdLenIsIntrinsic(s->maxHeight) && !(cscdLenHasPercent(s->maxHeight) && cbH < 0))
-        h = cscdMinf(h, cscdLenResolve(s->maxHeight, cscdMaxf(0.f, cbH), 0) + adj);
+        h = layMin(h, layLen(s->maxHeight, layMax(0.f, cbH), 0) + adj);
     if (!cscdLenIsAuto(s->minHeight) && !cscdLenIsIntrinsic(s->minHeight) && !(cscdLenHasPercent(s->minHeight) && cbH < 0))
-        h = cscdMaxf(h, cscdLenResolve(s->minHeight, cscdMaxf(0.f, cbH), 0) + adj);
-    return cscdMaxf(h, edges);
+        h = layMax(h, layLen(s->minHeight, layMax(0.f, cbH), 0) + adj);
+    return layMax(h, edges);
 }
 
 /* The widths of the texts measured, kept from one layout to the next, by the font, the spacing and
@@ -1092,40 +1098,40 @@ float layClampHeight(CscdLayoutBox* b, float h, float cbH) {
 static CSCD_THREAD_LOCAL CscdStrMap widthCache;
 static CSCD_THREAD_LOCAL CscdStr widthKey;
 
-float layMeasure(const CscdFont* f, CscdSv s, float ls, float ws) {
+double layMeasure(const CscdFont* f, CscdSv s, double ls, double ws) {
     if (!s.len) return 0;
     const uint8_t flags = (uint8_t)((f->fakeBold ? 1 : 0) | (f->fakeItalic ? 2 : 0));
     cscdStrClear(&widthKey);
     cscdStrAppend(&widthKey, cscdSvMake((const char*)&f->face, sizeof(void*)));
-    cscdStrAppend(&widthKey, cscdSvMake((const char*)&f->size, sizeof(float)));
-    cscdStrAppend(&widthKey, cscdSvMake((const char*)&ls, sizeof(float)));
-    cscdStrAppend(&widthKey, cscdSvMake((const char*)&ws, sizeof(float)));
+    cscdStrAppend(&widthKey, cscdSvMake((const char*)&f->size, sizeof f->size));
+    cscdStrAppend(&widthKey, cscdSvMake((const char*)&ls, sizeof(double)));
+    cscdStrAppend(&widthKey, cscdSvMake((const char*)&ws, sizeof(double)));
     cscdStrAppendChar(&widthKey, (char)flags);
     cscdStrAppend(&widthKey, s);
     CscdMapVal* v = cscdStrMapGet(&widthCache, cscdStrSv(&widthKey));
     if (v) return v->f[0];
-    float w = cscdFontMeasure(s, f, ls, ws);
+    double w = cscdFontMeasure(s, f, (float)ls, (float)ws);
     if (widthCache.len > 200000) cscdStrMapClear(&widthCache); /* (a bound: start again) */
-    cscdStrMapPut(&widthCache, cscdStrSv(&widthKey), NULL)->f[0] = w;
+    cscdStrMapPut(&widthCache, cscdStrSv(&widthKey), NULL)->f[0] = (float)w;
     return w;
 }
 
-static float attrFloat(const CscdElement* e, const char* name) {
+static double attrFloat(const CscdElement* e, const char* name) {
     char* c = cscdSvDupC(cscdElementAttrC(e, name));
-    float v = (float)atof(c);
+    double v = (double)atof(c);
     cscdFree(c);
     return v;
 }
 
-void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, float* w, float* h, float* ratio) {
+void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, double* ratio) {
     *w = 300; *h = 150; *ratio = 2;
     CscdElement* e = b->element;
     switch (b->replaced) {
     case CSCD_REPL_IMAGE:
         if (b->image && !cscdImageEmpty(b->image)) {
-            const float z = b->style && b->style->effectiveZoom > 0 ? b->style->effectiveZoom : 1;
-            *w = (float)b->image->width * z;
-            *h = (float)b->image->height * z;
+            const double z = b->style && b->style->effectiveZoom > 0 ? b->style->effectiveZoom : 1;
+            *w = (double)b->image->width * z;
+            *h = (double)b->image->height * z;
             *ratio = *w / *h;
         } else { *w = 0; *h = 0; *ratio = 0; }
         break;
@@ -1137,17 +1143,17 @@ void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, float* w, float* h, flo
         *ratio = *h > 0 ? *w / *h : 0;
         break;
     case CSCD_REPL_SVG: {
-        float vbw = 0, vbh = 0;
+        double vbw = 0, vbh = 0;
         if (e && cscdElementHasAttributeC(e, "viewbox")) {
             CscdStr vb = cscdStrDup(cscdElementAttrC(e, "viewbox"));
             for (size_t i = 0; i < vb.len; ++i) if (vb.ptr[i] == ',') vb.ptr[i] = ' ';
             CscdSvVec parts = {0};
             cscdSplitSpaces(cscdStrSv(&vb), &parts);
-            float n[4];
+            double n[4];
             size_t k = 0;
             for (size_t i = 0; i < parts.len && k < 4; ++i) {
                 char* c = cscdSvDupC(parts.items[i]);
-                n[k++] = (float)atof(c);
+                n[k++] = (double)atof(c);
                 cscdFree(c);
             }
             if (k >= 4) { vbw = n[2]; vbh = n[3]; }
@@ -1165,27 +1171,27 @@ void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, float* w, float* h, flo
     }
     case CSCD_REPL_SELECT: {
         CscdFont f = cscdFontForStyle(b->style);
-        float maxW = 0;
+        double maxW = 0;
         if (e) {
             CscdPtrVec opts = {0};
             cscdElementQuerySelectorAll(e, CSCD_SV("option"), &opts);
             for (size_t i = 0; i < opts.len; ++i) {
                 CscdStr t = {0};
                 cscdNodeTextContent(opts.items[i], &t);
-                maxW = cscdMaxf(maxW, layMeasure(&f, cscdSvTrim(cscdStrSv(&t)), 0, 0));
+                maxW = layMax(maxW, layMeasure(&f, cscdSvTrim(cscdStrSv(&t)), 0, 0));
                 cscdStrFree(&t);
             }
             cscdVecFree(&opts);
         }
         *w = maxW + 24;
-        *h = ceilf(cscdFontAscent(&f) + cscdFontDescent(&f)) + 2;
+        *h = ceil(cscdFontAscent(&f) + cscdFontDescent(&f)) + 2;
         *ratio = 0;
         break;
     }
     case CSCD_REPL_TEXT_INPUT: {
         CscdFont f = cscdFontForStyle(b->style);
         *w = 150;
-        *h = ceilf(cscdFontAscent(&f) + cscdFontDescent(&f)) + 2;
+        *h = ceil(cscdFontAscent(&f) + cscdFontDescent(&f)) + 2;
         *ratio = 0;
         break;
     }
@@ -1200,14 +1206,14 @@ void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, float* w, float* h, flo
     (void)L;
 }
 
-void layReplaced(Layouter* L, CscdLayoutBox* b, float cbW, float cbH, float* cw, float* ch) {
-    float iw, ih, ratio;
+void layReplaced(Layouter* L, CscdLayoutBox* b, double cbW, double cbH, double* cw, double* ch) {
+    double iw, ih, ratio;
     layReplacedIntrinsic(L, b, &iw, &ih, &ratio);
     if (b->style->aspectRatio > 0) ratio = b->style->aspectRatio;
-    float edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
-    float edgesH = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
+    double edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    double edgesH = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
     bool wd, hd;
-    float sw = laySpecifiedWidth(L, b, cbW, &wd), sh = laySpecifiedHeight(b, cbH, &hd);
+    double sw = laySpecifiedWidth(L, b, cbW, &wd), sh = laySpecifiedHeight(b, cbH, &hd);
     if (wd) sw -= edgesW;
     if (hd) sh -= edgesH;
     if (wd && hd) { *cw = sw; *ch = sh; }
@@ -1215,20 +1221,20 @@ void layReplaced(Layouter* L, CscdLayoutBox* b, float cbW, float cbH, float* cw,
     else if (hd) { *ch = sh; *cw = ratio > 0 ? sh * ratio : iw; }
     else { *cw = iw; *ch = ih; }
     /* min / max (content sizes) */
-    float bw = layClampWidth(L, b, *cw + edgesW, cbW) - edgesW;
+    double bw = layClampWidth(L, b, *cw + edgesW, cbW) - edgesW;
     if (bw != *cw) { if (!hd && ratio > 0) *ch = bw / ratio; *cw = bw; }
-    float bh = layClampHeight(b, *ch + edgesH, cbH) - edgesH;
+    double bh = layClampHeight(b, *ch + edgesH, cbH) - edgesH;
     if (bh != *ch) { if (!wd && ratio > 0) *cw = bh * ratio; *ch = bh; }
-    *cw = cscdMaxf(0.f, *cw);
-    *ch = cscdMaxf(0.f, *ch);
+    *cw = layMax(0.f, *cw);
+    *ch = layMax(0.f, *ch);
 }
 
 static bool isAbsPos(const CscdLayoutBox* c) { return c->style && (c->style->position == CSCD_POS_ABSOLUTE || c->style->position == CSCD_POS_FIXED); }
 
-static float intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min);
+static double intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min);
 
 /* A vertical box's width as content: how deep its lines go, laid out at the viewport's height. */
-static float verticalIntrinsicWidth(Layouter* L, CscdLayoutBox* b) {
+static double verticalIntrinsicWidth(Layouter* L, CscdLayoutBox* b) {
     BlockInput in = blockInput();
     in.cbW = 1e6f;
     in.availW = 1e6f;
@@ -1237,16 +1243,16 @@ static float verticalIntrinsicWidth(Layouter* L, CscdLayoutBox* b) {
     return b->w;
 }
 
-static float intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) {
+static double intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) {
     if (cscdStackLow()) return 0; /* (as layBlock: too deep for the thread's stack) */
-    float v = 0;
+    double v = 0;
     const CscdComputedStyle* s = b->style;
     layResolveEdges(b, 0);
-    float edges = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    double edges = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
     if (cscdLenIsFixed(s->width) && !cscdLenIsAuto(s->width) && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
-        v = s->boxSizing == CSCD_BOX_CONTENT ? s->width.px + edges : cscdMaxf(s->width.px, edges);
+        v = s->boxSizing == CSCD_BOX_CONTENT ? s->width.px + edges : layMax(s->width.px, edges);
     } else if (b->kind == CSCD_BOX_REPLACED) {
-        float cw, ch;
+        double cw, ch;
         layReplaced(L, b, -1, -1, &cw, &ch);
         v = cw + edges;
         if (min && (cscdLenHasPercent(s->width) || cscdLenHasPercent(s->maxWidth))) v = edges; /* percentage-sized replaced boxes can shrink */
@@ -1257,35 +1263,35 @@ static float intrinsicWidth(Layouter* L, CscdLayoutBox* b, bool min) {
     else if (b->kind == CSCD_BOX_TABLE) v = layIntrinsicTable(L, b, min) + edges;
     else if (b->inlineContent || b->kind == CSCD_BOX_INLINE) v = layIntrinsicInline(L, b, min) + edges;
     else {
-        float m = 0, floatsSum = 0;
+        double m = 0, floatsSum = 0;
         for (size_t i = 0; i < b->children.len; ++i) {
             CscdLayoutBox* c = cscdBoxChild(b, i);
             if (c->isMarker || isAbsPos(c)) continue;
-            if (min) { m = cscdMaxf(m, layOuterMinContent(L, c)); continue; }
+            if (min) { m = layMax(m, layOuterMinContent(L, c)); continue; }
             if (c->style && c->style->floating != CSCD_FLOAT_NONE) { floatsSum += layOuterMaxContent(L, c); continue; }
-            m = cscdMaxf(m, layOuterMaxContent(L, c));
+            m = layMax(m, layOuterMaxContent(L, c));
         }
-        v = (min ? m : cscdMaxf(m, floatsSum)) + edges;
+        v = (min ? m : layMax(m, floatsSum)) + edges;
     }
     if (b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
-        if (!cscdLenIsNone(s->maxWidth) && cscdLenIsFixed(s->maxWidth)) v = cscdMinf(v, s->maxWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
-        if (!cscdLenIsAuto(s->minWidth) && cscdLenIsFixed(s->minWidth)) v = cscdMaxf(v, s->minWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
+        if (!cscdLenIsNone(s->maxWidth) && cscdLenIsFixed(s->maxWidth)) v = layMin(v, s->maxWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
+        if (!cscdLenIsAuto(s->minWidth) && cscdLenIsFixed(s->minWidth)) v = layMax(v, s->minWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
     }
     return v;
 }
 
-float layMinContent(Layouter* L, CscdLayoutBox* b) {
+double layMinContent(Layouter* L, CscdLayoutBox* b) {
     if (b->minContent >= 0) return b->minContent;
-    float v = intrinsicWidth(L, b, true);
-    b->minContent = v;
+    double v = intrinsicWidth(L, b, true);
+    b->minContent = (float)v;
     return v;
 }
 
-float layMaxContent(Layouter* L, CscdLayoutBox* b) {
+double layMaxContent(Layouter* L, CscdLayoutBox* b) {
     if (b->maxContent >= 0) return b->maxContent;
-    float v = intrinsicWidth(L, b, false);
-    v = cscdMaxf(v, layMinContent(L, b));
-    b->maxContent = v;
+    double v = intrinsicWidth(L, b, false);
+    v = layMax(v, layMinContent(L, b));
+    b->maxContent = (float)v;
     return v;
 }
 
@@ -1297,8 +1303,8 @@ typedef struct InlineItem {
     uint8_t t;           /* ItemType */
     CscdLayoutBox* box;
     size_t start, end;   /* byte range in the processed text of box */
-    float width;         /* advance including trailing spaces */
-    float wordWidth;     /* advance without trailing collapsible spaces */
+    double width;         /* advance including trailing spaces */
+    double wordWidth;     /* advance without trailing collapsible spaces */
     bool breakAfter;     /* break opportunity after this item */
     bool forced;         /* forced break (newline in pre text / <br>) */
     bool hyphen;         /* it ends at a soft hyphen: broken there, the line ends with a hyphen */
@@ -1318,7 +1324,7 @@ typedef struct InlineState {
     CSCD_VEC(Chain) chainAt;
     CSCD_VEC(CscdBytes) levels; /* bidi: each byte's embedding level (when any is odd) */
     CscdPtrVec chainPool;
-    CscdFloatVec floats1, floats2; /* (scratch of layInline, kept with the state for its capacity) */
+    LayDoubleVec floats1, floats2; /* (scratch of layInline, kept with the state for its capacity) */
     Chain lastChain;
 } InlineState;
 
@@ -1407,7 +1413,7 @@ static void returnState(InlineState* st) {
 typedef struct Collect {
     Layouter* L;
     InlineState* st;
-    float cbW;
+    double cbW;
     bool prevSpace;  /* collapsible space at the start of a line is removed */
     bool wordStart;
     CscdPtrVec stack;
@@ -1581,7 +1587,7 @@ static void collectWalk(Collect* C, CscdLayoutBox* parent) {
 }
 
 /* Splits the inline content of a block container into items. */
-static void collectInline(Layouter* L, CscdLayoutBox* root, InlineState* st, float cbW) {
+static void collectInline(Layouter* L, CscdLayoutBox* root, InlineState* st, double cbW) {
     Collect C;
     memset(&C, 0, sizeof C);
     C.L = L;
@@ -1605,38 +1611,38 @@ static void collectInline(Layouter* L, CscdLayoutBox* root, InlineState* st, flo
     }
 }
 
-float layIntrinsicInline(Layouter* L, CscdLayoutBox* b, bool min) {
+double layIntrinsicInline(Layouter* L, CscdLayoutBox* b, bool min) {
     InlineState* st = leaseState();
     cscdVecReserve(&st->items, b->children.len * 2 + 2);
     collectInline(L, b, st, 0);
-    float best = 0, line = 0, word = 0;
+    double best = 0, line = 0, word = 0;
     for (size_t i = 0; i < st->items.len; ++i) {
         const InlineItem* it = &st->items.items[i];
         switch (it->t) {
         case IT_TEXT:
             if (min) {
                 word += it->wordWidth;
-                best = cscdMaxf(best, word);
+                best = layMax(best, word);
                 if (it->breakAfter) word = 0;
                 else word += it->width - it->wordWidth;
             } else {
                 line += it->width;
-                best = cscdMaxf(best, line - (it->width - it->wordWidth));
+                best = layMax(best, line - (it->width - it->wordWidth));
             }
             break;
         case IT_OPEN: case IT_CLOSE:
-            if (min) { word += it->width; best = cscdMaxf(best, word); }
-            else { line += it->width; best = cscdMaxf(best, line); }
+            if (min) { word += it->width; best = layMax(best, word); }
+            else { line += it->width; best = layMax(best, line); }
             break;
         case IT_ATOMIC: {
-            float w = min ? layOuterMinContent(L, it->box) : layOuterMaxContent(L, it->box);
-            if (min) { best = cscdMaxf(best, word + w); word = it->breakAfter ? 0 : word + w; }
-            else { line += w; best = cscdMaxf(best, line); }
+            double w = min ? layOuterMinContent(L, it->box) : layOuterMaxContent(L, it->box);
+            if (min) { best = layMax(best, word + w); word = it->breakAfter ? 0 : word + w; }
+            else { line += w; best = layMax(best, line); }
             break;
         }
         case IT_FLOAT: {
-            float w = min ? layOuterMinContent(L, it->box) : layOuterMaxContent(L, it->box);
-            best = cscdMaxf(best, w);
+            double w = min ? layOuterMinContent(L, it->box) : layOuterMaxContent(L, it->box);
+            best = layMax(best, w);
             if (!min) line += w;
             break;
         }
@@ -1644,44 +1650,44 @@ float layIntrinsicInline(Layouter* L, CscdLayoutBox* b, bool min) {
         default: break;
         }
     }
-    float indent = cscdLenResolve(b->style->textIndent, 0, 0);
+    double indent = layLen(b->style->textIndent, 0, 0);
     returnState(st);
-    return best + cscdMaxf(0.f, indent);
+    return best + layMax(0.f, indent);
 }
 
 typedef struct Placed {
     const InlineItem* it;
-    float x;  /* relative to the line's left edge */
-    float w;
+    double x;  /* relative to the line's left edge */
+    double w;
     size_t start, end;
     uint8_t level; /* bidi embedding level (odd: right to left) */
     bool hyphen;   /* the line was broken at its soft hyphen: a hyphen shows after it */
 } Placed;
 typedef CSCD_VEC(Placed) PlacedVec;
 
-static Placed placed(const InlineItem* it, float x, float w, size_t start, size_t end) {
+static Placed placed(const InlineItem* it, double x, double w, size_t start, size_t end) {
     Placed p = {it, x, w, start, end, 0};
     return p;
 }
 
-typedef struct VMetrics { float ascent, descent; } VMetrics; /* half-leading included (CSS inline box line-height area) */
+typedef struct VMetrics { double ascent, descent; } VMetrics; /* half-leading included (CSS inline box line-height area) */
 
 /* The A/D of an inline box including half leading, as CSS 10.8.1 defines it. */
 static VMetrics lineMetrics(const CscdComputedStyle* s, const CscdFont* f) {
-    float A = cscdFontAscent(f), D = cscdFontDescent(f);
-    float lh = cscdStyleLineHeight(s, A + cscdFontLineGap(f), D);
+    double A = cscdFontAscent(f), D = cscdFontDescent(f);
+    double lh = layLineHeight(s, A + cscdFontLineGap(f), D);
     if (s->lineHeight < 0 && s->lineHeightFactor <= 0) lh = A + D + cscdFontLineGap(f);
-    float half = (lh - (A + D)) / 2;
+    double half = (lh - (A + D)) / 2;
     VMetrics m = {A + half, D + half};
     return m;
 }
 
 /* Baseline shift of an element relative to its parent's baseline (y down positive). */
-static float baselineShift(const CscdComputedStyle* s, const CscdComputedStyle* parent, const CscdFont* parentFont) {
+static double baselineShift(const CscdComputedStyle* s, const CscdComputedStyle* parent, const CscdFont* parentFont) {
     switch (s->verticalAlign) {
     case CSCD_VA_SUB: return parent->font.size * 0.2f;
     case CSCD_VA_SUPER: return -parent->font.size * 0.34f;
-    case CSCD_VA_LENGTH: return -cscdLenResolve(s->verticalAlignLength, cscdStyleLineHeight(s, cscdFontAscent(parentFont), cscdFontDescent(parentFont)), 0);
+    case CSCD_VA_LENGTH: return -layLen(s->verticalAlignLength, layLineHeight(s, cscdFontAscent(parentFont), cscdFontDescent(parentFont)), 0);
     default: return 0;
     }
 }
@@ -1709,35 +1715,35 @@ typedef struct Inl {
     CscdBytes atomLevel; /* by item index (atomic inlines: an object replacement character) */
     CscdFont rootFont;
     VMetrics strut;
-    float strutH;
-    float textIndent;
+    double strutH;
+    double textIndent;
     uint8_t align;
     bool rootWraps;
     int clamp;
-    float left, top, cw;
-    float y;
+    double left, top, cw;
+    double y;
     bool firstLine;
     PlacedVec line;
     size_t noOpportunityIn; /* the items of the line known to offer no break (lineHasOpportunity) */
-    float lineLeft, lineAvail;
+    double lineLeft, lineAvail;
     CscdPtrVec pendingFloats;
     bool hasFloats;
-    float lineX;
+    double lineX;
     int lineCount;
     bool stopped;
 } Inl;
 
 static void startLine(Inl* I) {
     I->noOpportunityIn = 0;
-    float l = I->left, r = I->left + I->cw;
+    double l = I->left, r = I->left + I->cw;
     if (I->fc && I->fc->floats.len) fcBand(I->fc, I->y, I->strutH, I->left, I->left + I->cw, &l, &r);
     I->lineLeft = l;
-    I->lineAvail = cscdMaxf(0.f, r - l);
+    I->lineAvail = layMax(0.f, r - l);
     if (I->firstLine) { I->lineLeft += I->textIndent; I->lineAvail -= I->textIndent; }
 }
 
 /* places floats that could not go on the current line */
-static void placeFloat(Inl* I, CscdLayoutBox* f, float atY) {
+static void placeFloat(Inl* I, CscdLayoutBox* f, double atY) {
     layFloat(I->L, f, I->fc, atY, I->left, I->left + I->cw, I->cw);
     I->hasFloats = true;
 }
@@ -1822,13 +1828,13 @@ static void reorderLine(Inl* I) {
     cscdVecFree(&at);
 }
 
-static float shiftFor(Inl* I, CscdLayoutBox* box) {
+static double shiftFor(Inl* I, CscdLayoutBox* box) {
     InlineState* st = I->st;
-    CscdFloatVec* shiftOf = &st->floats1;
+    LayDoubleVec* shiftOf = &st->floats1;
     const uint32_t slot = stSlot(st, box);
     while (slot >= shiftOf->len) cscdVecPush(shiftOf, NAN);
     if (!isnan(shiftOf->items[slot])) return shiftOf->items[slot];
-    float sh = 0;
+    double sh = 0;
     const Chain chain = stChain(st, box);
     const CscdComputedStyle* parentStyle = I->bs;
     CscdFont parentFont = I->rootFont;
@@ -1842,13 +1848,13 @@ static float shiftFor(Inl* I, CscdLayoutBox* box) {
     return sh;
 }
 
-typedef struct Aligned { size_t idx; float h; bool top; } Aligned;
+typedef struct Aligned { size_t idx; double h; bool top; } Aligned;
 
-static void extendRange(CscdU64Map* ranges, CscdLayoutBox* box, float x0, float x1) {
+static void extendRange(CscdU64Map* ranges, CscdLayoutBox* box, double x0, double x1) {
     bool inserted = false;
     CscdMapVal* v = cscdU64MapPut(ranges, CSCD_PKEY(box), &inserted);
-    if (inserted) { v->f[0] = x0; v->f[1] = x1; }
-    else { v->f[0] = cscdMinf(v->f[0], x0); v->f[1] = cscdMaxf(v->f[1], x1); }
+    if (inserted) { v->f[0] = (float)x0; v->f[1] = (float)x1; }
+    else { v->f[0] = (float)layMin(v->f[0], x0); v->f[1] = (float)layMax(v->f[1], x1); }
 }
 
 static void finishLine(Inl* I, bool lastLine) {
@@ -1886,16 +1892,16 @@ static void finishLine(Inl* I, bool lastLine) {
     }
     if (I->bidi) reorderLine(I);
     /* recompute x positions after trimming */
-    float x = 0;
+    double x = 0;
     for (size_t k = 0; k < line->len; ++k) { line->items[k].x = x; x += line->items[k].w; }
-    float lineW = x;
+    double lineW = x;
 
     /* vertical metrics, relative to the baseline (y down positive) */
-    float minTop = -I->strut.ascent, maxBottom = I->strut.descent;
+    double minTop = -I->strut.ascent, maxBottom = I->strut.descent;
     cscdVecClear(&st->floats1); /* baseline shift of each inline box (NaN: not known yet) */
     for (uint32_t k = 0; k < st->count; ++k) cscdVecPush(&st->floats1, NAN);
     CSCD_VEC(Aligned) edgeAligned = {0};
-    CscdFloatVec* atomTop = &st->floats2; /* margin-box top relative to baseline */
+    LayDoubleVec* atomTop = &st->floats2; /* margin-box top relative to baseline */
     cscdVecClear(atomTop);
     cscdVecResize(atomTop, line->len);
     for (size_t k = 0; k < line->len; ++k) {
@@ -1904,40 +1910,40 @@ static void finishLine(Inl* I, bool lastLine) {
             CscdLayoutBox* tb = it->box;
             if (it->t == IT_BREAK && tb->kind == CSCD_BOX_LINE_BREAK) {
                 VMetrics m = lineMetrics(tb->style, &tb->font);
-                float sh = shiftFor(I, tb);
-                minTop = cscdMinf(minTop, sh - m.ascent);
-                maxBottom = cscdMaxf(maxBottom, sh + m.descent);
+                double sh = shiftFor(I, tb);
+                minTop = layMin(minTop, sh - m.ascent);
+                maxBottom = layMax(maxBottom, sh + m.descent);
                 continue;
             }
             VMetrics m = lineMetrics(tb->style, stFont(st, tb));
-            float sh = shiftFor(I, tb);
+            double sh = shiftFor(I, tb);
             /* text directly inside an inline uses the inline's metrics; the text box shares its style */
-            minTop = cscdMinf(minTop, sh - m.ascent);
-            maxBottom = cscdMaxf(maxBottom, sh + m.descent);
+            minTop = layMin(minTop, sh - m.ascent);
+            maxBottom = layMax(maxBottom, sh + m.descent);
         } else if (it->t == IT_OPEN) {
             CscdLayoutBox* ib = it->box;
             VMetrics m = lineMetrics(ib->style, stFont(st, ib));
-            float sh = shiftFor(I, ib);
-            minTop = cscdMinf(minTop, sh - m.ascent);
-            maxBottom = cscdMaxf(maxBottom, sh + m.descent);
+            double sh = shiftFor(I, ib);
+            minTop = layMin(minTop, sh - m.ascent);
+            maxBottom = layMax(maxBottom, sh + m.descent);
         } else if (it->t == IT_ATOMIC) {
             CscdLayoutBox* ab = it->box;
-            float H = ab->h + ab->margin[0] + ab->margin[2];
-            float B = ab->hasBaseline && !(cscdStyleClipsOverflow(ab->style) && ab->kind == CSCD_BOX_BLOCK) ? ab->lastBaseline - (ab->y - ab->margin[0]) : H;
+            double H = ab->h + ab->margin[0] + ab->margin[2];
+            double B = ab->hasBaseline && !(cscdStyleClipsOverflow(ab->style) && ab->kind == CSCD_BOX_BLOCK) ? ab->lastBaseline - (ab->y - ab->margin[0]) : H;
             if (ab->kind == CSCD_BOX_FLEX || ab->kind == CSCD_BOX_GRID || ab->kind == CSCD_BOX_TABLE) B = ab->hasBaseline ? ab->baseline - (ab->y - ab->margin[0]) : H;
-            float sh = shiftFor(I, ab);
+            double sh = shiftFor(I, ab);
             const CscdComputedStyle* as = ab->style;
             Chain ch = stChain(st, ab);
             const CscdComputedStyle* ps = !ch.n ? bs : CHAIN_BOX(st, ch, ch.n - 1)->style;
             CscdFont pf = !ch.n ? I->rootFont : *stFont(st, CHAIN_BOX(st, ch, ch.n - 1));
-            float t;
+            double t;
             switch (as->verticalAlign) {
             case CSCD_VA_MIDDLE: t = sh - cscdFontXHeight(&pf) / 2 - H / 2; break;
             case CSCD_VA_TEXT_TOP: t = sh - cscdFontAscent(&pf); break;
             case CSCD_VA_TEXT_BOTTOM: t = sh + cscdFontDescent(&pf) - H; break;
             case CSCD_VA_SUB: t = sh + ps->font.size * 0.2f - B; break;
             case CSCD_VA_SUPER: t = sh - ps->font.size * 0.34f - B; break;
-            case CSCD_VA_LENGTH: t = sh - cscdLenResolve(as->verticalAlignLength, cscdStyleLineHeight(as, cscdFontAscent(&pf), cscdFontDescent(&pf)), 0) - B; break;
+            case CSCD_VA_LENGTH: t = sh - layLen(as->verticalAlignLength, layLineHeight(as, cscdFontAscent(&pf), cscdFontDescent(&pf)), 0) - B; break;
             case CSCD_VA_TOP: case CSCD_VA_BOTTOM: {
                 Aligned a = {k, H, as->verticalAlign == CSCD_VA_TOP};
                 cscdVecPush(&edgeAligned, a);
@@ -1946,17 +1952,17 @@ static void finishLine(Inl* I, bool lastLine) {
             default: t = sh - B; break;
             }
             atomTop->items[k] = t;
-            minTop = cscdMinf(minTop, t);
-            maxBottom = cscdMaxf(maxBottom, t + H);
+            minTop = layMin(minTop, t);
+            maxBottom = layMax(maxBottom, t + H);
         }
     }
-    float lineH = maxBottom - minTop;
-    for (size_t k = 0; k < edgeAligned.len; ++k) lineH = cscdMaxf(lineH, edgeAligned.items[k].h);
-    float baselineY = I->y - minTop;
+    double lineH = maxBottom - minTop;
+    for (size_t k = 0; k < edgeAligned.len; ++k) lineH = layMax(lineH, edgeAligned.items[k].h);
+    double baselineY = I->y - minTop;
     /* horizontal alignment */
-    float extra = I->lineAvail - lineW;
-    float offset = 0;
-    float justify = 0;
+    double extra = I->lineAvail - lineW;
+    double offset = 0;
+    double justify = 0;
     uint8_t a = I->align;
     const bool lastByRule = lastLine && bs->alignLastSet; /* text-align-last */
     if (lastByRule) a = bs->textAlignLast;
@@ -1976,7 +1982,7 @@ static void finishLine(Inl* I, bool lastLine) {
     }
     if (offset < 0 && I->rootWraps) offset = 0;
     /* place */
-    float jx = 0; /* accumulated justification */
+    double jx = 0; /* accumulated justification */
     CscdU64Map ranges = {0}; /* inline box -> x extent */
     CscdU64Map opened = {0}, closed = {0};
     CscdLayoutBox* lastFragBox = NULL;
@@ -1985,13 +1991,13 @@ static void finishLine(Inl* I, bool lastLine) {
     for (size_t k = 0; k < line->len; ++k) {
         Placed* p = &line->items[k];
         const InlineItem* it = p->it;
-        float px = I->lineLeft + offset + p->x + jx;
+        double px = laySnap(I->lineLeft + offset + p->x + jx);
         if (it->t == IT_TEXT) {
             CscdLayoutBox* tb = it->box;
             CscdSv txt = cscdStrSv(stProcessed(st, tb));
             int sp = 0;
             if (justify > 0) for (size_t q = p->start; q < p->end; ++q) sp += txt.ptr[q] == ' ';
-            float w = p->w + sp * justify;
+            double w = laySnap(p->w + sp * justify);
             if (p->end > p->start) {
                 const bool rtl = p->level & 1;
                 CscdTextFrag* lastFrag = haveLastFrag ? &lastFragBox->textFrags.items[lastFragIdx] : NULL;
@@ -1999,18 +2005,18 @@ static void finishLine(Inl* I, bool lastLine) {
                     cscdStrAppend(&lastFrag->text, cscdSvSub(txt, p->start, p->end - p->start));
                     if (p->hyphen) cscdStrAppendChar(&lastFrag->text, '-');
                     lastFrag->end = p->end;
-                    lastFrag->width = px + w - lastFrag->x;
+                    lastFrag->width = laySnapF(px + w - lastFrag->x);
                 } else {
                     CscdTextFrag f;
                     memset(&f, 0, sizeof f);
                     f.x = px;
-                    f.baseline = baselineY + shiftFor(I, tb);
-                    f.width = w;
-                    f.top = I->y;
-                    f.height = lineH;
+                    f.baseline = laySnap(baselineY + shiftFor(I, tb));
+                    f.width = (float)w;
+                    f.top = laySnap(I->y);
+                    f.height = laySnapF(lineH);
                     f.text = cscdStrDup(cscdSvSub(txt, p->start, p->end - p->start));
                     if (p->hyphen) cscdStrAppendChar(&f.text, '-');
-                    f.justify = justify;
+                    f.justify = (float)justify;
                     f.start = p->start;
                     f.end = p->end;
                     f.rtl = rtl;
@@ -2026,45 +2032,45 @@ static void finishLine(Inl* I, bool lastLine) {
         } else if (it->t == IT_OPEN) {
             CscdLayoutBox* ib = it->box;
             cscdU64MapPut(&opened, CSCD_PKEY(ib), NULL);
-            float x0 = px + ib->margin[3];
+            double x0 = px + ib->margin[3];
             bool inserted = false;
             CscdMapVal* r = cscdU64MapPut(&ranges, CSCD_PKEY(ib), &inserted);
-            if (inserted) { r->f[0] = x0; r->f[1] = x0 + ib->border[3] + ib->padding[3]; }
-            else r->f[0] = cscdMinf(r->f[0], x0);
+            if (inserted) { r->f[0] = (float)x0; r->f[1] = (float)(x0 + ib->border[3] + ib->padding[3]); }
+            else r->f[0] = (float)layMin(r->f[0], x0);
             /* parents contain this inline's margin box too */
             Chain ch = stChain(st, ib);
             for (uint32_t q = 0; q < ch.n; ++q) {
                 CscdLayoutBox* anc = CHAIN_BOX(st, ch, q);
                 if (anc == ib) continue;
                 CscdMapVal* ra = cscdU64MapPut(&ranges, CSCD_PKEY(anc), &inserted);
-                if (inserted) { ra->f[0] = px; ra->f[1] = px + p->w; }
-                else ra->f[1] = cscdMaxf(ra->f[1], px + p->w);
+                if (inserted) { ra->f[0] = (float)px; ra->f[1] = (float)(px + p->w); }
+                else ra->f[1] = (float)layMax(ra->f[1], px + p->w);
             }
             haveLastFrag = false;
         } else if (it->t == IT_CLOSE) {
             CscdLayoutBox* ib = it->box;
             cscdU64MapPut(&closed, CSCD_PKEY(ib), NULL);
-            float x1 = px + p->w - ib->margin[1];
+            double x1 = px + p->w - ib->margin[1];
             bool inserted = false;
             CscdMapVal* r = cscdU64MapPut(&ranges, CSCD_PKEY(ib), &inserted);
-            if (inserted) { r->f[0] = px; r->f[1] = x1; }
-            else r->f[1] = cscdMaxf(r->f[1], x1);
+            if (inserted) { r->f[0] = (float)px; r->f[1] = (float)x1; }
+            else r->f[1] = (float)layMax(r->f[1], x1);
             Chain ch = stChain(st, ib);
             for (uint32_t q = 0; q < ch.n; ++q) {
                 CscdLayoutBox* anc = CHAIN_BOX(st, ch, q);
                 if (anc == ib) continue;
                 CscdMapVal* ra = cscdU64MapGet(&ranges, CSCD_PKEY(anc));
-                if (ra) ra->f[1] = cscdMaxf(ra->f[1], px + p->w);
+                if (ra) ra->f[1] = (float)layMax(ra->f[1], px + p->w);
             }
             haveLastFrag = false;
         } else if (it->t == IT_ATOMIC) {
             CscdLayoutBox* ab = it->box;
-            float mt = 0;
+            double mt = 0;
             bool edge = false;
             for (size_t q = 0; q < edgeAligned.len; ++q)
                 if (edgeAligned.items[q].idx == k) { edge = true; mt = edgeAligned.items[q].top ? I->y : I->y + lineH - edgeAligned.items[q].h; }
             if (!edge) mt = baselineY + atomTop->items[k];
-            float tx = px + ab->margin[3], ty = mt + ab->margin[0];
+            double tx = px + ab->margin[3], ty = mt + ab->margin[0];
             cscdBoxShift(ab, tx - ab->x, ty - ab->y);
             Chain ch = stChain(st, ab);
             for (uint32_t q = 0; q < ch.n; ++q) extendRange(&ranges, CHAIN_BOX(st, ch, q), px, px + p->w);
@@ -2081,23 +2087,27 @@ static void finishLine(Inl* I, bool lastLine) {
         CscdLayoutBox* ib = (CscdLayoutBox*)(uintptr_t)s->key;
         if (ib->kind != CSCD_BOX_INLINE) continue;
         CscdFont f = *stFont(st, ib);
-        float bl = baselineY + shiftFor(I, ib);
+        double bl = baselineY + shiftFor(I, ib);
         CscdInlineFrag fr;
-        float t = bl - cscdFontAscent(&f) - ib->padding[0] - ib->border[0];
-        float bt = bl + cscdFontDescent(&f) + ib->padding[2] + ib->border[2];
-        float x0 = s->val.f[0], x1 = s->val.f[1];
+        double t = bl - cscdFontAscent(&f) - ib->padding[0] - ib->border[0];
+        double bt = bl + cscdFontDescent(&f) + ib->padding[2] + ib->border[2];
+        double x0 = s->val.f[0], x1 = s->val.f[1];
         fr.first = cscdU64MapGet(&opened, s->key) != NULL;
         fr.last = cscdU64MapGet(&closed, s->key) != NULL;
-        fr.rect = cscdRect(x0, t, cscdMaxf(0.f, x1 - x0), bt - t);
+        x0 = laySnap(x0);
+        x1 = laySnap(x1);
+        t = laySnap(t);
+        bt = laySnap(bt);
+        fr.rect = cscdBoxRect(x0, t, layMax(0.f, x1 - x0), bt - t);
         cscdVecPush(&ib->inlineFrags, fr);
     }
     cscdU64MapFree(&ranges);
     cscdU64MapFree(&opened);
     cscdU64MapFree(&closed);
     cscdVecFree(&edgeAligned);
-    CscdLineInfo li = {I->y, lineH, baselineY, I->lineLeft + offset, lineW + jx};
+    CscdLineInfo li = {laySnap(I->y), laySnapF(lineH), laySnap(baselineY), laySnap(I->lineLeft + offset), laySnapF(lineW + jx)};
     cscdVecPush(&I->b->lines, li);
-    I->y += lineH;
+    I->y = laySnap(I->y + lineH);
     ++I->lineCount;
     I->firstLine = false;
     line->len = 0;
@@ -2148,7 +2158,7 @@ static bool lineHasOpportunity(Inl* I) {
 }
 
 /* text-overflow: ellipsis on the line at top */
-static void ellipsisCut(Inl* I, CscdLayoutBox* p, float lineTop, float limit) {
+static void ellipsisCut(Inl* I, CscdLayoutBox* p, double lineTop, double limit) {
     static const char* ell = "\xE2\x80\xA6";
     for (size_t i = 0; i < p->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(p, i);
@@ -2157,7 +2167,7 @@ static void ellipsisCut(Inl* I, CscdLayoutBox* p, float lineTop, float limit) {
         for (size_t k = 0; k < c->textFrags.len; ++k) {
             CscdTextFrag* f = &c->textFrags.items[k];
             if (f->top != lineTop) continue;
-            float ew = layMeasure(&c->font, cscdSv(ell), 0, 0);
+            double ew = layMeasure(&c->font, cscdSv(ell), 0, 0);
             if (f->x >= limit - ew) { cscdStrClear(&f->text); f->width = 0; continue; }
             if (f->x + f->width <= limit) continue;
             /* shortened to the longest run of whole characters that fits with the ellipsis, found by
@@ -2168,7 +2178,7 @@ static void ellipsisCut(Inl* I, CscdLayoutBox* p, float lineTop, float limit) {
             size_t lo = 0, hi = starts.len; /* starts[lo] fits (or is 0); none from hi on was found to */
             while (hi - lo > 1) {
                 const size_t mid = (lo + hi) / 2;
-                const float w = layMeasure(&c->font, cscdSvMake(f->text.ptr, starts.items[mid]), c->style->letterSpacing, 0);
+                const double w = layMeasure(&c->font, cscdSvMake(f->text.ptr, starts.items[mid]), c->style->letterSpacing, 0);
                 if (f->x + w + ew <= limit) lo = mid;
                 else hi = mid;
             }
@@ -2177,12 +2187,12 @@ static void ellipsisCut(Inl* I, CscdLayoutBox* p, float lineTop, float limit) {
             cscdStrAppendC(&s, ell);
             cscdStrFree(&f->text);
             f->text = s;
-            f->width = layMeasure(&c->font, cscdStrSv(&f->text), c->style->letterSpacing, 0);
+            f->width = (float)layMeasure(&c->font, cscdStrSv(&f->text), c->style->letterSpacing, 0);
         }
     }
 }
 
-static void findLastFrag(CscdLayoutBox* p, float lastTop, CscdLayoutBox** lastBox, size_t* lastIdx) {
+static void findLastFrag(CscdLayoutBox* p, double lastTop, CscdLayoutBox** lastBox, size_t* lastIdx) {
     for (size_t i = 0; i < p->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(p, i);
         if (c->kind == CSCD_BOX_INLINE) { findLastFrag(c, lastTop, lastBox, lastIdx); continue; }
@@ -2249,7 +2259,7 @@ static void bidiParagraph(Inl* I, CscdU32Vec* cps, CpItemVec* at) {
     cscdVecFree(&lv);
 }
 
-float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
+double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
     InlineState* st = leaseState();
     Inl I;
     memset(&I, 0, sizeof I);
@@ -2333,7 +2343,7 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
     b->font = I.rootFont;
     I.strut = lineMetrics(bs, &I.rootFont);
     I.strutH = I.strut.ascent + I.strut.descent;
-    I.textIndent = cscdLenResolve(bs->textIndent, I.cw, 0);
+    I.textIndent = layLen(bs->textIndent, I.cw, 0);
     I.align = bs->textAlign;
     I.rootWraps = wraps(bs->whiteSpace);
     I.clamp = bs->lineClamp;
@@ -2365,12 +2375,12 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
                 } else if (!I.line.len || I.lineX == 0) {
                     /* floats may leave room further down */
                     if (I.hasFloats && fc) {
-                        float l, r;
+                        double l, r;
                         fcBand(fc, I.y, I.strutH, I.left, I.left + I.cw, &l, &r);
                         if (r - l < I.cw && it->wordWidth > I.lineAvail) {
-                            float next = 1e30f;
+                            double next = 1e30f;
                             for (size_t q = 0; q < fc->floats.len; ++q)
-                                if (cscdRectBottom(fc->floats.items[q].r) > I.y) next = cscdMinf(next, cscdRectBottom(fc->floats.items[q].r));
+                                if (cscdBoxRectBottom(fc->floats.items[q].r) > I.y) next = layMin(next, cscdBoxRectBottom(fc->floats.items[q].r));
                             if (next < 1e29f) { I.y = next; startLine(&I); fits = it->wordWidth <= I.lineAvail; }
                         }
                     }
@@ -2386,14 +2396,14 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
                     while (q < it->end) {
                         size_t nq = q;
                         cscdUtf8Next(txt, &nq);
-                        float w = layMeasure(&f, cscdSvSub(txt, pos, nq - pos), ts->letterSpacing, ts->wordSpacing);
+                        double w = layMeasure(&f, cscdSvSub(txt, pos, nq - pos), ts->letterSpacing, ts->wordSpacing);
                         if (I.lineX + w > I.lineAvail + 0.01f && lastFit > pos) break;
                         lastFit = nq;
                         q = nq;
                         if (I.lineX + w > I.lineAvail + 0.01f) break;
                     }
                     if (lastFit == pos) { size_t nq = pos; cscdUtf8Next(txt, &nq); lastFit = nq; }
-                    float w = layMeasure(&f, cscdSvSub(txt, pos, lastFit - pos), ts->letterSpacing, ts->wordSpacing);
+                    double w = layMeasure(&f, cscdSvSub(txt, pos, lastFit - pos), ts->letterSpacing, ts->wordSpacing);
                     cscdVecPush(&I.line, placed(it, I.lineX, w, pos, lastFit));
                     I.lineX += w;
                     pos = lastFit;
@@ -2408,7 +2418,7 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
         case IT_ATOMIC: {
             CscdLayoutBox* ab = it->box;
             layAtomicInline(L, ab, I.cw, -1);
-            float w = ab->w + ab->margin[1] + ab->margin[3];
+            double w = ab->w + ab->margin[1] + ab->margin[3];
             it->width = it->wordWidth = w;
             bool fits = I.lineX + w <= I.lineAvail + 0.01f;
             if (!fits && I.rootWraps && lineHasOpportunity(&I)) breakLine(&I);
@@ -2431,7 +2441,7 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
                 /* fits beside the current line? */
                 CscdLayoutBox* f = it->box;
                 layFloat(L, f, fc, I.y, I.left, I.left + I.cw, I.cw);
-                float fw = f->w + f->margin[1] + f->margin[3];
+                double fw = f->w + f->margin[1] + f->margin[3];
                 if (I.lineX + fw <= I.lineAvail) {
                     bool isLeft = f->style->floating == CSCD_FLOAT_LEFT;
                     if (isLeft) I.lineLeft += fw; /* positions are recomputed at finish */
@@ -2472,14 +2482,14 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
     }
     if (I.clamp > 0 && I.stopped && b->lines.len) {
         /* ellipsis at the end of the last kept line */
-        float lastTop = cscdVecLast(&b->lines).top;
+        double lastTop = cscdVecLast(&b->lines).top;
         CscdLayoutBox* lastBox = NULL;
         size_t lastIdx = 0;
         findLastFrag(b, lastTop, &lastBox, &lastIdx);
         if (lastBox) {
             static const char* ell = "\xE2\x80\xA6";
             CscdTextFrag* lastF = &lastBox->textFrags.items[lastIdx];
-            float ew = layMeasure(&lastBox->font, cscdSv(ell), 0, 0);
+            double ew = layMeasure(&lastBox->font, cscdSv(ell), 0, 0);
             CscdStr s = cscdStrCopy(&lastF->text);
             while (s.len && lastF->x + layMeasure(&lastBox->font, cscdStrSv(&s), 0, 0) + ew > I.left + I.cw) {
                 size_t q = s.len - 1;
@@ -2490,7 +2500,7 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
             cscdStrAppendC(&s, ell);
             cscdStrFree(&lastF->text);
             lastF->text = s;
-            lastF->width = layMeasure(&lastBox->font, cscdStrSv(&lastF->text), 0, 0);
+            lastF->width = (float)layMeasure(&lastBox->font, cscdStrSv(&lastF->text), 0, 0);
         }
     }
 
@@ -2499,7 +2509,7 @@ float layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
         b->lastBaseline = cscdVecLast(&b->lines).baseline;
         b->hasBaseline = true;
     }
-    float result = I.y - I.top;
+    double result = I.y - I.top;
     cscdVecFree(&I.line);
     cscdVecFree(&I.pendingFloats);
     cscdVecFree(&I.atomLevel);
@@ -2546,7 +2556,7 @@ static bool topCollapsible(const CscdLayoutBox* b) {
 }
 
 /* The margins that collapse at the top of b: its own and those of its first in-flow child chain. */
-static MarginSet collapsedTop(CscdLayoutBox* b, float cbW) {
+static MarginSet collapsedTop(CscdLayoutBox* b, double cbW) {
     MarginSet m = {0, 0};
     layResolveEdges(b, cbW);
     msAdd(&m, b->margin[0]);
@@ -2563,26 +2573,27 @@ static MarginSet collapsedTop(CscdLayoutBox* b, float cbW) {
     return m;
 }
 
-void layFloat(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float y, float left, float right, float cbW) {
+void layFloat(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double y, double left, double right, double cbW) {
     BlockInput in = blockInput();
     in.cbW = cbW;
     in.shrinkToFit = true;
     in.availW = right - left;
     layBlock(L, b, &in);
-    float mw = b->w + b->margin[1] + b->margin[3], mh = b->h + b->margin[0] + b->margin[2];
-    if (b->style->clear != CSCD_CLEAR_NONE && fc) y = cscdMaxf(y, fcClearY(fc, (CscdClear)b->style->clear));
-    CscdPoint p = fc ? fcPlace(fc, mw, mh, y, left, right, b->style->floating == CSCD_FLOAT_LEFT) : cscdPoint(left, y);
+    double mw = b->w + b->margin[1] + b->margin[3], mh = b->h + b->margin[0] + b->margin[2];
+    if (b->style->clear != CSCD_CLEAR_NONE && fc) y = layMax(y, fcClearY(fc, (CscdClear)b->style->clear));
+    LayPoint p = {left, y};
+    if (fc) p = fcPlace(fc, mw, mh, y, left, right, b->style->floating == CSCD_FLOAT_LEFT);
     cscdBoxShift(b, p.x + b->margin[3] - b->x, p.y + b->margin[0] - b->y);
     /* shape-outside: the lines wrap around the shape (in its reference box: the margin box unless named) */
     b->shape.len = 0;
     if (fc && b->style->shapeOutside.len) {
         const CscdSv sv = cscdStrSv(&b->style->shapeOutside);
-        CscdRect ref = cscdRect(p.x, p.y, mw, mh);
-        if (cscdSvFind(sv, CSCD_SV("border-box"), 0) != CSCD_NPOS) ref = cscdBoxBorderBox(b);
-        else if (cscdSvFind(sv, CSCD_SV("padding-box"), 0) != CSCD_NPOS) ref = cscdBoxPaddingBox(b);
-        else if (cscdSvFind(sv, CSCD_SV("content-box"), 0) != CSCD_NPOS) ref = cscdBoxContentBox(b);
+        LayRect ref = cscdBoxRect(p.x, p.y, mw, mh);
+        if (cscdSvFind(sv, CSCD_SV("border-box"), 0) != CSCD_NPOS) ref = cscdBoxBorderBoxD(b);
+        else if (cscdSvFind(sv, CSCD_SV("padding-box"), 0) != CSCD_NPOS) ref = cscdBoxPaddingBoxD(b);
+        else if (cscdSvFind(sv, CSCD_SV("content-box"), 0) != CSCD_NPOS) ref = cscdBoxContentBoxD(b);
         CscdPath path = {0};
-        if (!cscdBasicShapePath(sv, ref, &path)) cscdPathAddRect(&path, ref); /* (a box keyword alone: that box) */
+        if (!cscdBasicShapePath(sv, cscdBoxRectF(ref), &path)) cscdPathAddRect(&path, cscdBoxRectF(ref)); /* (a box keyword alone: that box) */
         CscdPolyVec polys = {0};
         cscdFlattenInto(&path, cscdMatrix(1, 0, 0, 1, 0, 0), 0.5f, &polys);
         for (size_t i = 0; i < polys.len; ++i) cscdVecAppend(&b->shape, polys.items[i].items, polys.items[i].len);
@@ -2596,7 +2607,7 @@ void layFloat(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float y, float left, 
     }
 }
 
-void layAtomicInline(Layouter* L, CscdLayoutBox* b, float cbW, float cbH) {
+void layAtomicInline(Layouter* L, CscdLayoutBox* b, double cbW, double cbH) {
     BlockInput in = blockInput();
     in.cbW = cbW;
     in.cbH = cbH;
@@ -2607,57 +2618,57 @@ void layAtomicInline(Layouter* L, CscdLayoutBox* b, float cbW, float cbH) {
     cscdBoxShift(b, -b->x + b->margin[3], -b->y + b->margin[0]);
 }
 
-void layApplyRelative(CscdLayoutBox* b, float cbW, float cbH) {
+void layApplyRelative(CscdLayoutBox* b, double cbW, double cbH) {
     const CscdComputedStyle* s = b->style;
     if (s->position != CSCD_POS_RELATIVE) return;
-    float dx = 0, dy = 0;
-    if (!cscdLenIsAuto(s->left)) dx = cscdLenResolve(s->left, cbW, 0);
-    else if (!cscdLenIsAuto(s->right)) dx = -cscdLenResolve(s->right, cbW, 0);
-    if (!cscdLenIsAuto(s->top) && !(cscdLenHasPercent(s->top) && cbH < 0)) dy = cscdLenResolve(s->top, cbH, 0);
-    else if (!cscdLenIsAuto(s->bottom) && !(cscdLenHasPercent(s->bottom) && cbH < 0)) dy = -cscdLenResolve(s->bottom, cbH, 0);
+    double dx = 0, dy = 0;
+    if (!cscdLenIsAuto(s->left)) dx = layLen(s->left, cbW, 0);
+    else if (!cscdLenIsAuto(s->right)) dx = -layLen(s->right, cbW, 0);
+    if (!cscdLenIsAuto(s->top) && !(cscdLenHasPercent(s->top) && cbH < 0)) dy = layLen(s->top, cbH, 0);
+    else if (!cscdLenIsAuto(s->bottom) && !(cscdLenHasPercent(s->bottom) && cbH < 0)) dy = -layLen(s->bottom, cbH, 0);
     cscdBoxShift(b, dx, dy);
 }
 
 void layComputeOverflow(CscdLayoutBox* b) {
-    CscdRect o = cscdBoxBorderBox(b);
-    CscdRect content = cscdBoxPaddingBox(b);
+    LayRect o = cscdBoxBorderBoxD(b);
+    LayRect content = cscdBoxPaddingBoxD(b);
     bool clip = b->style && cscdStyleClipsOverflow(b->style);
     for (size_t i = 0; i < b->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(b, i);
         if (c->kind == CSCD_BOX_TEXT) {
             for (size_t k = 0; k < c->textFrags.len; ++k) {
                 const CscdTextFrag* f = &c->textFrags.items[k];
-                content = cscdRectUnite(content, cscdRect(f->x, f->top, cscdMaxf(f->width, 0.01f), f->height));
+                content = cscdBoxRectUnite(content, cscdBoxRect(f->x, f->top, layMax(f->width, 0.01f), f->height));
             }
             continue;
         }
         if (c->kind == CSCD_BOX_INLINE) {
-            for (size_t k = 0; k < c->inlineFrags.len; ++k) content = cscdRectUnite(content, c->inlineFrags.items[k].rect);
-            content = cscdRectUnite(content, c->overflow);
+            for (size_t k = 0; k < c->inlineFrags.len; ++k) content = cscdBoxRectUnite(content, c->inlineFrags.items[k].rect);
+            content = cscdBoxRectUnite(content, c->overflow);
             continue;
         }
-        CscdRect cr = cscdBoxBorderBox(c);
-        if (!(c->style && cscdStyleClipsOverflow(c->style))) cr = cscdRectUnite(cr, c->overflow);
+        LayRect cr = cscdBoxBorderBoxD(c);
+        if (!(c->style && cscdStyleClipsOverflow(c->style))) cr = cscdBoxRectUnite(cr, c->overflow);
         /* the end margins of in-flow children count for scrolling */
-        cr.w += cscdMaxf(0.f, c->margin[1]);
-        cr.h += cscdMaxf(0.f, c->margin[2]);
-        content = cscdRectUnite(content, cr);
+        cr.w += layMax(0.f, c->margin[1]);
+        cr.h += layMax(0.f, c->margin[2]);
+        content = cscdBoxRectUnite(content, cr);
     }
     if (clip) {
         /* scroll extents include the end padding */
-        b->overflow = cscdRectUnite(content, cscdBoxPaddingBox(b));
-        CscdRect inner = cscdBoxPaddingBox(b);
-        if (cscdRectRight(b->overflow) > cscdRectRight(inner)) b->overflow.w += b->padding[1];
-        if (cscdRectBottom(b->overflow) > cscdRectBottom(inner)) b->overflow.h += b->padding[2];
+        b->overflow = cscdBoxRectUnite(content, cscdBoxPaddingBoxD(b));
+        LayRect inner = cscdBoxPaddingBoxD(b);
+        if (cscdBoxRectRight(b->overflow) > cscdBoxRectRight(inner)) b->overflow.w += b->padding[1];
+        if (cscdBoxRectBottom(b->overflow) > cscdBoxRectBottom(inner)) b->overflow.h += b->padding[2];
     } else {
-        b->overflow = cscdRectUnite(o, content);
+        b->overflow = cscdBoxRectUnite(o, content);
     }
 }
 
-static float layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float cbH, MarginSet* trailing, bool topCollapsed) {
-    float cx = cscdBoxContentX(b), cw = cscdBoxContentW(b);
-    float top = cscdBoxContentY(b);
-    float cursor = top;
+static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH, MarginSet* trailing, bool topCollapsed) {
+    double cx = cscdBoxContentX(b), cw = cscdBoxContentW(b);
+    double top = cscdBoxContentY(b);
+    double cursor = top;
     MarginSet pending = {0, 0};
     bool first = true;
     bool firstBaselineSet = false;
@@ -2684,9 +2695,9 @@ static float layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float
         bool skip = first && topCollapsed;
         MarginSet ms = pending;
         if (!skip) msAddSet(&ms, ct);
-        float y = cursor + (skip ? 0 : msValue(ms));
+        double y = cursor + (skip ? 0 : msValue(ms));
         if (cs->clear != CSCD_CLEAR_NONE && fc) {
-            float clr = fcClearY(fc, (CscdClear)cs->clear);
+            double clr = fcClearY(fc, (CscdClear)cs->clear);
             if (clr > y) { y = clr; ms.pos = ms.neg = 0; }
         }
         BlockInput in = blockInput();
@@ -2700,7 +2711,7 @@ static float layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float
         bool bfcChild = cs->overflowX != CSCD_OVERFLOW_VISIBLE || cs->display == CSCD_DISPLAY_FLOW_ROOT || c->kind == CSCD_BOX_FLEX ||
                         c->kind == CSCD_BOX_GRID || c->kind == CSCD_BOX_TABLE || c->kind == CSCD_BOX_REPLACED;
         if (bfcChild && fc && fc->floats.len) {
-            float l, r;
+            double l, r;
             fcBand(fc, y, 1, cx, cx + cw, &l, &r);
             if (l > cx || r < cx + cw) { in.x = l; in.cbW = r - l; in.availW = r - l; }
         }
@@ -2723,7 +2734,7 @@ static float layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float
     return cursor - top;
 }
 
-float layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, float cbH) {
+double layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH) {
     switch (b->kind) {
     case CSCD_BOX_FLEX: return layFlex(L, b, cbH);
     case CSCD_BOX_GRID: return layGrid(L, b, cbH);
@@ -2769,7 +2780,7 @@ static bool heightSensitive(Layouter* L, CscdLayoutBox* b) {
 
 /* What a block layout depends on besides its position (and the floats around it, which a box with a
  * formatting context of its own does not see). */
-static void memoKey(const CscdLayoutBox* b, const BlockInput* in, float key[8]) {
+static void memoKey(const CscdLayoutBox* b, const BlockInput* in, double key[8]) {
     key[0] = in->cbW;
     key[1] = ownHeightPercent(b) ? in->cbH : 0;
     key[2] = in->forcedW;
@@ -2784,31 +2795,36 @@ static void forgetLayout(CscdLayoutBox* b) {
     for (; b; b = b->parent) b->memoPass = 0;
 }
 
-/* (a place on the grid of 1/64 px that floats hold exactly, far enough from the limit that a shift keeps it there) */
-static bool onGrid(float v) {
-    const float s = v * 64;
-    return fabsf(v) < 131072 && s == floorf(s);
+/* (a place on the grid of layout units, where doubles hold it and its sums exactly: within twice the range of layout
+ * units, 2^26 px, far below the 2^46 px where they would stop) */
+static inline bool onGrid(double v) {
+    const double s = v * 64; /* (within the range: a whole number of 1/64 px fits an int64, converted without a call) */
+    return s <= 128 * LAY_MAX && s >= -128 * LAY_MAX && s == (double)(int64_t)s;
 }
 
 /* Whether b and all in it, shifted by (dx, dy), land exactly where laying them out there would put them: every place in
  * them, and the shift, on the 1/64 px grid (font metrics, whole pixels and halves are): the sums that make places then
  * round nowhere, here or there. (A sticky box is placed by what scrolls, a shape is not shifted: laid out again.) */
-static bool shiftsExactlyIn(const CscdLayoutBox* b, float dx, float dy);
+static bool shiftsExactlyIn(const CscdLayoutBox* b, double dx, double dy);
 
 /* (a place on the grid of 1/64 px that floats hold exactly, its shift too: an axis not shifted is not looked at) */
-#define GX(v) (dx == 0 || (onGrid(v) && onGrid((v) + dx)))
-#define GY(v) (dy == 0 || (onGrid(v) && onGrid((v) + dy)))
+/* (the shift is on the grid: v on it, v + d is too, and exact while both are in the range) */
+#define GX(v) (dx == 0 || (onGrid(v) && fabs((v) + dx) <= 2 * LAY_MAX))
+#define GY(v) (dy == 0 || (onGrid(v) && fabs((v) + dy) <= 2 * LAY_MAX))
 
 /* Whether b and all in it, shifted by (dx, dy), land exactly where laying them out there would put them: every place in
  * them along a shifted axis, and the shift, on the 1/64 px grid (font metrics, whole pixels and halves are): the sums
  * that make those places then round nowhere, here or there. (A sticky box is placed by what scrolls, a shape is not
  * shifted: laid out again.) */
-static bool shiftsExactly(const CscdLayoutBox* b, float dx, float dy) {
-    if ((dx != 0 && !onGrid(dx)) || (dy != 0 && !onGrid(dy))) return false;
-    return shiftsExactlyIn(b, dx, dy);
+static bool shiftsExactly(CscdLayoutBox* b, double dx, double dy) {
+    if ((dx != 0 && !onGrid(dx)) || (dy != 0 && !onGrid(dy)) || fabs(dx) > 2 * LAY_MAX || fabs(dy) > 2 * LAY_MAX) return false;
+    if (dx == 0 && dy == 0) return true;
+    /* (all of it looked at once after it is laid out; then every move keeps it on the grid: each later one is free) */
+    if (!b->gridState) b->gridState = shiftsExactlyIn(b, 1, 1) ? 1 : 2;
+    return b->gridState == 1;
 }
 
-static bool shiftsExactlyIn(const CscdLayoutBox* b, float dx, float dy) {
+static bool shiftsExactlyIn(const CscdLayoutBox* b, double dx, double dy) {
     if (cscdStackLow() || b->shape.len || (b->style && b->style->position == CSCD_POS_STICKY)) return false;
     if (!GX(b->x) || !GY(b->y) || !GX(b->overflow.x) || !GY(b->overflow.y)) return false;
     if (b->hasBaseline && (!GY(b->baseline) || !GY(b->lastBaseline))) return false;
@@ -2831,14 +2847,14 @@ static bool shiftsExactlyIn(const CscdLayoutBox* b, float dx, float dy) {
 #undef GX
 #undef GY
 
-static bool memoMatches(Layouter* L, CscdLayoutBox* b, const float key[8], const BlockInput* in) {
+static bool memoMatches(Layouter* L, CscdLayoutBox* b, const double key[8], const BlockInput* in) {
     if (!L->pass || (b->memoPass != L->pass && b->memoPass != MEMO_KEPT)) return false;
     /* A box kept from the layout before is taken as it was where it was. Moved, its boxes would be shifted by the
      * difference, which floats may round otherwise than laying them out there (a glyph or an edge a level off from the
      * same page laid out from nothing): it is shifted only when nothing rounds (shiftsExactly), else laid out again.
      * (Within a layout, every pass shifts as the one from nothing does.) */
     if (b->memoPass == MEMO_KEPT && (in->x != b->memoInX || in->y != b->memoInY)) {
-        const float x = b->memoX + in->x - b->memoInX, y = b->memoY + in->y - b->memoInY;
+        const double x = b->memoX + in->x - b->memoInX, y = b->memoY + in->y - b->memoInY;
         if (!shiftsExactly(b, x - b->x, y - b->y)) return false;
     }
     /* (one without a formatting context of its own: only with no floats around it now either) */
@@ -2847,7 +2863,7 @@ static bool memoMatches(Layouter* L, CscdLayoutBox* b, const float key[8], const
         if (i != 3 && key[i] != b->memoIn[i]) return false;
     if (key[3] == b->memoIn[3]) return true;
     /* laid out at its own height before, now at that height imposed */
-    return b->memoIn[3] < 0 && in->forcedH >= 0 && fabsf(in->forcedH - b->memoH) < 0.01f && !heightSensitive(L, b);
+    return b->memoIn[3] < 0 && in->forcedH >= 0 && fabs(in->forcedH - b->memoH) < 0.01f && !heightSensitive(L, b);
 }
 
 static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* in);
@@ -2889,31 +2905,41 @@ static MarginSet layVertical(Layouter* L, CscdLayoutBox* b, const BlockInput* in
     li.positionedByCaller = true;
     b->style = logi;
     layBlockFresh(L, b, &li);
-    const float logicalX = b->x, logicalY = b->y, lw = b->w, lh = b->h;
+    const double logicalX = b->x, logicalY = b->y, lw = b->w, lh = b->h;
     b->style = phys;
     cscdRelease(logi);
     layResolveEdges(b, in->cbW);
     /* the physical box: as wide as the lines are deep, as tall as they are long */
-    const float edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
-    float w = lh;
+    const double edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    double w = lh;
     if (in->forcedW >= 0) w = in->forcedW;
     else if (!cscdLenIsAuto(phys->width)) {
-        const float cw = cscdLenResolve(phys->width, in->cbW, 0);
-        w = phys->boxSizing == CSCD_BOX_CONTENT ? cw + edgesW : cscdMaxf(cw, edgesW);
+        const double cw = layLen(phys->width, in->cbW, 0);
+        w = phys->boxSizing == CSCD_BOX_CONTENT ? cw + edgesW : layMax(cw, edgesW);
     }
-    b->w = layClampWidth(L, b, w, in->cbW);
-    b->h = in->forcedH >= 0 ? in->forcedH : lw;
-    b->x = in->positionedByCaller ? in->x : in->x + cscdLenResolve(phys->margin[3], in->cbW, 0);
+    b->w = laySnapF(layClampWidth(L, b, w, in->cbW));
+    b->h = laySnapF(in->forcedH >= 0 ? in->forcedH : lw);
+    b->x = laySnap(in->positionedByCaller ? in->x : in->x + layLen(phys->margin[3], in->cbW, 0));
     b->y = in->y;
-    b->logicalDX = logicalX - b->x;
-    b->logicalDY = logicalY - b->y;
-    b->overflow = cscdRect(b->x, b->y, b->w, b->h);
-    const float mb = b->margin[2];
-    MarginSet out = {cscdMaxf(mb, 0.f), cscdMinf(mb, 0.f)};
+    b->logicalDX = (float)(logicalX - b->x);
+    b->logicalDY = (float)(logicalY - b->y);
+    b->overflow = cscdBoxRect(b->x, b->y, b->w, b->h);
+    const double mb = b->margin[2];
+    MarginSet out = {layMax(mb, 0.f), layMin(mb, 0.f)};
     return out;
 }
 
-MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
+MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* given) {
+    /* (its input on the grid of layout units: where it is put, the room it is given) */
+    BlockInput snapped = *given;
+    snapped.x = laySnap(snapped.x);
+    snapped.y = laySnap(snapped.y);
+    snapped.cbW = laySnap(snapped.cbW);
+    if (snapped.cbH >= 0) snapped.cbH = laySnap(snapped.cbH);
+    if (snapped.availW >= 0) snapped.availW = laySnap(snapped.availW);
+    if (snapped.forcedW >= 0) snapped.forcedW = laySnap(snapped.forcedW);
+    if (snapped.forcedH >= 0) snapped.forcedH = laySnap(snapped.forcedH);
+    const BlockInput* in = &snapped;
     if (cscdStackLow()) { /* (a page deeper than the thread's stack holds: what is further in is not laid out) */
         b->x = in->x;
         b->y = in->y;
@@ -2921,17 +2947,17 @@ MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
         const MarginSet none = {0, 0};
         return none;
     }
-    float key[8];
+    double key[8];
     memoKey(b, in, key);
     if (memoMatches(L, b, key, in)) {
         if (b->memoPass == MEMO_KEPT) b->keptIn = L->epoch; /* (where it was, as it was: nothing in it to look at again) */
         /* the same layout, at another place: the box is moved there (from wherever it was put since) */
-        const float x = b->memoX + in->x - b->memoInX, y = b->memoY + in->y - b->memoInY;
+        const double x = b->memoX + in->x - b->memoInX, y = b->memoY + in->y - b->memoInY;
         if (x != b->x || y != b->y) {
             forgetLayout(b->parent);
             cscdBoxShift(b, x - b->x, y - b->y);
         }
-        if (in->forcedH >= 0) b->h = in->forcedH;
+        if (in->forcedH >= 0) b->h = (float)in->forcedH;
         b->memoInX = in->x;
         b->memoInY = in->y;
         b->memoX = x;
@@ -2947,6 +2973,7 @@ MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
      * containing block further out (or fixed ones), a subgrid's tracks */
     const int outer = L->deferredTo, ownList = (int)L->absStack.len; /* (the list it pushes, as a containing block) */
     L->deferredTo = INT_MAX;
+    b->gridState = 0; /* (laid out now: its places are looked at again before it is moved) */
     const MarginSet out = b->style && b->style->verticalRoot && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT ? layVertical(L, b, in) : layBlockFresh(L, b, in);
     const bool escaped = L->deferredTo < ownList;
     if (L->deferredTo > outer) L->deferredTo = outer;
@@ -2958,8 +2985,8 @@ MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in) {
         b->memoX = b->x;
         b->memoY = b->y;
         b->memoH = b->h;
-        b->memoOut[0] = out.pos;
-        b->memoOut[1] = out.neg;
+        b->memoOut[0] = (float)out.pos;
+        b->memoOut[1] = (float)out.neg;
     }
     return out;
 }
@@ -2970,11 +2997,11 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
     b->hasBaseline = false;
     b->lines.len = 0;
     bool mlAuto = cscdLenIsAuto(s->margin[3]), mrAuto = cscdLenIsAuto(s->margin[1]);
-    float edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
-    float edgesH = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
+    double edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    double edgesH = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
     bool replaced = b->kind == CSCD_BOX_REPLACED;
-    float replW = 0, replH = 0;
-    float bw;
+    double replW = 0, replH = 0;
+    double bw;
     if (replaced) {
         layReplaced(L, b, in->cbW, in->cbH, &replW, &replH);
         bw = in->forcedW >= 0 ? in->forcedW : replW + edgesW;
@@ -2983,30 +3010,31 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
         bw = in->forcedW;
     } else {
         bool def;
-        float sw = laySpecifiedWidth(L, b, in->cbW, &def);
+        double sw = laySpecifiedWidth(L, b, in->cbW, &def);
         if (def) bw = sw;
         else if (in->shrinkToFit || b->kind == CSCD_BOX_TABLE) {
-            float avail = (in->availW >= 0 ? in->availW : in->cbW) - b->margin[1] - b->margin[3];
-            bw = cscdMinf(cscdMaxf(layMinContent(L, b), avail), layMaxContent(L, b));
+            double avail = (in->availW >= 0 ? in->availW : in->cbW) - b->margin[1] - b->margin[3];
+            bw = layMin(layMax(layMinContent(L, b), avail), layMaxContent(L, b));
         } else bw = in->cbW - b->margin[1] - b->margin[3];
         bw = layClampWidth(L, b, bw, in->cbW);
         /* aspect-ratio with a definite height */
         bool hd;
-        float sh = laySpecifiedHeight(b, in->cbH, &hd);
+        double sh = laySpecifiedHeight(b, in->cbH, &hd);
         if (!def && hd && s->aspectRatio > 0) bw = layClampWidth(L, b, (sh - edgesH) * s->aspectRatio + edgesW, in->cbW);
     }
     if (!in->shrinkToFit && in->forcedW < 0 && !in->positionedByCaller && !b->atomicInline) {
-        float remaining = in->cbW - bw - b->margin[1] - b->margin[3];
-        if (mlAuto && mrAuto) { float m = cscdMaxf(0.f, remaining) / 2; b->margin[3] = m; b->margin[1] = m; }
-        else if (mlAuto) b->margin[3] = cscdMaxf(0.f, remaining) + 0;
-        else if (mrAuto) b->margin[1] = remaining;
+        double remaining = in->cbW - bw - b->margin[1] - b->margin[3];
+        if (mlAuto && mrAuto) { double m = layMax(0.f, remaining) / 2; b->margin[3] = (float)m; b->margin[1] = (float)m; }
+        else if (mlAuto) b->margin[3] = (float)layMax(0.f, remaining);
+        else if (mrAuto) b->margin[1] = (float)remaining;
     }
-    b->w = bw;
+    b->w = laySnapF(bw);
+    bw = b->w;
     b->x = in->positionedByCaller ? in->x : in->x + b->margin[3];
     b->y = in->y;
     /* over-constrained: the containing block's direction says which margin gives way (CSS 2 10.3.3) */
     const bool cbRtl = b->parent && b->parent->style ? b->parent->style->rtl : s->rtl;
-    if (cbRtl && !in->positionedByCaller && in->forcedW < 0 && !mlAuto && !mrAuto && !in->shrinkToFit) b->x = in->x + in->cbW - b->margin[1] - bw;
+    if (cbRtl && !in->positionedByCaller && in->forcedW < 0 && !mlAuto && !mrAuto && !in->shrinkToFit) b->x = laySnap(in->x + in->cbW - b->margin[1] - bw);
 
     bool bfc = establishesBFC(b, in);
     b->memoBfc = bfc;
@@ -3017,23 +3045,23 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
     const size_t floatsBefore = fc->floats.len;
 
     bool hdef;
-    float sh = laySpecifiedHeight(b, in->cbH, &hdef);
+    double sh = laySpecifiedHeight(b, in->cbH, &hdef);
     if (!hdef && s->aspectRatio > 0 && !replaced && in->forcedH < 0) { sh = (bw - edgesW) / s->aspectRatio + edgesH; hdef = true; }
-    float childCbH = in->forcedH >= 0 ? in->forcedH - edgesH : hdef ? layClampHeight(b, sh, in->cbH) - edgesH : -1;
+    double childCbH = in->forcedH >= 0 ? in->forcedH - edgesH : hdef ? layClampHeight(b, sh, in->cbH) - edgesH : -1;
     /* percentages of a definite min-height do not resolve, but a percentage height chain from the root does */
-    b->h = in->forcedH >= 0 ? in->forcedH : hdef ? layClampHeight(b, sh, in->cbH) : edgesH;
+    b->h = laySnapF(in->forcedH >= 0 ? in->forcedH : hdef ? layClampHeight(b, sh, in->cbH) : edgesH);
 
     bool cb = layIsContainingBlock(b);
     if (cb) cscdVecPushZero(&L->absStack);
 
     MarginSet trailing = {0, 0};
-    float contentH = 0;
+    double contentH = 0;
     if (replaced) {
         contentH = in->forcedH >= 0 ? in->forcedH - edgesH : replH;
         if (b->replaced == CSCD_REPL_TEXT_INPUT || b->replaced == CSCD_REPL_SELECT) {
             CscdFont f = cscdFontForStyle(s);
             b->font = f;
-            float ch = in->forcedH >= 0 ? in->forcedH - edgesH : replH;
+            double ch = in->forcedH >= 0 ? in->forcedH - edgesH : replH;
             b->baseline = b->y + b->border[0] + b->padding[0] + (ch - (cscdFontAscent(&f) + cscdFontDescent(&f))) / 2 + cscdFontAscent(&f);
             b->lastBaseline = b->baseline;
             b->hasBaseline = true;
@@ -3049,27 +3077,27 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
     }
     bool bottomCollapsible = !bfc && b->kind == CSCD_BOX_BLOCK && !replaced && b->border[2] == 0 && b->padding[2] == 0 && !hdef &&
                              in->forcedH < 0 && cscdLenIsAuto(s->minHeight) && !b->inlineContent;
-    if (!bottomCollapsible) contentH = cscdMaxf(0.f, contentH + msValue(trailing));
+    if (!bottomCollapsible) contentH = layMax(0.f, contentH + msValue(trailing));
     if (bfc && !hdef && in->forcedH < 0) {
-        float fb = fcBottom(fc);
-        if (fb > -1e29f) contentH = cscdMaxf(contentH, fb - cscdBoxContentY(b));
+        double fb = fcBottom(fc);
+        if (fb > -1e29f) contentH = layMax(contentH, fb - cscdBoxContentY(b));
     }
     /* A block without a formatting context of its own is remembered as one with is when no float was around it and
      * none came out of it: then nothing outside its input reached it, and what it did reaches out only through its
      * margins, which the memo keeps (see memoMatches, which asks for no floats again). */
     b->memoBfc = bfc || (floatsBefore == 0 && fc->floats.len == 0);
     cscdVecFree(&own.floats);
-    float bh;
+    double bh;
     if (in->forcedH >= 0) bh = in->forcedH;
     else if (hdef) bh = layClampHeight(b, sh, in->cbH);
     else bh = layClampHeight(b, (s->containerType == 2 || (s->contain & CSCD_CONTAIN_SIZE) ? 0 : contentH) + edgesH, in->cbH); /* (size containment) */
-    b->h = bh;
+    b->h = laySnapF(bh);
 
     /* vertical centering of button content (as browsers do) */
     if ((b->element && cscdElementIs(b->element, "button")) || (b->element && cscdElementIs(b->element, "input") && !replaced && !b->pseudo.len)) {
-        float inner = cscdBoxContentH(b);
+        double inner = cscdBoxContentH(b);
         if (inner > contentH + 0.5f) {
-            float d = (inner - contentH) / 2;
+            double d = (inner - contentH) / 2;
             for (size_t i = 0; i < b->children.len; ++i) cscdBoxShift(cscdBoxChild(b, i), 0, d);
             if (b->hasBaseline) { b->baseline += d; b->lastBaseline += d; }
             for (size_t i = 0; i < b->lines.len; ++i) { b->lines.items[i].top += d; b->lines.items[i].baseline += d; }
@@ -3081,24 +3109,24 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
         if (!c->isMarker) continue;
         CscdFont f = cscdFontForStyle(c->style);
         c->font = f;
-        float w = layMeasure(&f, cscdStrSv(&c->text), 0, 0);
-        float base = b->hasBaseline ? b->baseline : cscdBoxContentY(b) + cscdFontAscent(&f);
+        double w = layMeasure(&f, cscdStrSv(&c->text), 0, 0);
+        double base = b->hasBaseline ? b->baseline : cscdBoxContentY(b) + cscdFontAscent(&f);
         CscdTextFrag fr;
         memset(&fr, 0, sizeof fr);
         fr.text = cscdStrCopy(&c->text);
-        fr.width = w;
-        fr.x = cscdBoxContentX(b) - w;
-        fr.baseline = base;
-        fr.top = base - cscdFontAscent(&f);
-        fr.height = cscdFontAscent(&f) + cscdFontDescent(&f);
+        fr.width = laySnapF(w);
+        fr.x = laySnap(cscdBoxContentX(b) - w);
+        fr.baseline = laySnap(base);
+        fr.top = laySnap(base - cscdFontAscent(&f));
+        fr.height = laySnapF(cscdFontAscent(&f) + cscdFontDescent(&f));
         cscdTextFragVecClear(&c->textFrags);
         cscdVecPush(&c->textFrags, fr);
-        c->x = fr.x; c->y = fr.top; c->w = w; c->h = fr.height;
+        c->x = fr.x; c->y = fr.top; c->w = (float)w; c->h = fr.height;
     }
 
     if (cb) {
         CscdPtrVec list = cscdVecPop(&L->absStack);
-        CscdRect pb = cscdBoxPaddingBox(b);
+        LayRect pb = cscdBoxPaddingBoxD(b);
         for (size_t i = 0; i < list.len; ++i) layAbsolute(L, (CscdLayoutBox*)list.items[i], pb);
         cscdVecFree(&list);
     }
@@ -3111,22 +3139,22 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
     return out;
 }
 
-void layAbsolute(Layouter* L, CscdLayoutBox* b, CscdRect cb) {
+void layAbsolute(Layouter* L, CscdLayoutBox* b, LayRect cb) {
     const CscdComputedStyle* s = b->style;
     layResolveEdges(b, cb.w);
     bool lA = cscdLenIsAuto(s->left), rA = cscdLenIsAuto(s->right), tA = cscdLenIsAuto(s->top), bA = cscdLenIsAuto(s->bottom);
-    float Lf = lA ? 0 : cscdLenResolve(s->left, cb.w, 0), R = rA ? 0 : cscdLenResolve(s->right, cb.w, 0);
-    float T = tA ? 0 : cscdLenResolve(s->top, cb.h, 0), B = bA ? 0 : cscdLenResolve(s->bottom, cb.h, 0);
+    double Lf = lA ? 0 : layLen(s->left, cb.w, 0), R = rA ? 0 : layLen(s->right, cb.w, 0);
+    double T = tA ? 0 : layLen(s->top, cb.h, 0), B = bA ? 0 : layLen(s->bottom, cb.h, 0);
     bool mlAuto = cscdLenIsAuto(s->margin[3]), mrAuto = cscdLenIsAuto(s->margin[1]), mtAuto = cscdLenIsAuto(s->margin[0]), mbAuto = cscdLenIsAuto(s->margin[2]);
-    float edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    double edgesW = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
     bool wd;
-    float w = laySpecifiedWidth(L, b, cb.w, &wd);
+    double w = laySpecifiedWidth(L, b, cb.w, &wd);
     BlockInput in = blockInput();
     in.cbW = cb.w;
     in.cbH = cb.h;
     in.positionedByCaller = true;
     if (b->kind == CSCD_BOX_REPLACED) {
-        float cw, ch;
+        double cw, ch;
         layReplaced(L, b, cb.w, cb.h, &cw, &ch);
         w = cw + edgesW;
         wd = true;
@@ -3134,36 +3162,36 @@ void layAbsolute(Layouter* L, CscdLayoutBox* b, CscdRect cb) {
     if (!wd) {
         if (!lA && !rA) w = cb.w - Lf - R - b->margin[1] - b->margin[3];
         else {
-            float avail = cb.w - (lA ? 0 : Lf) - (rA ? 0 : R) - b->margin[1] - b->margin[3];
-            w = cscdMinf(cscdMaxf(layMinContent(L, b), avail), layMaxContent(L, b));
+            double avail = cb.w - (lA ? 0 : Lf) - (rA ? 0 : R) - b->margin[1] - b->margin[3];
+            w = layMin(layMax(layMinContent(L, b), avail), layMaxContent(L, b));
         }
         w = layClampWidth(L, b, w, cb.w);
     }
     in.forcedW = layClampWidth(L, b, w, cb.w);
     bool hd;
-    float h = laySpecifiedHeight(b, cb.h, &hd);
+    double h = laySpecifiedHeight(b, cb.h, &hd);
     if (!hd && !tA && !bA) { h = cb.h - T - B - b->margin[0] - b->margin[2]; hd = true; }
     if (hd) in.forcedH = layClampHeight(b, h, cb.h);
     layBlock(L, b, &in);
     /* horizontal */
-    float x;
+    double x;
     if (!lA && !rA && (mlAuto || mrAuto)) {
-        float freeW = cb.w - Lf - R - b->w;
-        float ml = mlAuto && mrAuto ? cscdMaxf(0.f, freeW / 2) : mlAuto ? freeW - b->margin[1] : b->margin[3];
+        double freeW = cb.w - Lf - R - b->w;
+        double ml = mlAuto && mrAuto ? layMax(0.f, freeW / 2) : mlAuto ? freeW - b->margin[1] : b->margin[3];
         x = cb.x + Lf + ml;
     } else if (!lA) x = cb.x + Lf + b->margin[3];
-    else if (!rA) x = cscdRectRight(cb) - R - b->margin[1] - b->w;
+    else if (!rA) x = cscdBoxRectRight(cb) - R - b->margin[1] - b->w;
     else x = (b->hasStaticPos ? b->staticX : cb.x) + b->margin[3];
-    float y;
+    double y;
     if (!tA && !bA && (mtAuto || mbAuto)) {
-        float freeH = cb.h - T - B - b->h;
-        float mt = mtAuto && mbAuto ? cscdMaxf(0.f, freeH / 2) : mtAuto ? freeH - b->margin[2] : b->margin[0];
+        double freeH = cb.h - T - B - b->h;
+        double mt = mtAuto && mbAuto ? layMax(0.f, freeH / 2) : mtAuto ? freeH - b->margin[2] : b->margin[0];
         y = cb.y + T + mt;
     } else if (!tA) y = cb.y + T + b->margin[0];
-    else if (!bA) y = cscdRectBottom(cb) - B - b->margin[2] - b->h;
+    else if (!bA) y = cscdBoxRectBottom(cb) - B - b->margin[2] - b->h;
     else y = (b->hasStaticPos ? b->staticY : cb.y) + b->margin[0];
     /* (its static position stays where the flow put it: the box is laid out from it again on the next pass) */
-    const float sx = b->staticX, sy = b->staticY;
+    const double sx = b->staticX, sy = b->staticY;
     cscdBoxShift(b, x - b->x, y - b->y);
     b->staticX = sx;
     b->staticY = sy;
@@ -3180,9 +3208,9 @@ static void addToPageOverflow(CscdLayoutBox* root, const CscdPtrVec* placed) {
     }
     for (size_t i = 0; i < placed->len; ++i) {
         const CscdLayoutBox* b = (const CscdLayoutBox*)placed->items[i];
-        CscdRect r = cscdBoxBorderBox(b);
-        if (!(b->style && cscdStyleClipsOverflow(b->style))) r = cscdRectUnite(r, b->overflow);
-        root->overflow = cscdRectUnite(root->overflow, r);
+        LayRect r = cscdBoxBorderBoxD(b);
+        if (!(b->style && cscdStyleClipsOverflow(b->style))) r = cscdBoxRectUnite(r, b->overflow);
+        root->overflow = cscdBoxRectUnite(root->overflow, r);
     }
 }
 
@@ -3200,7 +3228,7 @@ void layRoot(Layouter* L, CscdLayoutBox* root) {
     in.cbH = L->vp.height;
     /* the root's height percentages resolve against the viewport */
     layBlock(L, root, &in);
-    CscdRect icb = cscdRect(0, 0, L->vp.width, L->vp.height);
+    LayRect icb = cscdBoxRect(0, 0, L->vp.width, L->vp.height);
     CscdPtrVec list = cscdVecPop(&L->absStack);
     for (size_t i = 0; i < list.len; ++i) layAbsolute(L, (CscdLayoutBox*)list.items[i], icb);
     for (size_t i = 0; i < L->fixedBoxes.len; ++i) layAbsolute(L, (CscdLayoutBox*)L->fixedBoxes.items[i], icb);

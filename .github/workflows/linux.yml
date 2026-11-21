@@ -38,12 +38,12 @@ jobs:
           sudo apt-get install -y ninja-build libx11-dev xvfb x11-apps imagemagick libgl1 libgl1-mesa-dri libvulkan1 \
             mesa-vulkan-drivers libxcursor1
       - name: Build
-        run: cmake -S . -B build -G Ninja && cmake --build build
+        run: cmake -S . -B build -G Ninja -DCASCADE_WERROR=ON && cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Minimal build (software only, no screen readers)
         run: |
-          cmake -S . -B build-min -G Ninja -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake -S . -B build-min -G Ninja -DCASCADE_WERROR=ON -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
           cmake --build build-min
           ctest --test-dir build-min --output-on-failure
       - name: Install, and a program that finds it
@@ -110,7 +110,7 @@ jobs:
           sudo apt-get install -y ninja-build weston libwayland-client0 libwayland-cursor0 libxkbcommon0 libvulkan1 mesa-vulkan-drivers \
             dbus at-spi2-core python3-pyatspi
       - name: "Build (without X11: the window is Wayland's)"
-        run: cmake -S . -B build -G Ninja -DCMAKE_DISABLE_FIND_PACKAGE_X11=ON && cmake --build build
+        run: cmake -S . -B build -G Ninja -DCASCADE_WERROR=ON -DCMAKE_DISABLE_FIND_PACKAGE_X11=ON && cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Open the window

@@ -60,6 +60,16 @@ static inline Px4 px4Over(Px4 d, Px4 s) {
     const __m128i two = _mm_or_si128(ia, _mm_slli_epi32(ia, 16)); /* (each pixel's in both 16-bit halves) */
     return _mm_add_epi32(s, px4Mul(d, _mm_unpacklo_epi32(two, two), _mm_unpackhi_epi32(two, two)));
 }
+/* lerpPx lane by lane: (a * (256 - w) + b * w) >> 8 a channel, w each pixel's (lanes as px4Mul's); at most 255 * 256 */
+static inline Px4 px4Lerp(Px4 a, Px4 b, __m128i wlo, __m128i whi) {
+    const __m128i z = _mm_setzero_si128(), all = _mm_set1_epi16(256);
+    const __m128i lo = _mm_add_epi16(_mm_mullo_epi16(_mm_unpacklo_epi8(a, z), _mm_sub_epi16(all, wlo)), _mm_mullo_epi16(_mm_unpacklo_epi8(b, z), wlo));
+    const __m128i hi = _mm_add_epi16(_mm_mullo_epi16(_mm_unpackhi_epi8(a, z), _mm_sub_epi16(all, whi)), _mm_mullo_epi16(_mm_unpackhi_epi8(b, z), whi));
+    return _mm_packus_epi16(_mm_srli_epi16(lo, 8), _mm_srli_epi16(hi, 8));
+}
+static inline __m128i px4Two(uint32_t w0, uint32_t w1) { /* (two pixels' weights, four lanes each) */
+    return _mm_setr_epi16((short)w0, (short)w0, (short)w0, (short)w0, (short)w1, (short)w1, (short)w1, (short)w1);
+}
 #define CSCD_PX4 1
 #elif defined(CSCD_NEON)
 typedef uint32x4_t Px4;
@@ -85,8 +95,46 @@ static inline Px4 px4Over(Px4 d, Px4 s) {
     const uint32x4x2_t z = vzipq_u32(two, two);
     return vaddq_u32(s, px4Mul(d, vreinterpretq_u16_u32(z.val[0]), vreinterpretq_u16_u32(z.val[1])));
 }
+static inline Px4 px4Lerp(Px4 a, Px4 b, uint16x8_t wlo, uint16x8_t whi) {
+    const uint8x16_t ab = vreinterpretq_u8_u32(a), bb = vreinterpretq_u8_u32(b);
+    const uint16x8_t all = vdupq_n_u16(256);
+    const uint16x8_t lo = vaddq_u16(vmulq_u16(vmovl_u8(vget_low_u8(ab)), vsubq_u16(all, wlo)), vmulq_u16(vmovl_u8(vget_low_u8(bb)), wlo));
+    const uint16x8_t hi = vaddq_u16(vmulq_u16(vmovl_u8(vget_high_u8(ab)), vsubq_u16(all, whi)), vmulq_u16(vmovl_u8(vget_high_u8(bb)), whi));
+    return vreinterpretq_u32_u8(vcombine_u8(vmovn_u16(vshrq_n_u16(lo, 8)), vmovn_u16(vshrq_n_u16(hi, 8))));
+}
+static inline uint16x8_t px4Two(uint32_t w0, uint32_t w1) { return vcombine_u16(vdup_n_u16((uint16_t)w0), vdup_n_u16((uint16_t)w1)); }
 #define CSCD_PX4 1
 #endif
+
+/* d[i] = over(d[i], mulPixel(col, cov[i])) for n pixels: one color through a row of coverage (a glyph, a shape's edge);
+ * as the scalar code, a coverage of 0 leaves the pixel and one of 255 draws the color itself */
+static void coverSpan(uint32_t* d, const uint8_t* cov, int n, uint32_t col) {
+    int i = 0;
+#if defined(CSCD_SSE2)
+    const Px4 c4 = px4Splat(col);
+    for (; i + 4 <= n; i += 4) {
+        uint32_t k4;
+        memcpy(&k4, cov + i, 4);
+        if (!k4) continue;
+        const __m128i k16 = _mm_unpacklo_epi8(_mm_cvtsi32_si128((int)k4), _mm_setzero_si128()); /* k0 k1 k2 k3 */
+        const __m128i k2 = _mm_unpacklo_epi16(k16, k16);                                         /* k0 k0 k1 k1 ... */
+        px4Store(d + i, px4Over(px4Load(d + i), px4Mul(c4, _mm_unpacklo_epi32(k2, k2), _mm_unpackhi_epi32(k2, k2))));
+    }
+#elif defined(CSCD_NEON)
+    const Px4 c4 = px4Splat(col);
+    for (; i + 4 <= n; i += 4) {
+        uint32_t k4;
+        memcpy(&k4, cov + i, 4);
+        if (!k4) continue;
+        const uint16x4_t k16 = vget_low_u16(vmovl_u8(vcreate_u8((uint64_t)k4)));
+        const uint16x4x2_t a = vzip_u16(k16, k16);       /* k0 k0 k1 k1 | k2 k2 k3 k3 */
+        const uint16x4x2_t lo = vzip_u16(a.val[0], a.val[0]), hi = vzip_u16(a.val[1], a.val[1]);
+        px4Store(d + i, px4Over(px4Load(d + i), px4Mul(c4, vcombine_u16(lo.val[0], lo.val[1]), vcombine_u16(hi.val[0], hi.val[1]))));
+    }
+#endif
+    for (; i < n; ++i)
+        if (cov[i]) d[i] = over(d[i], cov[i] == 255 ? col : mulPixel(col, cov[i]));
+}
 
 /* d[i] = over(d[i], k < 255 ? mulPixel(s[i], k) : s[i]) for n pixels (a layer drawn back with its opacity) */
 static void overSpan(uint32_t* d, const uint32_t* s, int n, uint32_t k) {
@@ -221,7 +269,59 @@ static uint32_t gradientAt(const ShaderCtx* sc, float t) {
     return sc->lut[i];
 }
 
+/* the four channels of a radial gradient's pixel: a + (b - a) * u + d each, through clampByte (one per lane: the same
+ * float steps, then its rounding: below 0 or NaN 0, from 255 on 255, else the whole part and a half up) */
+static inline uint32_t radialMix(const float* a, const float* b, float u, float d) {
+#if defined(CSCD_SSE2)
+    const __m128 va = _mm_loadu_ps(a), vb = _mm_loadu_ps(b);
+    const __m128 v = _mm_add_ps(_mm_add_ps(va, _mm_mul_ps(_mm_sub_ps(vb, va), _mm_set1_ps(u))), _mm_set1_ps(d));
+    const __m128 pos = _mm_cmpgt_ps(v, _mm_setzero_ps());
+    const __m128 vc = _mm_min_ps(v, _mm_set1_ps(255.f));
+    __m128i i = _mm_cvttps_epi32(vc);
+    i = _mm_sub_epi32(i, _mm_castps_si128(_mm_cmpge_ps(_mm_sub_ps(vc, _mm_cvtepi32_ps(i)), _mm_set1_ps(0.5f))));
+    i = _mm_and_si128(i, _mm_castps_si128(pos));
+    const __m128i w = _mm_packs_epi32(i, i);
+    return (uint32_t)_mm_cvtsi128_si32(_mm_packus_epi16(w, w));
+#elif defined(CSCD_NEON)
+    const float32x4_t va = vld1q_f32(a), vb = vld1q_f32(b);
+    const float32x4_t v = vaddq_f32(vaddq_f32(va, vmulq_f32(vsubq_f32(vb, va), vdupq_n_f32(u))), vdupq_n_f32(d));
+    const uint32x4_t pos = vcgtq_f32(v, vdupq_n_f32(0));
+    const float32x4_t vc = vminq_f32(v, vdupq_n_f32(255.f));
+    int32x4_t i = vcvtq_s32_f32(vc);
+    i = vsubq_s32(i, vreinterpretq_s32_u32(vcgeq_f32(vsubq_f32(vc, vcvtq_f32_s32(i)), vdupq_n_f32(0.5f))));
+    const uint32x4_t r = vandq_u32(vreinterpretq_u32_s32(i), pos);
+    const uint16x4_t h = vmovn_u32(r);
+    return vget_lane_u32(vreinterpret_u32_u8(vmovn_u16(vcombine_u16(h, h))), 0);
+#else
+    uint32_t color = 0;
+    for (int ch = 0; ch < 4; ++ch) color |= clampByte(a[ch] + (b[ch] - a[ch]) * u + d) << (ch * 8);
+    return color;
+#endif
+}
+
+static const uint8_t kBayer[8][8] = {
+    { 0, 48, 12, 60,  3, 51, 15, 63},
+    {32, 16, 44, 28, 35, 19, 47, 31},
+    { 8, 56,  4, 52, 11, 59,  7, 55},
+    {40, 24, 36, 20, 43, 27, 39, 23},
+    { 2, 50, 14, 62,  1, 49, 13, 61},
+    {34, 18, 46, 30, 33, 17, 45, 29},
+    {10, 58,  6, 54,  9, 57,  5, 53},
+    {42, 26, 38, 22, 41, 25, 37, 21},
+};
+
 static uint32_t radialAt(const ShaderCtx* sc, float t, int x, int y) {
+    if (sc->s->repeating) t -= floorf(t);
+    t = t > 0.0f ? cscdMinf(t, 1.0f) : 0.0f;
+    const float entry = t * 255.0f;
+    const int i = cscdMini((int)entry, 254);
+    const float u = entry - i;
+    /* (ordered dithering, as radialAtScalar) */
+    const float bias = (kBayer[y & 7][x & 7] + 0.5f) / 64.0f;
+    return radialMix(sc->radial[i], sc->radial[i + 1], u, bias - 0.5f);
+}
+
+static uint32_t radialAtScalar(const ShaderCtx* sc, float t, int x, int y) {
     if (sc->s->repeating) t -= floorf(t);
     t = t > 0.0f ? cscdMinf(t, 1.0f) : 0.0f;
     const float entry = t * 255.0f;
@@ -310,6 +410,107 @@ static uint32_t shadeAt(const ShaderCtx* sc, float dx, float dy) {
     return 0;
 }
 
+#if defined(CSCD_NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+#define CSCD_NEON64 1
+#endif
+
+/* out[i] = gradientAt(sc, t + dt * i) for n pixels: four at once (the same float steps; floorf, for a repeating
+ * gradient, as the whole part below and the value itself from 2^23 on, where a float has no fraction left) */
+static void linearRow(const ShaderCtx* sc, float t, float dt, int n, uint32_t* out) {
+    int i = 0;
+    const bool rep = sc->s->repeating;
+#if defined(CSCD_SSE2)
+    const __m128 vt = _mm_set1_ps(t), vdt = _mm_set1_ps(dt), one = _mm_set1_ps(1.f), big = _mm_set1_ps(8388608.f);
+    const __m128 absMask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF));
+    for (; i + 4 <= n; i += 4) {
+        __m128 v = _mm_add_ps(vt, _mm_mul_ps(vdt, _mm_cvtepi32_ps(_mm_setr_epi32(i, i + 1, i + 2, i + 3))));
+        if (rep) {
+            __m128 fl = _mm_cvtepi32_ps(_mm_cvttps_epi32(v));
+            fl = _mm_sub_ps(fl, _mm_and_ps(_mm_cmpgt_ps(fl, v), one));
+            const __m128 keep = _mm_or_ps(_mm_cmpge_ps(_mm_and_ps(v, absMask), big), _mm_cmpunord_ps(v, v));
+            fl = _mm_or_ps(_mm_and_ps(keep, v), _mm_andnot_ps(keep, fl));
+            v = _mm_sub_ps(v, fl);
+        }
+        v = _mm_and_ps(_mm_cmpgt_ps(v, _mm_setzero_ps()), _mm_min_ps(v, one));
+        int idx[4];
+        _mm_storeu_si128((__m128i*)(void*)idx, _mm_cvttps_epi32(_mm_add_ps(_mm_mul_ps(v, _mm_set1_ps(255.f)), _mm_set1_ps(0.5f))));
+        out[i] = sc->lut[idx[0]]; out[i + 1] = sc->lut[idx[1]]; out[i + 2] = sc->lut[idx[2]]; out[i + 3] = sc->lut[idx[3]];
+    }
+#elif defined(CSCD_NEON64)
+    const float32x4_t vt = vdupq_n_f32(t), vdt = vdupq_n_f32(dt), one = vdupq_n_f32(1.f);
+    const int32_t base[4] = {0, 1, 2, 3};
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t v = vaddq_f32(vt, vmulq_f32(vdt, vcvtq_f32_s32(vaddq_s32(vld1q_s32(base), vdupq_n_s32(i)))));
+        if (rep) v = vsubq_f32(v, vrndmq_f32(v));
+        const uint32x4_t pos = vcgtq_f32(v, vdupq_n_f32(0));
+        v = vreinterpretq_f32_u32(vandq_u32(pos, vreinterpretq_u32_f32(vminq_f32(v, one))));
+        int32_t idx[4];
+        vst1q_s32(idx, vcvtq_s32_f32(vaddq_f32(vmulq_f32(v, vdupq_n_f32(255.f)), vdupq_n_f32(0.5f))));
+        out[i] = sc->lut[idx[0]]; out[i + 1] = sc->lut[idx[1]]; out[i + 2] = sc->lut[idx[2]]; out[i + 3] = sc->lut[idx[3]];
+    }
+#endif
+    for (; i < n; ++i) out[i] = gradientAt(sc, t + dt * i);
+}
+
+/* cscdAtan2f of two points at once, a double lane each: the same steps as it (atan of the smaller over the larger,
+ * halved twice by its identity, then its series), so the same bits; NaN and (0, 0) go to cscdAtan2f itself */
+static void atan2Pair(const float* y, const float* x, float* out) {
+#if defined(CSCD_SSE2) || defined(CSCD_NEON64)
+    bool special = false;
+    for (int k = 0; k < 2; ++k) special = special || x[k] != x[k] || y[k] != y[k] || (x[k] == 0 && y[k] == 0);
+    if (!special) {
+        const double pi = 3.14159265358979323846;
+#if defined(CSCD_SSE2)
+        const __m128d X = _mm_set_pd(x[1], x[0]), Y = _mm_set_pd(y[1], y[0]), z = _mm_setzero_pd(), one = _mm_set1_pd(1.0);
+        const __m128d sign = _mm_set1_pd(-0.0);
+        const __m128d ax = _mm_andnot_pd(sign, X), ay = _mm_andnot_pd(sign, Y);
+        const __m128d le = _mm_cmple_pd(ay, ax);
+        const __m128d num = _mm_or_pd(_mm_and_pd(le, ay), _mm_andnot_pd(le, ax)), den = _mm_or_pd(_mm_and_pd(le, ax), _mm_andnot_pd(le, ay));
+        const __m128d r = _mm_div_pd(num, den);
+        __m128d t = _mm_div_pd(r, _mm_add_pd(one, _mm_sqrt_pd(_mm_add_pd(one, _mm_mul_pd(r, r)))));
+        t = _mm_div_pd(t, _mm_add_pd(one, _mm_sqrt_pd(_mm_add_pd(one, _mm_mul_pd(t, t)))));
+        const __m128d nt2 = _mm_xor_pd(_mm_mul_pd(t, t), sign);
+        __m128d sum = z, term = t;
+        for (int k = 0; k < 14; ++k) {
+            sum = _mm_add_pd(sum, _mm_div_pd(term, _mm_set1_pd((double)(2 * k + 1))));
+            term = _mm_mul_pd(term, nt2);
+        }
+        const __m128d at = _mm_mul_pd(_mm_set1_pd(4.0), sum);
+        __m128d a = _mm_or_pd(_mm_and_pd(le, at), _mm_andnot_pd(le, _mm_sub_pd(_mm_set1_pd(pi / 2), at)));
+        const __m128d xn = _mm_cmplt_pd(X, z), yn = _mm_cmplt_pd(Y, z);
+        a = _mm_or_pd(_mm_and_pd(xn, _mm_sub_pd(_mm_set1_pd(pi), a)), _mm_andnot_pd(xn, a));
+        a = _mm_or_pd(_mm_and_pd(yn, _mm_xor_pd(a, sign)), _mm_andnot_pd(yn, a));
+        const __m128 f = _mm_cvtpd_ps(a);
+        _mm_store_ss(out, f);
+        _mm_store_ss(out + 1, _mm_shuffle_ps(f, f, 1));
+#else
+        const float64x2_t X = {x[0], x[1]}, Y = {y[0], y[1]}, one = vdupq_n_f64(1.0);
+        const float64x2_t ax = vabsq_f64(X), ay = vabsq_f64(Y);
+        const uint64x2_t le = vcleq_f64(ay, ax);
+        const float64x2_t r = vdivq_f64(vbslq_f64(le, ay, ax), vbslq_f64(le, ax, ay));
+        float64x2_t t = vdivq_f64(r, vaddq_f64(one, vsqrtq_f64(vaddq_f64(one, vmulq_f64(r, r)))));
+        t = vdivq_f64(t, vaddq_f64(one, vsqrtq_f64(vaddq_f64(one, vmulq_f64(t, t)))));
+        const float64x2_t nt2 = vnegq_f64(vmulq_f64(t, t));
+        float64x2_t sum = vdupq_n_f64(0), term = t;
+        for (int k = 0; k < 14; ++k) {
+            sum = vaddq_f64(sum, vdivq_f64(term, vdupq_n_f64((double)(2 * k + 1))));
+            term = vmulq_f64(term, nt2);
+        }
+        const float64x2_t at = vmulq_f64(vdupq_n_f64(4.0), sum);
+        float64x2_t a = vbslq_f64(le, at, vsubq_f64(vdupq_n_f64(pi / 2), at));
+        a = vbslq_f64(vcltq_f64(X, vdupq_n_f64(0)), vsubq_f64(vdupq_n_f64(pi), a), a);
+        a = vbslq_f64(vcltq_f64(Y, vdupq_n_f64(0)), vnegq_f64(a), a);
+        const float32x2_t f = vcvt_f32_f64(a);
+        out[0] = vget_lane_f32(f, 0);
+        out[1] = vget_lane_f32(f, 1);
+#endif
+        return;
+    }
+#endif
+    out[0] = cscdAtan2f(y[0], x[0]);
+    out[1] = cscdAtan2f(y[1], x[1]);
+}
+
 /* The colors of a row of pixels of a gradient (their centers at x0 + i + 0.5, y + 0.5), stepping
  * along the row instead of mapping each pixel. True: all of them are out[0]. */
 static bool shadeRow(const ShaderCtx* sc, int x0, int y, int len, uint32_t* out) {
@@ -322,7 +523,27 @@ static bool shadeRow(const ShaderCtx* sc, int x0, int y, int len, uint32_t* out)
         if (len2 <= 0) { out[0] = gradientAt(sc, 0); return true; }
         const float t = ((p.x - s->p0.x) * vx + (p.y - s->p0.y) * vy) / len2, dt = (sx * vx + sy * vy) / len2;
         if (dt == 0) { out[0] = gradientAt(sc, t); return true; } /* (a vertical gradient: the row is one color) */
-        for (int i = 0; i < len; ++i) out[i] = gradientAt(sc, t + dt * i);
+        linearRow(sc, t, dt, len, out);
+        return false;
+    }
+    if (s->kind == CSCD_SHADER_CONIC) {
+        /* (each pixel mapped as shadeAt maps it, its angle two at a time) */
+        for (int i = 0; i < len; i += 2) {
+            float ys[2], xs[2], a[2];
+            const int m = i + 1 < len ? 2 : 1;
+            for (int k = 0; k < m; ++k) {
+                const CscdPoint q = cscdMatMap(sc->inv, cscdPoint(x0 + i + k + 0.5f, y + 0.5f));
+                xs[k] = q.x - s->center.x;
+                ys[k] = -(q.y - s->center.y);
+            }
+            if (m == 2) atan2Pair(xs, ys, a); /* (cscdAtan2f(p.x - cx, -(p.y - cy)): its first argument is the x) */
+            else a[0] = cscdAtan2f(xs[0], ys[0]);
+            for (int k = 0; k < m; ++k) {
+                float tt = (a[k] - s->startAngle) / (2 * CSCD_PI);
+                tt -= floorf(tt);
+                out[i + k] = gradientAt(sc, tt);
+            }
+        }
         return false;
     }
     /* radial */
@@ -727,7 +948,7 @@ typedef enum OpKind {
     OP_SAVE, OP_RESTORE, OP_TRANSLATE, OP_SCALE, OP_ROTATE, OP_CONCAT, OP_SET_MATRIX, OP_SET_ALPHA, OP_CLIP_RECT,
     OP_CLIP_RRECT, OP_CLIP_PATH, OP_PUSH_LAYER, OP_POP_LAYER, OP_SET_LAYER_FILTER, OP_FILTER_BACKDROP, OP_MASK_LAYER,
     OP_CLEAR, OP_BLEND_SPAN, OP_FILL_PATH, OP_STROKE_PATH, OP_FILL_RRECT, OP_FILL_RING, OP_IMAGE_PROJECTIVE, OP_IMAGE,
-    OP_BOX_SHADOW, OP_BLURRED_PATH, OP_GLYPHS
+    OP_BOX_SHADOW, OP_BLURRED_PATH, OP_GLYPHS, OP_LAYER_IMAGE
 } OpKind;
 
 /* A recorded call, with copies of what it was given. */
@@ -1227,9 +1448,66 @@ int cscdPaintSimdSelfCheck(void) {
         const uint32_t k = round % 3 == 0 ? 255 : RND() & 255;
         overSpan(a, s, 37, k);
         for (int i = 0; i < 37; ++i) bad += a[i] != over(b[i], k < 255 ? mulPixel(s[i], k) : s[i]);
+        uint8_t cov[37];
+        for (int i = 0; i < 37; ++i) {
+            const uint32_t r = simdRandom(&seed) % 4;
+            cov[i] = (uint8_t)(r == 0 ? 0 : r == 1 ? 255 : simdRandom(&seed));
+            a[i] = b[i];
+        }
+        coverSpan(a, cov, 37, col);
+        for (int i = 0; i < 37; ++i) bad += a[i] != (cov[i] ? over(b[i], cov[i] == 255 ? col : mulPixel(col, cov[i])) : b[i]);
+#if defined(CSCD_PX4)
+        { /* bilinear, four at once */
+            uint32_t w[4];
+            for (int i = 0; i < 4; ++i) w[i] = RND() % 257;
+            uint32_t l[4];
+            px4Store(l, px4Lerp(px4Load(a), px4Load(s), px4Two(w[0], w[1]), px4Two(w[2], w[3])));
+            for (int i = 0; i < 4; ++i) bad += l[i] != lerpPx(a[i], s[i], w[i]);
+        }
+#endif
+        { /* a linear gradient's row, four at once; two angles at once */
+            CscdShader sh;
+            memset(&sh, 0, sizeof sh);
+            sh.repeating = round % 2;
+            ShaderCtx sc;
+            memset(&sc, 0, sizeof sc);
+            sc.s = &sh;
+            for (int i = 0; i < 256; ++i) sc.lut[i] = RND();
+            const float t0 = (float)((int)(RND() % 4000) - 2000) / 997.f, dt = (float)((int)(RND() % 2000) - 1000) / 9973.f;
+            uint32_t row[37];
+            linearRow(&sc, round % 7 == 0 ? 1e9f : t0, dt, 37, row);
+            for (int i = 0; i < 37; ++i) bad += row[i] != gradientAt(&sc, (round % 7 == 0 ? 1e9f : t0) + dt * i);
+            for (int i = 0; i < 37; ++i) {
+                float ys[2], xs[2], got[2];
+                for (int k = 0; k < 2; ++k) {
+                    const uint32_t r = RND() % 8;
+                    ys[k] = r == 0 ? 0.f : r == 1 ? -0.f : (float)((int)(RND() % 20001) - 10000) / (float)(1 + RND() % 97);
+                    xs[k] = r == 2 ? 0.f : (float)((int)(RND() % 20001) - 10000) / (float)(1 + RND() % 89);
+                }
+                atan2Pair(ys, xs, got);
+                for (int k = 0; k < 2; ++k) {
+                    const float want = cscdAtan2f(ys[k], xs[k]);
+                    bad += memcmp(&got[k], &want, sizeof want) != 0;
+                }
+            }
+        }
+        { /* a radial gradient's pixel, its channels at once */
+            CscdShader sh;
+            memset(&sh, 0, sizeof sh);
+            sh.repeating = round % 2;
+            ShaderCtx sc;
+            memset(&sc, 0, sizeof sc);
+            sc.s = &sh;
+            for (int i = 0; i < 256; ++i)
+                for (int ch = 0; ch < 4; ++ch) sc.radial[i][ch] = (float)((int)(RND() % 3000) - 200) / 10.f;
+            for (int i = 0; i < 37; ++i) {
+                const float t = (float)((int)(RND() % 4000) - 1000) / 2000.f;
+                bad += radialAt(&sc, t, i, round) != radialAtScalar(&sc, t, i, round);
+            }
+        }
     }
-    for (int round = 0; round < 6; ++round) {
-        const int w = 7 + (int)(RND() % 40), h = 5 + (int)(RND() % 30);
+    for (int round = 0; round < 12; ++round) {
+        const int w = 7 + (int)(RND() % 60), h = 5 + (int)(RND() % 50);
         const float sigma = 0.5f + (float)(RND() % 100) / 10;
         uint32_t* p = (uint32_t*)cscdMalloc(sizeof(uint32_t) * (size_t)w * h);
         uint32_t* q = (uint32_t*)cscdMalloc(sizeof(uint32_t) * (size_t)w * h);
@@ -1239,6 +1517,16 @@ int cscdPaintSimdSelfCheck(void) {
         for (int i = 0; i < w * h; ++i) bad += p[i] != q[i];
         cscdFree(p);
         cscdFree(q);
+        /* one channel (a shadow): down the columns, as one at a time */
+        CscdFloatVec f = {0}, g = {0};
+        cscdVecResize(&f, (size_t)w * h);
+        cscdVecResize(&g, (size_t)w * h);
+        for (int i = 0; i < w * h; ++i) f.items[i] = g.items[i] = (float)(RND() % 256) / (RND() % 4 + 1);
+        cscdGaussianBlur(&f, w, h, sigma);
+        cscdGaussianBlurScalar(&g, w, h, sigma);
+        bad += memcmp(f.items, g.items, sizeof(float) * (size_t)w * h) != 0;
+        cscdVecFree(&f);
+        cscdVecFree(&g);
     }
     #undef RND
     return bad;
@@ -1312,6 +1600,23 @@ void cscdCanvasSetLayerFilter(CscdCanvas* c, const CscdFilter* f) {
     if (op) op->filter = *f;
     if (c->list && f->blur > 0) c->list->bandable = false; /* (the blur reads the layer around each pixel) */
     if (c->layers.len) cscdVecLast(&c->layers).filter = *f;
+    endRecord(c, op);
+}
+
+void cscdCanvasDrawLayerImage(CscdCanvas* c, CscdImage* img, float opacity) {
+    Op* op = record(c, OP_LAYER_IMAGE);
+    if (op) { op->image = (CscdImage*)cscdRetain(img); op->f[0] = opacity; }
+    if (skip(c) || !img) { endRecord(c, op); return; }
+    CscdImage* t = cscdCanvasTarget(c);
+    const CscdRect clip = st(c)->clip;
+    const int x0 = cscdMaxi(0, cscdIntOf(floorf(clip.x))), y0 = cscdMaxi(0, cscdIntOf(floorf(clip.y)));
+    const int x1 = cscdMini(cscdMini(t->width, img->width), cscdIntOf(ceilf(cscdRectRight(clip))));
+    const int y1 = cscdMini(cscdMini(t->height, img->height), cscdIntOf(ceilf(cscdRectBottom(clip))));
+    if (x1 > x0 && y1 > y0) {
+        const uint32_t k = (uint32_t)cscdClampi((int)lroundf(opacity * 255), 0, 255); /* (as cscdCanvasPopLayer) */
+        for (int y = y0; y < y1; ++y) overSpan(cscdImageRow(t, y) + x0, cscdImageRow(img, y) + x0, x1 - x0, k);
+        if (c->layers.len) markDirty(c, x0, y0, x1, y1);
+    }
     endRecord(c, op);
 }
 
@@ -1448,15 +1753,16 @@ typedef struct RowBlender {
 static void solidRun(uint32_t* row, int x0, int len, const uint8_t* cov, uint32_t col) {
     if (!col) return;
     for (int i = 0; i < len;) {
-        const uint32_t cv = cov[i];
-        if (cv == 255) {
+        if (cov[i] == 255) {
             const int n = fullRun(cov + i, len - i);
             fillPixels(row + x0 + i, n, col);
             i += n;
             continue;
         }
-        if (cv) row[x0 + i] = over(row[x0 + i], mulPixel(col, cv));
-        ++i;
+        int j = i + 1; /* (up to the next full pixel: its edges, through coverage) */
+        while (j < len && cov[j] != 255) ++j;
+        coverSpan(row + x0 + i, cov + i, j - i, col);
+        i = j;
     }
 }
 
@@ -1468,7 +1774,7 @@ static void blendRow(const RowBlender* rb, int x0, int y, int len, const uint8_t
     const CscdMask* mask = rb->mask;
     bool solid = sc->s->kind == CSCD_SHADER_SOLID;
     if (solid && !mask) { solidRun(row, x0, len, cov, sc->solid); return; }
-    if (sc->s->kind == CSCD_SHADER_LINEAR || sc->s->kind == CSCD_SHADER_RADIAL) {
+    if (sc->s->kind == CSCD_SHADER_LINEAR || sc->s->kind == CSCD_SHADER_RADIAL || sc->s->kind == CSCD_SHADER_CONIC) {
         if ((int)rowColors.len < len) cscdVecResize(&rowColors, (size_t)len);
         uint32_t* colors = rowColors.items;
         if (shadeRow(sc, x0, y, len, colors)) {
@@ -1947,6 +2253,21 @@ static void drawScaledImage(CscdCanvas* c, const CscdImage* img, CscdRect placed
         for (int x = x0; x < x1; ++x) {
             const Sample* cs = &cols[x - x0];
             if (!cs->in) continue;
+#if defined(CSCD_PX4)
+            /* four whole pixels inside it, smoothed: four at once */
+            if (smooth && !mask && r->cov == 255 && x + 4 <= x1 && cs[1].in && cs[2].in && cs[3].in && cs[0].cov == 255 && cs[1].cov == 255 &&
+                cs[2].cov == 255 && cs[3].cov == 255) {
+                const uint32_t pa[4] = {ra[cs[0].a], ra[cs[1].a], ra[cs[2].a], ra[cs[3].a]}, pb[4] = {ra[cs[0].b], ra[cs[1].b], ra[cs[2].b], ra[cs[3].b]};
+                const uint32_t qa[4] = {rb[cs[0].a], rb[cs[1].a], rb[cs[2].a], rb[cs[3].a]}, qb[4] = {rb[cs[0].b], rb[cs[1].b], rb[cs[2].b], rb[cs[3].b]};
+                const Px4 top = px4Lerp(px4Load(pa), px4Load(pb), px4Two(cs[0].w, cs[1].w), px4Two(cs[2].w, cs[3].w));
+                const Px4 bot = px4Lerp(px4Load(qa), px4Load(qb), px4Two(cs[0].w, cs[1].w), px4Two(cs[2].w, cs[3].w));
+                Px4 p = px4Lerp(top, bot, px4Two(r->w, r->w), px4Two(r->w, r->w));
+                if (alpha < 1) p = px4MulK(p, k);
+                px4Store(d + x, px4Over(px4Load(d + x), p)); /* (over a pixel of 0 leaves it) */
+                x += 3;
+                continue;
+            }
+#endif
             uint32_t px = smooth ? lerpPx(lerpPx(ra[cs->a], ra[cs->b], cs->w), lerpPx(rb[cs->a], rb[cs->b], cs->w), r->w) : ra[cs->a];
             if (alpha < 1) px = mulPixel(px, k);
             uint32_t cov = cs->cov == 255 && r->cov == 255
@@ -2519,6 +2840,10 @@ void cscdCanvasDrawGlyphs(CscdCanvas* c, const CscdGlyph* glyphs, size_t n, cons
             for (int y = y0; y < y1; ++y) {
                 uint32_t* row = cscdImageRow(t, y);
                 const uint32_t* src = &b->rgba.items[(size_t)(y - gy0) * b->w];
+                if (!mask) { /* (four pixels at once) */
+                    overSpan(row + x0, src + (x0 - gx0), x1 - x0, k8);
+                    continue;
+                }
                 for (int x = x0; x < x1; ++x) {
                     uint32_t px = src[x - gx0];
                     if (!px) continue;
@@ -2534,6 +2859,10 @@ void cscdCanvasDrawGlyphs(CscdCanvas* c, const CscdGlyph* glyphs, size_t n, cons
         for (int y = y0; y < y1; ++y) {
             uint32_t* row = cscdImageRow(t, y);
             const uint8_t* src = &b->a.items[(size_t)(y - gy0) * b->w];
+            if (solid && !mask) { /* (one color through the glyph's coverage, four pixels at once) */
+                coverSpan(row + x0, src + (x0 - gx0), x1 - x0, sc.solid);
+                continue;
+            }
             for (int x = x0; x < x1; ++x) {
                 uint32_t cv = src[x - gx0];
                 if (!cv) continue;
@@ -2630,6 +2959,7 @@ static void replayOp(const Op* op, CscdCanvas* c) {
     case OP_FILL_RRECT: cscdCanvasFillRRectShader(c, &op->rr, op->shader); break;
     case OP_FILL_RING: cscdCanvasFillRing(c, &op->rr, &op->rr2, op->shader); break;
     case OP_IMAGE_PROJECTIVE: cscdCanvasDrawImageProjective(c, op->image, op->f); break;
+    case OP_LAYER_IMAGE: cscdCanvasDrawLayerImage(c, op->image, op->f[0]); break;
     case OP_IMAGE: replayImage((Op*)op, c); break; /* (its reduced picture is a cache) */
     case OP_BOX_SHADOW: cscdCanvasDrawBoxShadow(c, &op->rr, op->f[0], op->f[1], op->f[2], op->f[3], op->color, op->flag); break;
     case OP_BLURRED_PATH: cscdCanvasDrawBlurredPath(c, op->path, op->f[0], op->color); break;

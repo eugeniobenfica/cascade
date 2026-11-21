@@ -879,14 +879,16 @@ static DWORD WINAPI threadMain(LPVOID p) {
     return 0;
 }
 
-bool cscdThreadStart(CscdThread* t, CscdThreadFn fn, void* arg) {
+bool cscdThreadStartSized(CscdThread* t, CscdThreadFn fn, void* arg, size_t stackBytes) {
     ThreadStart* s = CSCD_NEW(ThreadStart);
     s->fn = fn;
     s->arg = arg;
-    t->handle = CreateThread(NULL, 0, threadMain, s, 0, NULL);
+    t->handle = CreateThread(NULL, stackBytes, threadMain, s, stackBytes ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0, NULL);
     if (!t->handle) cscdFree(s);
     return t->handle != NULL;
 }
+
+bool cscdThreadStart(CscdThread* t, CscdThreadFn fn, void* arg) { return cscdThreadStartSized(t, fn, arg, 0); }
 
 void cscdThreadJoin(CscdThread* t) {
     if (!t->handle) return;
@@ -955,16 +957,23 @@ static void* threadMain(void* p) {
     return NULL;
 }
 
-bool cscdThreadStart(CscdThread* t, CscdThreadFn fn, void* arg) {
+bool cscdThreadStartSized(CscdThread* t, CscdThreadFn fn, void* arg, size_t stackBytes) {
     ThreadStart* s = CSCD_NEW(ThreadStart);
     s->fn = fn;
     s->arg = arg;
-    if (pthread_create(&t->t, NULL, threadMain, s) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    if (stackBytes) pthread_attr_setstacksize(&attr, stackBytes);
+    const int r = pthread_create(&t->t, &attr, threadMain, s);
+    pthread_attr_destroy(&attr);
+    if (r != 0) {
         cscdFree(s);
         return false;
     }
     return true;
 }
+
+bool cscdThreadStart(CscdThread* t, CscdThreadFn fn, void* arg) { return cscdThreadStartSized(t, fn, arg, 0); }
 
 void cscdThreadJoin(CscdThread* t) { pthread_join(t->t, NULL); }
 

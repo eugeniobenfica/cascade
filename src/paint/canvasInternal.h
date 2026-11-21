@@ -24,12 +24,17 @@ void cscdApplyDash(const CscdPoint* poly, size_t n, bool closed, const float* da
 
 /* Three box blurs approximate a gaussian (W3C filter effects recommend this). */
 void cscdGaussianBlur(CscdFloatVec* buf, int w, int h, float sigma);
+/* The same, one pixel after another (what cscdGaussianBlur gives, to the bit: for the tests). */
+void cscdGaussianBlurScalar(CscdFloatVec* buf, int w, int h, float sigma);
 /* The same on four channels at once: buf holds 4 floats per pixel (w*h*4), each channel blurred exactly as
  * cscdGaussianBlur blurs it alone (the same operations in the same order, lane by lane). */
 void cscdGaussianBlur4(CscdFloatVec* buf, int w, int h, float sigma);
 /* Compares the vector paths of the painter (SSE2, NEON) with the scalar ones on random data: the count of
  * differences (0 where there is no vector path). For the tests. */
 int cscdPaintSimdSelfCheck(void);
+/* What a layer of opacity 1 holds, kept (an image the target's size, in its pixels), drawn back with an opacity: what
+ * cscdCanvasPopLayer gives for a layer that held it, within the clip (no clip mask). The image is retained while recorded. */
+void cscdCanvasDrawLayerImage(CscdCanvas* c, CscdImage* img, float opacity);
 
 /* (vector paths: integer SSE2 on x86-64, NEON on ARM; the same bits as the scalar code) */
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)

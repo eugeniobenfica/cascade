@@ -74,6 +74,17 @@ typedef struct CscdHitItem {
 } CscdHitItem;
 typedef CSCD_VEC(CscdHitItem) CscdHitVec;
 
+/* (a layer kept from one frame to the next: what an element holds, drawn into img where the frame draws it) */
+typedef struct KeptLayer {
+    const CscdElement* e;
+    const CscdLayoutBox* b;
+    uint64_t epoch, look, usedIn;
+    CscdMatrix m;
+    CscdIRect valid;
+    int w, h;
+    CscdImage* img;
+} KeptLayer;
+
 struct CscdView {
     /* callbacks */
     CscdWarningFn onWarning; void* onWarningUser;
@@ -151,6 +162,7 @@ struct CscdView {
     uint64_t layersStamp; /* (CscdLayoutBox.layersAt: moves on when styles may have changed in place anywhere) */
     int shiftX, shiftY;   /* (device px the last frame is to be moved by before the next paint: the page scrolled) */
     bool shiftPending;
+    CscdIRect shiftArea;  /* (device px moved: the window, or the inside of a box that scrolled) */
     CscdU64Map inkRuns;  /* box -> its children's inks in order (paint.c), for long lists */
     size_t inkBoxes;     /* (boxes in the table when it was last made whole) */
     CSCD_VEC(SmoothScroll) smooth; /* wheel scrolls still on their way */
@@ -175,6 +187,15 @@ struct CscdView {
     CSCD_VEC(RunningTransition) transitions;
     CSCD_VEC(RunningAnimation) animations;
     double epoch;
+    double clockAt; /* (the tests': the view's time held at this many seconds, -1: the clock's) */
+    /* layers kept from one frame to the next: an element whose opacity alone animates, what it holds drawn once into an
+     * image and drawn back each frame with its opacity, while nothing in it changes (paintLayerContent) */
+    CSCD_VEC(KeptLayer) keptLayers;
+    uint64_t paintCount;   /* (cscdViewPaint calls: a kept layer not used in one is let go) */
+    uint64_t paintedGen;   /* (cscdViewInvalidateElement calls: what a painter draws changed) */
+    /* the frame on screen holds something transformed (turned, scaled, in perspective): its device places are floats
+     * that round otherwise when it scrolls, so it is not moved by whole pixels (painted again instead) */
+    bool frameTransformed;
     bool caretShown; /* (the caret blink state last painted) */
 
     /* menus */
@@ -413,5 +434,17 @@ void paintInkChanged(CscdView* v, CscdLayoutBox* b);
 void paintFreeRuns(CscdView* v);
 /* Whether the page, scrolled, is what it was moved by as much (nothing in it fixed, sticky or reading what is behind it). */
 bool paintPageMovesWhole(CscdView* v);
+/* Where b and all in it are drawn (viewport px), its own transform included; false when that is not known so (a
+ * transform, a perspective, a fixed or sticky box around it or in it): an animation of it repaints the window. */
+bool paintAnimatedArea(CscdView* v, CscdLayoutBox* b, CscdRect* out);
+/* The styles of what e holds worked out again from e's style as an animation left it (they inherit its values); inPlace:
+ * the boxes take them where they lay out the same (else the page is laid out again). */
+void viewInheritAnimated(CscdView* v, CscdElement* e, bool inPlace);
+/* Whether e is animated, by its opacity alone, and nothing in it is (a kept layer stays what it holds). */
+bool viewAnimatesOpacityOnly(const CscdView* v, const CscdElement* e);
+void viewKeptLayersSweep(CscdView* v, bool all);
+/* Whether the box s, scrolled, is its last frame moved inside area (viewport px, inside its padding box): its own
+ * background one opaque color, nothing in it or around it fixed, sticky, blending or moving it, nothing else over area. */
+bool paintBoxScrollsWhole(CscdView* v, const CscdLayoutBox* s, CscdRect area);
 
 #endif

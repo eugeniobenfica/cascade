@@ -29,12 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build
-        run: cmake -S . -B build && cmake --build build -j 4
+        run: cmake -S . -B build -DCASCADE_WERROR=ON && cmake --build build -j 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Minimal build (software only, no screen readers)
         run: |
-          cmake -S . -B build-min -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
+          cmake -S . -B build-min -DCASCADE_WERROR=ON -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF
           cmake --build build-min -j 4
           ctest --test-dir build-min --output-on-failure
       - name: Python binding

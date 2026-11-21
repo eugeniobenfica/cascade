@@ -767,7 +767,8 @@ static void kbKey(void* d, void* kb, uint32_t serial, uint32_t time, uint32_t ke
         if (n->repeatKey == key + 1) n->repeatKey = 0;
         if (n->xkbState) {
             char name[16];
-            cscdViewKeyUp(n->w->view, mapKey(baseSym(n, key + 8), name), n->mods, cscdSv(name));
+            const CscdKey k = mapKey(baseSym(n, key + 8), name); /* (before the name is read: arguments go in any order) */
+            cscdViewKeyUp(n->w->view, k, n->mods, cscdSv(name));
         }
     }
     windowPlaceInputMethod(n->w);

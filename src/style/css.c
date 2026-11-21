@@ -410,6 +410,7 @@ static void spSkipWs(SelParser* p) { while (p->i < p->n && p->t[p->i].type == CS
 
 static bool selector(SelParser* p, CscdSelector* s);
 static bool selList(SelParser* p, CscdSelectorVec* out, bool forgiving);
+static bool selListOf(SelParser* p, CscdSelectorVec* out, bool forgiving, bool relative);
 
 static void addSpec(const CscdCompound* comp, uint32_t* a, uint32_t* b, uint32_t* c) {
     for (size_t i = 0; i < comp->parts.len; ++i) {
@@ -587,19 +588,14 @@ static bool compound(SelParser* p, CscdCompound* c, CscdSelector* sel) {
                 ss.name = name;
                 CscdSv nm = cscdStrSv(&name);
                 if (cscdSvEqC(nm, "not") || cscdSvEqC(nm, "is") || cscdSvEqC(nm, "where") || cscdSvEqC(nm, "matches") || cscdSvEqC(nm, "has") || cscdSvEqC(nm, "any")) {
-                    size_t from = 0;
-                    if (cscdSvEqC(nm, "has")) { /* relative selectors: strip a leading combinator, matched as descendants */
-                        size_t k = 0;
-                        while (k < args.len && args.items[k].type == CSCD_TOK_WHITESPACE) ++k;
-                        if (k < args.len && args.items[k].type == CSCD_TOK_DELIM && args.items[k].delim == '>') { ss.value = cscdStrDupC(">"); from = k + 1; }
-                    }
                     if (p->depth >= kMaxSelectorNesting) {
                         simpleFree(&ss);
                         cscdCssTokenVecFree(&args);
                         return false;
                     }
-                    SelParser sub = {args.len ? args.items + from : NULL, args.len - from, 0, p->depth + 1};
-                    selList(&sub, &ss.args, !cscdSvEqC(nm, "not"));
+                    SelParser sub = {args.len ? args.items : NULL, args.len, 0, p->depth + 1};
+                    /* (:has() takes relative selectors: each may start with a combinator, kept on its first compound) */
+                    selListOf(&sub, &ss.args, !cscdSvEqC(nm, "not"), cscdSvEqC(nm, "has"));
                 } else if (cscdSvStartsC(nm, "nth-")) {
                     /* "An+B of S" is accepted without the "of S" part */
                     size_t k = 0;
@@ -648,13 +644,25 @@ static bool selector(SelParser* p, CscdSelector* s) {
     return s->compounds.len > 0;
 }
 
-static bool selList(SelParser* p, CscdSelectorVec* out, bool forgiving) {
+static bool selList(SelParser* p, CscdSelectorVec* out, bool forgiving) { return selListOf(p, out, forgiving, false); }
+
+static bool selListOf(SelParser* p, CscdSelectorVec* out, bool forgiving, bool relative) {
     for (;;) {
         spSkipWs(p);
+        CscdCombinator lead = CSCD_COMB_DESCENDANT;
+        if (relative && p->i < p->n && p->t[p->i].type == CSCD_TOK_DELIM) {
+            const char d = p->t[p->i].delim;
+            if (d == '>' || d == '+' || d == '~') {
+                lead = d == '>' ? CSCD_COMB_CHILD : d == '+' ? CSCD_COMB_ADJACENT : CSCD_COMB_SIBLING;
+                ++p->i;
+                spSkipWs(p);
+            }
+        }
         CscdSelector s;
         memset(&s, 0, sizeof s);
         bool ok = selector(p, &s);
         spSkipWs(p);
+        if (ok && relative && s.compounds.len) s.compounds.items[0].combinator = lead;
         if (ok) cscdVecPush(out, s);
         else {
             selectorFree(&s);
@@ -723,30 +731,47 @@ typedef enum MatchResult {
     MATCH_NOT_AT_ALL        /* nothing further from the subject will */
 } MatchResult;
 
-static MatchResult matchFrom(const CscdSelector* s, int idx, const CscdElement* e) {
+/* (anchor: the element of a :has() its argument is relative to, or NULL: the leftmost compound's element stands to it as
+ * the argument's leading combinator says) */
+static bool standsTo(const CscdElement* e, const CscdElement* anchor, CscdCombinator comb) {
+    switch (comb) {
+    case CSCD_COMB_CHILD: return parentEl(e) == anchor;
+    case CSCD_COMB_ADJACENT: return prevEl(e) == anchor;
+    case CSCD_COMB_SIBLING:
+        for (const CscdElement* p = prevEl(e); p; p = prevEl(p))
+            if (p == anchor) return true;
+        return false;
+    default:
+        for (const CscdElement* p = parentEl(e); p; p = parentEl(p))
+            if (p == anchor) return true;
+        return false;
+    }
+}
+
+static MatchResult matchFrom(const CscdSelector* s, int idx, const CscdElement* e, const CscdElement* anchor) {
     const CscdCompound* c = &s->compounds.items[idx];
     if (!matchCompound(c, e)) return MATCH_NOT_THIS_ONE;
-    if (idx == 0) return MATCH_YES;
+    if (idx == 0) return !anchor || standsTo(e, anchor, s->compounds.items[0].combinator) ? MATCH_YES : MATCH_NOT_THIS_ONE;
     switch (c->combinator) {
     case CSCD_COMB_CHILD: {
         const CscdElement* p = parentEl(e);
         if (!p) return MATCH_NOT_AT_ALL;
-        const MatchResult r = matchFrom(s, idx - 1, p);
+        const MatchResult r = matchFrom(s, idx - 1, p, anchor);
         return r == MATCH_YES || r == MATCH_NOT_AT_ALL ? r : MATCH_NOT_AMONG_SIBLINGS;
     }
     case CSCD_COMB_DESCENDANT:
         for (const CscdElement* p = parentEl(e); p; p = parentEl(p)) {
-            const MatchResult r = matchFrom(s, idx - 1, p);
+            const MatchResult r = matchFrom(s, idx - 1, p, anchor);
             if (r == MATCH_YES || r == MATCH_NOT_AT_ALL) return r;
         }
         return MATCH_NOT_AT_ALL;
     case CSCD_COMB_ADJACENT: {
         const CscdElement* p = prevEl(e);
-        return p ? matchFrom(s, idx - 1, p) : MATCH_NOT_AMONG_SIBLINGS;
+        return p ? matchFrom(s, idx - 1, p, anchor) : MATCH_NOT_AMONG_SIBLINGS;
     }
     case CSCD_COMB_SIBLING:
         for (const CscdElement* p = prevEl(e); p; p = prevEl(p)) {
-            const MatchResult r = matchFrom(s, idx - 1, p);
+            const MatchResult r = matchFrom(s, idx - 1, p, anchor);
             if (r != MATCH_NOT_THIS_ONE) return r;
         }
         return MATCH_NOT_AMONG_SIBLINGS;
@@ -754,12 +779,30 @@ static MatchResult matchFrom(const CscdSelector* s, int idx, const CscdElement* 
     }
 }
 
-static bool hasDescendantMatching(const CscdElement* e, const CscdSelectorVec* list, bool childOnly) {
-    for (size_t i = 0; i < e->node.children.len; ++i) {
-        const CscdElement* c = cscdNodeAsElementC(cscdNodeChild(&e->node, i));
-        if (!c) continue;
-        if (cscdMatchSelectorList(list, c)) return true;
-        if (!childOnly && hasDescendantMatching(c, list, false)) return true;
+/* an element in what scope holds (scope too, with self) that s matches, relative to anchor */
+static bool relativeIn(const CscdSelector* s, const CscdElement* scope, bool self, const CscdElement* anchor, bool childrenOnly) {
+    if (self && matchFrom(s, (int)s->compounds.len - 1, scope, anchor) == MATCH_YES) return true;
+    for (size_t i = 0; i < scope->node.children.len; ++i) {
+        const CscdElement* c = cscdNodeAsElementC(cscdNodeChild(&scope->node, i));
+        if (c && (childrenOnly ? matchFrom(s, (int)s->compounds.len - 1, c, anchor) == MATCH_YES : relativeIn(s, c, true, anchor, false)))
+            return true;
+    }
+    return false;
+}
+
+/* :has(): one of the relative selectors matches an element after e (in it for none or '>', after it among its siblings,
+ * or in those, for '+' and '~'), its leftmost compound standing to e as its leading combinator says */
+static bool hasRelative(const CscdElement* e, const CscdSelectorVec* list) {
+    for (size_t i = 0; i < list->len; ++i) {
+        const CscdSelector* s = &list->items[i];
+        if (!s->compounds.len || s->pseudoElement.len) continue;
+        const CscdCombinator comb = s->compounds.items[0].combinator;
+        if (comb == CSCD_COMB_ADJACENT || comb == CSCD_COMB_SIBLING) {
+            for (const CscdElement* n = nextEl(e); n; n = nextEl(n)) {
+                if (relativeIn(s, n, true, e, false)) return true;
+                if (comb == CSCD_COMB_ADJACENT && s->compounds.len == 1) break; /* (only the next one can) */
+            }
+        } else if (relativeIn(s, e, false, e, comb == CSCD_COMB_CHILD && s->compounds.len == 1)) return true;
     }
     return false;
 }
@@ -896,7 +939,7 @@ static bool matchPseudo(const CscdSimpleSelector* p, const CscdElement* e) {
     }
     if (IS("not")) return !cscdMatchSelectorList(&p->args, e);
     if (IS("is") || IS("where") || IS("matches") || IS("any")) return cscdMatchSelectorList(&p->args, e);
-    if (IS("has")) return hasDescendantMatching(e, &p->args, cscdStrEqC(&p->value, ">"));
+    if (IS("has")) return hasRelative(e, &p->args);
     if (IS("link") || IS("any-link")) return (cscdElementIs(e, "a") || cscdElementIs(e, "area")) && cscdElementHasAttributeC(e, "href");
     if (IS("visited") || IS("target") || IS("indeterminate")) return false;
     if (IS("placeholder-shown")) return (cscdElementIs(e, "input") || cscdElementIs(e, "textarea")) && cscdElementHasAttributeC(e, "placeholder") && valueEmpty(e);
@@ -976,13 +1019,24 @@ static bool matchCompound(const CscdCompound* c, const CscdElement* e) {
     return true;
 }
 
-/* (the element is the caller's and is left as it was: the states are only assumed while it is tested) */
+/* whether a simple selector is the pseudo-class, or holds it somewhere in its arguments (:not(:has(...))) */
+static bool partUses(const CscdSimpleSelector* p, CscdSv pseudo) {
+    if (p->kind == CSCD_SEL_PSEUDO_CLASS && cscdSvEq(cscdStrSv(&p->name), pseudo)) return true;
+    for (size_t a = 0; a < p->args.len; ++a)
+        for (size_t i = 0; i < p->args.items[a].compounds.len; ++i) {
+            const CscdCompound* c = &p->args.items[a].compounds.items[i];
+            for (size_t k = 0; k < c->parts.len; ++k)
+                if (partUses(&c->parts.items[k], pseudo)) return true;
+        }
+    return false;
+}
+
 bool cscdCompoundMatchesIgnoring(const CscdCompound* c, const CscdElement* e, CscdSv pseudo) {
     CscdCompound without = *c;
     CSCD_VEC(CscdSimpleSelector) parts = {0};
     for (size_t i = 0; i < c->parts.len; ++i) {
         const CscdSimpleSelector* p = &c->parts.items[i];
-        if (!(p->kind == CSCD_SEL_PSEUDO_CLASS && cscdSvEq(cscdStrSv(&p->name), pseudo))) cscdVecPush(&parts, *p); /* (shallow) */
+        if (!partUses(p, pseudo)) cscdVecPush(&parts, *p); /* (shallow; a part that holds it is set aside whole) */
     }
     without.parts.items = parts.items;
     without.parts.len = parts.len;
@@ -992,6 +1046,7 @@ bool cscdCompoundMatchesIgnoring(const CscdCompound* c, const CscdElement* e, Cs
     return r;
 }
 
+/* (the element is the caller's and is left as it was: the states are only assumed while it is tested) */
 bool cscdCompoundMatchesAssuming(const CscdCompound* c, const CscdElement* e, uint32_t states) {
     CscdElement* m = (CscdElement*)e;
     const uint32_t was = m->state;
@@ -1003,7 +1058,7 @@ bool cscdCompoundMatchesAssuming(const CscdCompound* c, const CscdElement* e, ui
 
 bool cscdMatchSelector(const CscdSelector* s, const CscdElement* e) {
     if (!s->compounds.len) return false;
-    return matchFrom(s, (int)s->compounds.len - 1, e) == MATCH_YES;
+    return matchFrom(s, (int)s->compounds.len - 1, e, NULL) == MATCH_YES;
 }
 
 bool cscdMatchSelectorList(const CscdSelectorVec* list, const CscdElement* e) {

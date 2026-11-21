@@ -12,9 +12,40 @@
 extern "C" {
 #endif
 
+/* Places in layout are doubles, sizes floats: a place is on the grid of 1/64 px (layout units) up to +-2^25 px, where a
+ * double holds every sum of them exactly (a float only below 2^17 px: a page of 5,000 rows is past it), so that a box
+ * laid out at one place and moved to another is exactly where laying it out there puts it. */
+typedef struct CscdBoxRect { double x, y, w, h; } CscdBoxRect;
+CSCD_INLINE CscdRect cscdBoxRectF(CscdBoxRect r) { return cscdRect((float)r.x, (float)r.y, (float)r.w, (float)r.h); }
+CSCD_INLINE CscdBoxRect cscdBoxRectOf(CscdRect r) { CscdBoxRect b = {r.x, r.y, r.w, r.h}; return b; }
+CSCD_INLINE CscdBoxRect cscdBoxRect(double x, double y, double w, double h) { CscdBoxRect b = {x, y, w, h}; return b; }
+CSCD_INLINE double cscdBoxRectRight(CscdBoxRect r) { return r.x + r.w; }
+CSCD_INLINE double cscdBoxRectBottom(CscdBoxRect r) { return r.y + r.h; }
+CSCD_INLINE bool cscdBoxRectEmpty(CscdBoxRect r) { return r.w <= 0 || r.h <= 0; }
+CSCD_INLINE CscdBoxRect cscdBoxRectTranslated(CscdBoxRect r, double dx, double dy) { r.x += dx; r.y += dy; return r; }
+CSCD_INLINE CscdBoxRect cscdBoxRectIntersect(CscdBoxRect a, CscdBoxRect b) {
+    const double x0 = a.x > b.x ? a.x : b.x, y0 = a.y > b.y ? a.y : b.y;
+    const double x1 = cscdBoxRectRight(a) < cscdBoxRectRight(b) ? cscdBoxRectRight(a) : cscdBoxRectRight(b);
+    const double y1 = cscdBoxRectBottom(a) < cscdBoxRectBottom(b) ? cscdBoxRectBottom(a) : cscdBoxRectBottom(b);
+    return cscdBoxRect(x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0);
+}
+/* the border box, padding box and content box in layout's own doubles */
+CSCD_INLINE CscdBoxRect cscdBoxBorderBoxD(const CscdLayoutBox* b);
+/* (as cscdRectUnite: an empty one adds nothing) */
+CSCD_INLINE CscdBoxRect cscdBoxRectUnite(CscdBoxRect a, CscdBoxRect b) {
+    if (cscdBoxRectEmpty(a)) return b;
+    if (cscdBoxRectEmpty(b)) return a;
+    const double x0 = a.x < b.x ? a.x : b.x, y0 = a.y < b.y ? a.y : b.y;
+    const double x1 = cscdBoxRectRight(a) > cscdBoxRectRight(b) ? cscdBoxRectRight(a) : cscdBoxRectRight(b);
+    const double y1 = cscdBoxRectBottom(a) > cscdBoxRectBottom(b) ? cscdBoxRectBottom(a) : cscdBoxRectBottom(b);
+    return cscdBoxRect(x0, y0, x1 - x0, y1 - y0);
+}
+
 typedef struct CscdTextFrag {
-    float x, baseline, width; /* absolute, CSS px */
-    float top, height;        /* the line box's extent for this fragment */
+    double x, baseline;       /* absolute, CSS px */
+    float width;
+    double top;               /* the line box's extent for this fragment */
+    float height;
     CscdStr text;
     float justify;            /* extra space added at each space (text-align: justify) */
     size_t start, end;        /* byte range in the source text (after whitespace processing) */
@@ -24,13 +55,16 @@ typedef CSCD_VEC(CscdTextFrag) CscdTextFragVec;
 void cscdTextFragVecClear(CscdTextFragVec* v);
 
 typedef struct CscdInlineFrag {
-    CscdRect rect; /* border box on one line */
+    CscdBoxRect rect; /* border box on one line */
     bool first;  /* starts on this line (left border/padding drawn) */
     bool last;   /* ends on this line */
 } CscdInlineFrag;
 
 typedef struct CscdLineInfo {
-    float top, height, baseline, left, width;
+    double top;
+    float height;
+    double baseline, left;
+    float width;
 } CscdLineInfo;
 
 typedef enum CscdBoxKind {
@@ -66,14 +100,15 @@ struct CscdLayoutBox {
     CscdImage* image;        /* shared */
     CscdFont font;           /* resolved font for text */
 
-    /* geometry: border box, absolute CSS px (scroll offsets are applied when painting) */
-    float x, y, w, h;
+    /* geometry: border box, absolute CSS px (scroll offsets are applied when painting); places doubles, sizes floats */
+    double x, y;
+    float w, h;
     float margin[4], border[4], padding[4];
-    float baseline;        /* absolute y of the first baseline */
+    double baseline;       /* absolute y of the first baseline */
     bool hasBaseline;
-    float lastBaseline;
-    CscdRect overflow;       /* scrollable overflow, absolute */
-    float staticX, staticY;
+    double lastBaseline;
+    CscdBoxRect overflow;  /* scrollable overflow, absolute */
+    double staticX, staticY;
     bool hasStaticPos;
 
     CscdTextFragVec textFrags;           /* Text boxes */
@@ -106,12 +141,16 @@ struct CscdLayoutBox {
     /* (painting) the same for what does not move with the page as it scrolls: a fixed or sticky box, a backdrop */
     uint64_t stillAt;
     bool stillNone;
-    float keptX, keptY; /* (where it was when the layout took it: a flex or grid parent may shift it afterwards) */
+    double keptX, keptY; /* (where it was when the layout took it: a flex or grid parent may shift it afterwards) */
     CscdRect prevInk;
     uint64_t prevLook;
     bool hasPrev;
-    float memoIn[8];
-    float memoInX, memoInY, memoX, memoY, memoH, memoOut[2];
+    double memoIn[8];
+    double memoInX, memoInY, memoX, memoY;
+    /* (across layouts) whether every place in it is on the grid of layout units and nothing in it is placed otherwise
+     * (sticky, a shape): 0 not known since it was last laid out, 1 yes, 2 no. Moved by a shift on the grid, it stays so. */
+    uint8_t gridState;
+    float memoH, memoOut[2];
 };
 
 CscdLayoutBox* cscdLayoutBoxNew(void);
@@ -120,17 +159,28 @@ CscdLayoutBox* cscdLayoutBoxNew(void);
 void cscdLayoutForget(CscdDocument* doc);
 void cscdLayoutBoxFree(CscdLayoutBox* b);
 CSCD_INLINE CscdLayoutBox* cscdBoxChild(const CscdLayoutBox* b, size_t i) { return (CscdLayoutBox*)b->children.items[i]; }
-CSCD_INLINE float cscdBoxContentX(const CscdLayoutBox* b) { return b->x + b->border[3] + b->padding[3]; }
-CSCD_INLINE float cscdBoxContentY(const CscdLayoutBox* b) { return b->y + b->border[0] + b->padding[0]; }
+CSCD_INLINE double cscdBoxContentX(const CscdLayoutBox* b) { return b->x + b->border[3] + b->padding[3]; }
+CSCD_INLINE double cscdBoxContentY(const CscdLayoutBox* b) { return b->y + b->border[0] + b->padding[0]; }
 CSCD_INLINE float cscdBoxContentW(const CscdLayoutBox* b) { return cscdMaxf(0.f, b->w - b->border[1] - b->border[3] - b->padding[1] - b->padding[3]); }
 CSCD_INLINE float cscdBoxContentH(const CscdLayoutBox* b) { return cscdMaxf(0.f, b->h - b->border[0] - b->border[2] - b->padding[0] - b->padding[2]); }
-CSCD_INLINE CscdRect cscdBoxBorderBox(const CscdLayoutBox* b) { return cscdRect(b->x, b->y, b->w, b->h); }
-CSCD_INLINE CscdRect cscdBoxPaddingBox(const CscdLayoutBox* b) {
-    return cscdRect(b->x + b->border[3], b->y + b->border[0], b->w - b->border[1] - b->border[3], b->h - b->border[0] - b->border[2]);
+CSCD_INLINE CscdBoxRect cscdBoxBorderBoxD(const CscdLayoutBox* b) { return cscdBoxRect(b->x, b->y, b->w, b->h); }
+CSCD_INLINE CscdBoxRect cscdBoxPaddingBoxD(const CscdLayoutBox* b) {
+    return cscdBoxRect(b->x + b->border[3], b->y + b->border[0], (double)b->w - b->border[1] - b->border[3], (double)b->h - b->border[0] - b->border[2]);
 }
-CSCD_INLINE CscdRect cscdBoxContentBox(const CscdLayoutBox* b) { return cscdRect(cscdBoxContentX(b), cscdBoxContentY(b), cscdBoxContentW(b), cscdBoxContentH(b)); }
+CSCD_INLINE CscdBoxRect cscdBoxContentBoxD(const CscdLayoutBox* b) { return cscdBoxRect(cscdBoxContentX(b), cscdBoxContentY(b), cscdBoxContentW(b), cscdBoxContentH(b)); }
+CSCD_INLINE CscdBoxRect cscdBoxMarginBoxD(const CscdLayoutBox* b) {
+    return cscdBoxRect(b->x - b->margin[3], b->y - b->margin[0], (double)b->w + b->margin[1] + b->margin[3], (double)b->h + b->margin[0] + b->margin[2]);
+}
+/* (as floats, for painting: within 1/64 px below 2^17 px, coarser past it) */
+CSCD_INLINE CscdRect cscdBoxBorderBox(const CscdLayoutBox* b) { return cscdRect((float)b->x, (float)b->y, b->w, b->h); }
+CSCD_INLINE CscdRect cscdBoxPaddingBox(const CscdLayoutBox* b) {
+    return cscdRect((float)(b->x + b->border[3]), (float)(b->y + b->border[0]), b->w - b->border[1] - b->border[3], b->h - b->border[0] - b->border[2]);
+}
+CSCD_INLINE CscdRect cscdBoxContentBox(const CscdLayoutBox* b) {
+    return cscdRect((float)cscdBoxContentX(b), (float)cscdBoxContentY(b), cscdBoxContentW(b), cscdBoxContentH(b));
+}
 CSCD_INLINE CscdRect cscdBoxMarginBox(const CscdLayoutBox* b) {
-    return cscdRect(b->x - b->margin[3], b->y - b->margin[0], b->w + b->margin[1] + b->margin[3], b->h + b->margin[0] + b->margin[2]);
+    return cscdRect((float)(b->x - b->margin[3]), (float)(b->y - b->margin[0]), b->w + b->margin[1] + b->margin[3], b->h + b->margin[0] + b->margin[2]);
 }
 CSCD_INLINE bool cscdBoxIsScrollContainer(const CscdLayoutBox* b) {
     const CscdComputedStyle* s = b->style;
@@ -138,7 +188,7 @@ CSCD_INLINE bool cscdBoxIsScrollContainer(const CscdLayoutBox* b) {
                  s->overflowY == CSCD_OVERFLOW_SCROLL || s->overflowX == CSCD_OVERFLOW_HIDDEN || s->overflowY == CSCD_OVERFLOW_HIDDEN);
 }
 /* Moves the box and everything inside it. */
-void cscdBoxShift(CscdLayoutBox* b, float dx, float dy);
+void cscdBoxShift(CscdLayoutBox* b, double dx, double dy);
 
 typedef struct CscdViewport { float width, height; } CscdViewport;
 

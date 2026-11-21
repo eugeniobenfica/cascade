@@ -1007,7 +1007,7 @@ static void nativeDrop(CscdWindowNative* n, id<UIDropSession> session) {
         if ([provider canLoadObjectOfClass:NSString.class] && ![provider hasItemConformingToTypeIdentifier:@"public.file-url"]) {
             dispatch_group_enter(group);
             [provider loadObjectOfClass:NSString.class
-                      completionHandler:^(id<NSItemProviderReading> object, NSError* error) {
+                      completionHandler:^(id<NSItemProviderReading> object, NSError* __unused error) {
                           if ([(NSObject*)object isKindOfClass:NSString.class]) @synchronized(texts) { [texts addObject:(NSString*)object]; }
                           dispatch_group_leave(group);
                       }];
@@ -1017,7 +1017,7 @@ static void nativeDrop(CscdWindowNative* n, id<UIDropSession> session) {
         if (!type) continue;
         dispatch_group_enter(group);
         [provider loadFileRepresentationForTypeIdentifier:type
-                                        completionHandler:^(NSURL* url, NSError* error) {
+                                        completionHandler:^(NSURL* url, NSError* __unused error) {
                                             /* (the file goes when this returns: a copy stays) */
                                             if (url) {
                                                 NSString* to = [dir stringByAppendingPathComponent:url.lastPathComponent];

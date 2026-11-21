@@ -58,6 +58,17 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       nothing fixed, sticky or with a backdrop filter): 6–16% of the window instead of all of it.
 - [x] Moved boxes without a relayout, when exact: a kept box at another place is shifted when every place along the
       shift is on the 1/64 px grid under 2^17 px (`shiftsExactly`); else laid out again.
+- [x] Layout units: every place and size layout keeps is snapped to 1/64 px (`laySnap`: edges, inputs, sizes, lines,
+      fragments, every shift), so a box measured at one place and put at another, or kept and moved, is where a layout
+      from nothing puts it, to the bit. The oracle now compares geometry exactly (it allowed 0.01 px, and drift of a few
+      ulps showed as a pixel a level off at 1.5x). Rows moved by a change above them: 1,000 rows 4 → 0.5 ms.
+- [x] `:has()` takes relative selectors (`:has(+ .x)`, `:has(~ .x .y)`, one combinator each, matched from the element,
+      not the whole page), and a change restyles only the elements whose `:has()` could see it: ancestors, and with a
+      `:has()` of siblings the siblings before it and before each ancestor; inside `:is()`/`:not()` too.
+- [x] An opaque scroller scrolls by moving its last frame inside its padding box (nothing over it, nothing around it
+      blending or moving it, nothing in it fixed or sticky): only what comes into view, its scrollbars and its edges are
+      painted.
+- [x] SIMD for glyphs, color glyphs and the edges of shapes (one color through a row of coverage), bit-exact.
 
 ### Fixed on the way
 
@@ -77,24 +88,35 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 
 ### Performance
 
-- [ ] **Fixed-point layout units.** Moved boxes are shifted only when nothing rounds; text baselines are rarely on the
-      1/64 px grid and long pages pass 2^17 px, so a change above 20,000 rows still lays out every row below (75 ms)
-      and repaints the window. Layout in 1/64 px integers (as browsers' LayoutUnit) makes every shift exact; it changes
-      the pixel references.
-- [ ] **The last 6 ms per change.** Building and laying out still visit every child of a list whose one child changed
-      (20,000 cheap checks: 1.5 + 2 ms), and so does the damage walk. Splice the old children vector in place, and find
-      the dirty children through the change stamps.
-- [ ] **`:has()` of siblings** (`:has(+ .x)`) and inside `:is()`/`:not()`: still a full restyle.
-- [ ] **Retained tiles for scrollers and animations.** The page scrolls by moving the last frame; scrollable boxes and
-      transform/opacity animations still repaint their area each frame (tiles, then an integer GPU compositor).
-- [ ] **More SIMD**: glyph and image blending (per-pixel lookups), the shadow blur, gradients.
+- [x] **Layout in doubles.** Places (`x`, `y`, baselines, fragments, lines, `overflow` as `CscdBoxRect`) are doubles,
+      sizes floats; doubles hold the 1/64 px grid exactly far past the ±2^25 px layout units saturate at, so a box is
+      moved, not laid out again, wherever it is, and the incremental layout is the one from scratch to the bit on a page
+      of any length (it was 1/32 px off past 2^17 px). The oracle puts half a page past 270,000 px for a quarter of its
+      seeds. 20,000 rows, a row taller at the top: ~76 → ~28 ms.
+- [x] A class or attribute change that only changes how things look is restyled in place, without a layout (20,000
+      rows: ~6 → 0.5 ms).
+- [x] Rows moved by a change above them: whether a moved box is on the grid is looked at once after it is laid out
+      (`CscdLayoutBox.gridState`), and the inks of boxes only moved are moved, not measured again. What is left is
+      the move itself, O(rows below) with absolute places (~0.7 µs a row): relative places would make it O(1).
+- [x] **Animations paint only what they change.** A step that moves no layout damages where each animated element was
+      and is drawn (its transform included), not the window; the window was painted whole every frame of any animation.
+      An element animated by its opacity alone keeps what it holds as an image from frame to frame, drawn back with its
+      opacity (the same pixels as its layer): 60 paragraphs fading, ~4.3 → ~0.4 ms a frame. Inherited values an
+      animation sets (color, font size) are inherited by the elements in it every frame. The oracle animates a third
+      of its seeds on a clock of its own.
+- [ ] A transform animation kept as an image too (it would be composited by sampling the image: not the pixels of the
+      page painted at that moment, which is what cascade promises), and a GPU compositor.
+- [x] SIMD for the one-channel shadow blur, scaled images (bilinear), radial, linear and conic gradients, bit-exact
+      (self-checked against the scalar code).
 
 ### Correctness and robustness
 
-- [ ] Find where the NaN in text fields comes from (seen only with the DejaVu fonts on Linux CI; glyphs are skipped).
-- [ ] Guard the style recursion against the stack as layout and painting are (only threads under ~256 KB need it).
-- [ ] MSVC C4244 warnings (3), then warnings as errors on MSVC and Linux too.
-- [ ] Back up `CSCD_MAX_TREE_DEPTH` with a test on a 512 KB thread (macOS and iOS secondary threads).
+- [x] The NaN in text fields: a length past what floats hold (1e39px) was infinite, and places made from it NaN;
+      layout units saturate at ±2^25 px, as browsers'.
+- [x] The style recursion stops where the thread's stack runs low, as layout and painting do.
+- [x] MSVC C4244 warnings fixed (and a key name read before it was written on Wayland); warnings as errors on MSVC,
+      Linux and macOS CI (not yet seen green on CI).
+- [x] Back up `CSCD_MAX_TREE_DEPTH` with a test on a 512 KB thread (macOS and iOS secondary threads).
 
 ### Text
 

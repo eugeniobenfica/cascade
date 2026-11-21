@@ -240,7 +240,7 @@ void cscdViewMouseMove(CscdView* v, float x, float y, int buttons, CscdModifiers
     if (v->scrollDrag && v->scrollDrag->layout) {
         CscdLayoutBox* b = v->scrollDrag->layout;
         CscdRect pb = cscdBoxPaddingBox(b);
-        float maxY = cscdMaxf(0.f, b->overflow.h - pb.h);
+        float maxY = cscdMaxf(0.f, (float)b->overflow.h - pb.h);
         float th = cscdMaxf(20.f, (pb.h - 4) * pb.h / (pb.h + maxY));
         float delta = (y - v->scrollDragStart) * maxY / cscdMaxf(1.f, pb.h - 4 - th);
         v->scrollDrag->scrollTop = cscdClampf(v->scrollDragOrigin + delta, 0.f, maxY);
@@ -337,8 +337,8 @@ void cscdViewMouseDown(CscdView* v, float x, float y, int button, CscdModifiers 
         CscdLayoutBox* b = a->layout;
         if (!b || !b->parent || !b->style || !cscdStyleClipsOverflow(b->style)) continue;
         CscdRect r = cscdViewElementRect(v, a);
-        CscdRect pb = cscdRectTranslated(cscdBoxPaddingBox(b), r.x - b->x, r.y - b->y);
-        float maxY = cscdMaxf(0.f, b->overflow.h - cscdBoxPaddingBox(b).h);
+        CscdRect pb = cscdRectTranslated(cscdBoxPaddingBox(b), (float)(r.x - b->x), (float)(r.y - b->y));
+        float maxY = cscdMaxf(0.f, (float)b->overflow.h - cscdBoxPaddingBox(b).h);
         if (maxY > 0 && x >= cscdRectRight(pb) - 10 && x <= cscdRectRight(pb) && y >= pb.y && y <= cscdRectBottom(pb)) {
             v->scrollDrag = a;
             v->scrollDragStart = y;
