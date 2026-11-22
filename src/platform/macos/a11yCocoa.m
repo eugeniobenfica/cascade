@@ -369,6 +369,7 @@ static void onEvent(void* user, CscdElement* e, CscdAccessibleEvent event) {
     NSAccessibilityNotificationName what = event == CSCD_A11Y_EVENT_FOCUS ? NSAccessibilityFocusedUIElementChangedNotification
                                            : event == CSCD_A11Y_EVENT_STRUCTURE ? NSAccessibilityLayoutChangedNotification
                                            : event == CSCD_A11Y_EVENT_NAME ? NSAccessibilityTitleChangedNotification
+                                           : event == CSCD_A11Y_EVENT_SELECTION ? NSAccessibilitySelectedTextChangedNotification
                                                                            : NSAccessibilityValueChangedNotification;
     NSAccessibilityPostNotification(node, what);
 }

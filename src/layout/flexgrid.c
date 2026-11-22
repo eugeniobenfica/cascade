@@ -448,6 +448,7 @@ typedef struct Track {
     CscdTrackSize spec;
     double base, limit;
     bool flexible;
+    bool collapsed; /* (an empty track of repeat(auto-fit): no size, and the gaps on either side of it one) */
     double fr;
     double pos;
 } Track;
@@ -698,14 +699,26 @@ static bool isIntrinsicMax(const CscdTrackSize* sp) {
 }
 
 /* Sizes tracks for one axis. contribution gives the outer size of an item. */
+/* a track whose maximum is auto (auto, minmax(x, auto)): stretched by align-content and justify-content's normal */
+static bool autoMax(const Track* t) {
+    if (t->collapsed) return false;
+    return t->spec.kind == CSCD_TRACK_AUTO || (t->spec.kind == CSCD_TRACK_MINMAX && t->spec.max && t->spec.max->kind == CSCD_TRACK_AUTO);
+}
+
 static void sizeTracks(Layouter* L, TrackVec* tracksV, const GridItemVec* items, bool columns, double avail, double gap,
                        ContributionFn contribution, bool allMin, bool stretchAuto) {
     Track* tracks = tracksV->items;
     int n = (int)tracksV->len;
+    int live = 0; /* (the tracks that are not collapsed: the gaps are between them) */
     for (int k = 0; k < n; ++k) {
         Track* t = &tracks[k];
         const CscdTrackSize* sp = &t->spec;
         t->flexible = false;
+        if (t->collapsed) {
+            t->base = t->limit = 0;
+            continue;
+        }
+        ++live;
         double v;
         switch (sp->kind) {
         case CSCD_TRACK_FIXED: if (fixedOf(sp, avail, &v)) { t->base = t->limit = v; } else { t->base = 0; t->limit = 1e30f; } break;
@@ -767,7 +780,7 @@ static void sizeTracks(Layouter* L, TrackVec* tracksV, const GridItemVec* items,
         }
     }
     for (int k = 0; k < n; ++k) if (tracks[k].limit < tracks[k].base) tracks[k].limit = tracks[k].base;
-    double gaps = gap * cscdMaxi(0, n - 1);
+    double gaps = gap * cscdMaxi(0, live - 1);
     /* maximize: grow tracks toward their limits */
     if (avail >= 0) {
         double used = gaps;
@@ -832,9 +845,9 @@ static void sizeTracks(Layouter* L, TrackVec* tracksV, const GridItemVec* items,
     if (stretchAuto && avail >= 0) {
         double used = gaps;
         int autos = 0;
-        for (int k = 0; k < n; ++k) { used += tracks[k].base; if (tracks[k].spec.kind == CSCD_TRACK_AUTO) ++autos; }
+        for (int k = 0; k < n; ++k) { used += tracks[k].base; if (autoMax(&tracks[k])) ++autos; }
         if (used < avail && autos && sumFr == 0)
-            for (int k = 0; k < n; ++k) if (tracks[k].spec.kind == CSCD_TRACK_AUTO) tracks[k].base += (avail - used) / autos;
+            for (int k = 0; k < n; ++k) if (autoMax(&tracks[k])) tracks[k].base += (avail - used) / autos;
     }
 }
 
@@ -921,20 +934,47 @@ static SubgridTracks* subgridTracks(Layouter* L, CscdLayoutBox* c) {
 
 /* track positions with content distribution; returns the extent */
 static double distribute(TrackVec* tr, double avail, double gap, uint8_t a) {
-    double used = gap * cscdMaxi(0, (int)tr->len - 1);
+    /* (collapsed tracks count for nothing: neither in the space shared nor as a place between) */
+    size_t n = 0;
+    for (size_t k = 0; k < tr->len; ++k) n += !tr->items[k].collapsed;
+    double used = gap * cscdMaxi(0, (int)n - 1);
     for (size_t k = 0; k < tr->len; ++k) used += tr->items[k].base;
     double freeS = avail >= 0 ? avail - used : 0;
     double start = 0, between = gap;
-    if (freeS > 0 && tr->len) {
+    if (freeS > 0 && n) {
         if (a == CSCD_AL_END || a == CSCD_AL_FLEX_END || a == CSCD_AL_RIGHT) start = freeS;
         else if (a == CSCD_AL_CENTER) start = freeS / 2;
-        else if (a == CSCD_AL_SPACE_BETWEEN && tr->len > 1) between += freeS / (tr->len - 1);
-        else if (a == CSCD_AL_SPACE_AROUND) { double g = freeS / tr->len; start = g / 2; between += g; }
-        else if (a == CSCD_AL_SPACE_EVENLY) { double g = freeS / (tr->len + 1); start = g; between += g; }
+        else if (a == CSCD_AL_SPACE_BETWEEN && n > 1) between += freeS / (double)(n - 1);
+        else if (a == CSCD_AL_SPACE_AROUND) { double g = freeS / (double)n; start = g / 2; between += g; }
+        else if (a == CSCD_AL_SPACE_EVENLY) { double g = freeS / (double)(n + 1); start = g; between += g; }
     }
     double p = start;
-    for (size_t k = 0; k < tr->len; ++k) { tr->items[k].pos = p; p += tr->items[k].base + between; }
-    return p - between;
+    bool any = false;
+    for (size_t k = 0; k < tr->len; ++k) {
+        Track* t = &tr->items[k];
+        if (t->collapsed) { /* (where the next one starts, or the last one ended) */
+            t->pos = any ? p - between : p;
+            continue;
+        }
+        t->pos = p;
+        p += t->base + between;
+        any = true;
+    }
+    return any ? p - between : p;
+}
+
+/* repeat(auto-fit)'s empty tracks collapsed: those of its repeat that no item is placed in */
+static void collapseAutoFit(TrackVec* tr, const CscdTrackList* tl, const CscdTrackVec* expanded, const GridItemVec* items, bool columns) {
+    if (!tl->autoFit || tl->autoRepeatAt < 0) return;
+    const int n = (int)tr->len, a = tl->autoRepeatAt, z = a + (int)(expanded->len - tl->tracks.len);
+    bool* used = cscdCalloc((size_t)n + 1, sizeof(bool));
+    for (size_t i = 0; i < items->len; ++i) {
+        const GridItem* it = &items->items[i];
+        for (int k = columns ? it->c0 : it->r0; k < (columns ? it->c1 : it->r1) && k < n; ++k)
+            if (k >= 0) used[k] = true;
+    }
+    for (int k = a; k < z && k < n; ++k) tr->items[k].collapsed = !used[k];
+    cscdFree(used);
 }
 
 static uint8_t justifySelfOf(const CscdLayoutBox* c, const CscdComputedStyle* s) {
@@ -972,6 +1012,8 @@ double layGrid(Layouter* L, CscdLayoutBox* b, double cbH) {
     TrackVec ct = {0}, rt = {0};
     tracksFor(&ct, cols, &colTracks, &s->gridAutoColumns);
     tracksFor(&rt, rows, &rowTracks, &s->gridAutoRows);
+    if (!(s->gridColumns.subgrid && given && given->cols.len)) collapseAutoFit(&ct, &s->gridColumns, &colTracks, &items, true);
+    if (!(s->gridRows.subgrid && given && given->rows.len)) collapseAutoFit(&rt, &s->gridRows, &rowTracks, &items, false);
     bool stretchCols = s->justifyContent == CSCD_AL_NORMAL || s->justifyContent == CSCD_AL_STRETCH;
     /* the columns: a subgrid on columns is not sized as one item; its items, placed in it, size the
      * parent's columns they lie in (its edges added to its first and last columns) */
@@ -1012,15 +1054,6 @@ double layGrid(Layouter* L, CscdLayoutBox* b, double cbH) {
     cscdVecFree(&innerRows);
     sizeTracks(L, &ct, &colItems, true, cw, colGap, contentContribution, false, stretchCols);
     cscdVecFree(&colItems);
-    /* auto-fit: collapse empty repeated tracks */
-    if (s->gridColumns.autoFit) {
-        bool* used = cscdCalloc((size_t)cols + 1, sizeof(bool));
-        for (size_t i = 0; i < items.len; ++i)
-            for (int k = items.items[i].c0; k < items.items[i].c1 && k < cols; ++k) used[k] = true;
-        int a = s->gridColumns.autoRepeatAt;
-        for (int k = a; k < cols && k < a + (int)(colTracks.len - s->gridColumns.tracks.len); ++k) if (!used[k]) ct.items[k].base = 0;
-        cscdFree(used);
-    }
     /* lay out items at their column widths to get heights */
     CscdFloatVec scratch = {0};
     for (size_t i = 0; i < items.len; ++i) {

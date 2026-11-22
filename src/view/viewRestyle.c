@@ -3,6 +3,7 @@
  * and what must be painted again. */
 #include "style/styleInternal.h"
 #include "view/viewInternal.h"
+#include "layout/layoutInternal.h"
 #include "core/thread.h"
 
 #include <stdio.h>
@@ -1068,6 +1069,7 @@ static void layoutFrom(CscdView* v, bool reuse) {
     CscdLayoutBox* old = v->root;
     reuse = reuse && old && viewLayoutReuse && v->layoutDpr == v->dpr;
     bool changed = true;
+    laySetImageSizer(viewImageLoader, viewImageSizer); /* (an SVG file's image may have only a ratio) */
     v->root = cscdLayoutDocumentFrom(v->doc, v->styles, vp, viewImageLoader, v, reuse ? old : NULL, &changed);
     v->layoutBoxesChanged = v->layoutBoxesChanged || changed;
     if (reuse && old && v->root) goneWalk(v, old, cscdPoint(-v->scrollX, -v->scrollY), v->doc->layoutEpoch - 1);

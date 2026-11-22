@@ -196,8 +196,10 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] NSAccessibility's text attributes for fields: the number of characters, the selected text and its range (read
       and set), the lines (line for index, range for line, the caret's line), the string and the frame of a range,
       the place at a point.
-- [ ] AT-SPI's Text interface for fields (Orca reads their value today), and the selection's changes told to VoiceOver
-      and Orca as the caret moves (they hear the value's).
+- [x] AT-SPI's Text interface for fields (the caret and selection, set and read; text by character, word and line;
+      the extents of a character or range; the place at a point), and a caret or selection that moves told to every
+      screen reader (`CSCD_A11Y_EVENT_SELECTION`: UIA's TextSelectionChanged, NSAccessibility's SelectedTextChanged,
+      AT-SPI's TextCaretMoved and TextSelectionChanged).
 - [x] A text field that scales to large documents: a textarea's lines are kept from edit to edit (only the paragraphs
       an edit touches are wrapped again; the line a place is on found by halves). In 20,000 lines (1.3 MB) a key
       takes 4.7 ms and an arrow 3 ms, from 2 s and 1.6 s.
@@ -210,8 +212,9 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
       insertOrderedList, formatBlock, createLink, unlink): Enter in a list item makes the next one (on an empty one:
       out of the list), Backspace at an item's start joins it to the one before; between two blocks the host's text
       has a line break of its own, so each block's start can be reached; links kept when copied and pasted.
-- [ ] contenteditable: turning a format off in part of a run (today the element that holds the selection is unwrapped
-      whole); its text to screen readers (it is a group today).
+- [x] contenteditable: a format turned off in part of a run (the element, and those between it and the text, split
+      around the selection: the text on either side keeps it); to screen readers a multi-line text field (its text its
+      value, its selection, rects and places as a field's), not a group.
 
 ### Conformance
 
@@ -223,7 +226,7 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] A JS-free runner for WPT reftests in `css/` (`tests/wpt.c`): ten folders of a pinned commit (flexbox, grid,
       CSS2 margins, positioning, normal flow, floats, backgrounds), each test and its reference painted at 800x600 and
       compared within the test's fuzzy allowance; pages with scripts passed over, XHTML pages parsed as XML. The score
-      of each folder is in `tests/wpt.score` (2,309 of 3,307 run, from 846: a line of text is now whole pixels high,
+      of each folder is in `tests/wpt.score` (2,296 of 3,307 run, the lesser of Windows and Linux, from 846: a line of text is now whole pixels high,
       its font's ascent and descent rounded as browsers round them; then the table fixup and SVG images below); CI
       fails when a folder passes fewer.
 - [x] html5lib tree-construction tests (`tests/html5lib.c`: all 1,784 cases but the 8 that need scripting),
@@ -243,8 +246,11 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] SVG files as images (`<img src>`, `background-image`, `data:image/svg+xml`), drawn at the size they are shown,
       their sizing as CSS Images has it for an image with only some of a width, a height and a ratio; percentages in
       SVG shapes' geometry; a viewBox of no width or height draws nothing. css-backgrounds: 149 reftests to 339.
-- [ ] An image or inline SVG with a ratio but no width (only a viewBox) as wide as the space it has (CSS 2.1
-      10.3.2), not 300px: css-flexbox's align-items-007.
+- [x] An image or inline SVG with a ratio but no width (only a viewBox) as wide as the space it has (CSS 2.1
+      10.3.2), not 300px.
+- [x] Grid: repeat(auto-fit)'s empty tracks collapsed in rows as in columns, before the tracks are sized (their gaps
+      gone, content distribution among the others); minmax(x, auto) tracks stretched as auto ones are. A relatively
+      positioned inline-block moved from its place in the line. WPT: css-grid/alignment 43 to 67.
 - [ ] The WPT reftests that still fail, folder by folder (`cascade-wpt-tests` with `CASCADE_WPT_LIST=1` lists them,
       `CASCADE_WPT_DUMP=1` saves the first's two pictures).
 

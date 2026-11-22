@@ -227,6 +227,10 @@ static void testSvgImages(void) {
     for (int y = (int)zr.y; y < (int)(zr.y + zr.h) && y < 600; ++y) red = red || cscdImageRow(&img, y)[2] == 0xFFFF0000u;
     CHECK(!red);
     cscdImageFini(&img);
+    /* only a ratio (a viewBox, no width or height): as wide as the space it has, not 300px */
+    layoutView(v, "<div style='width: 200px'><svg id=s viewBox='0 0 2 1'></svg></div>");
+    const CscdRect sr = rectOf(v, "s");
+    CHECK(fabsf(sr.w - 200) < 0.5f && fabsf(sr.h - 100) < 0.5f);
     cscdViewFree(v);
 }
 
@@ -1237,6 +1241,73 @@ static void testContentEditable(void) {
 }
 
 /* contenteditable's blocks: lists (Enter, Backspace, out of them), headings, links */
+/* a format turned off in part of a run: the text around the selection keeps it */
+static void testContentEditableUnformat(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    layoutView(v, "<div id=e contenteditable><b>abcdef</b></div><div id=n contenteditable><b>ab<i>cdef</i>gh</b></div>");
+    cscdViewFocus(v, byId(v, "e"));
+    cscdViewSetEditableSelection(v, 2, 4); /* ("cd") */
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("bold")));
+    CHECK(ceHtmlHas(v, "e", "<b>ab</b>cd<b>ef</b>") && ceText(v, "e", "abcdef"));
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("bold"))); /* (on again: all of it bold) */
+    CHECK(ceHtmlLacks(v, "e", "</b>cd"));
+    /* nested: the italic around it is cut too, and keeps on either side */
+    cscdViewFocus(v, byId(v, "n"));
+    cscdViewSetEditableSelection(v, 3, 5); /* ("de") */
+    CHECK(cscdViewEditableCommand(v, CSCD_SV("bold")));
+    CHECK(ceHtmlHas(v, "n", "<b>ab<i>c</i></b><i>de</i><b><i>f</i>gh</b>") && ceText(v, "n", "abcdefgh"));
+    cscdViewFree(v);
+}
+
+/* contenteditable to screen readers: a multi-line text field, its text its value, its selection as a field's; a caret
+ * that moves (in it or in a field) is told */
+static void testContentEditableA11y(void) {
+    CscdView* v = cscdViewNew();
+    cscdViewOnWarning(v, NULL, NULL);
+    layoutView(v, "<style>body{margin:0;font:16px sans-serif}</style><div id=e contenteditable><p>ab <b>cd</b></p><p>ef</p></div>"
+                  "<input id=f value='xyz'>");
+    A11yLog log = {0};
+    cscdViewOnAccessibleEvent(v, logA11y, &log);
+    CscdElement* e = byId(v, "e");
+    CHECK(cscdAccessibleRole(e) == CSCD_ROLE_TEXTBOX && (cscdAccessibleState(v, e) & CSCD_A11Y_MULTILINE));
+    CscdPtrVec kids = {0};
+    cscdAccessibleChildren(v, e, &kids);
+    CHECK(kids.len == 0); /* (its contents are its text) */
+    cscdVecFree(&kids);
+    CscdStr val = {0};
+    cscdAccessibleValue(v, e, &val);
+    CHECK(cscdStrEqC(&val, "ab cd\nef"));
+    cscdStrFree(&val);
+    /* the selection: set by a screen reader, read back, told as it moves */
+    CHECK(cscdAccessibleSelectText(v, e, 3, 5));
+    size_t a = 0, z = 0;
+    CHECK(cscdAccessibleTextSelection(e, &a, &z) && a == 3 && z == 5 && ceSel(v, 3, 5));
+    cscdViewUpdate(v);
+    log.n = 0;
+    cscdViewSetEditableSelection(v, 6, 6);
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, e, CSCD_A11Y_EVENT_SELECTION));
+    CHECK(cscdAccessibleTextSelection(e, &a, &z) && a == 6 && z == 6);
+    /* its text's rects: "cd" on the first line, right of "ab " */
+    CscdRectVec rects = {0};
+    cscdAccessibleTextRects(v, e, 3, 5, &rects);
+    CHECK(rects.len == 1 && rects.items[0].w > 4 && rects.items[0].x > 10);
+    const size_t hit = rects.len ? cscdAccessibleTextOffsetAt(v, e, rects.items[0].x + 1, rects.items[0].y + rects.items[0].h / 2) : 0;
+    CHECK(hit == 3);
+    cscdVecFree(&rects);
+    /* a field's caret moved by a key: told too */
+    CscdElement* f = byId(v, "f");
+    cscdViewFocus(v, f);
+    cscdViewUpdate(v);
+    log.n = 0;
+    cscdViewKeyDown(v, CSCD_KEY_LEFT, (CscdModifiers){0}, CSCD_SV(""));
+    cscdViewUpdate(v);
+    CHECK(sawA11y(&log, f, CSCD_A11Y_EVENT_SELECTION));
+    cscdViewOnAccessibleEvent(v, NULL, NULL);
+    cscdViewFree(v);
+}
+
 static void testContentEditableBlocks(void) {
     CscdView* v = cscdViewNew();
     cscdViewOnWarning(v, NULL, NULL);
@@ -5556,6 +5627,8 @@ int main(void) {
     testMenus();
     testContentEditable();
     testContentEditableBlocks();
+    testContentEditableUnformat();
+    testContentEditableA11y();
     testEditLinesKept();
     testA11yUpdates();
     testA11yText();

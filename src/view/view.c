@@ -467,6 +467,7 @@ bool cscdViewUpdate(CscdView* v) {
     }
     if (v->transitions.len || v->animations.len) v->dirty = true; /* (painted where the animation step said: its damage, or the whole) */
     viewHandlesCheck(v);
+    viewA11ySelection(v);
     if (focusedIsTextField(v)) {
         /* caret blink */
         bool shown = cscdViewCaretVisible(v);

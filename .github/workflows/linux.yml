@@ -80,7 +80,8 @@ jobs:
           git fetch -q --depth 1 --filter=blob:none origin $wpt
           git checkout -q FETCH_HEAD
           cd "$GITHUB_WORKSPACE"
-          build/cascade-wpt-tests "$RUNNER_TEMP/wpt" --score tests/wpt.score
+          # (each failing test listed, to compare with another platform's: their fonts differ)
+          CASCADE_WPT_LIST=1 build/cascade-wpt-tests "$RUNNER_TEMP/wpt" --score tests/wpt.score
       - name: Minimal build (software only, no screen readers)
         run: |
           cmake -S . -B build-min -G Ninja -DCASCADE_WERROR=ON -DCASCADE_VULKAN=OFF -DCASCADE_OPENGL=OFF -DCASCADE_ACCESSIBILITY=OFF -DCASCADE_BUILD_TOOLS=OFF

@@ -33,6 +33,14 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   percentages in shapes' geometry (`width="50%"`), and a viewBox of no width or height draws nothing. WPT reftests
   passed: 2,309.
 - `setAttribute` keeps an SVG or MathML element's attribute name as given (`viewBox`), as the DOM does.
+- **contenteditable**: bold, italic, underline or a link turned off in part of a run keeps it on either side of the
+  selection; screen readers see the editing host as a multi-line text field (its text, selection and caret).
+- **Screen readers**: `CSCD_A11Y_EVENT_SELECTION`, a field's caret or selection moved, told to UI Automation,
+  NSAccessibility and AT-SPI; AT-SPI's Text interface in full for fields (selections, extents, offsets at a point,
+  text by word and line).
+- **Layout**: an image or `<svg>` with only a ratio is as wide as the space it has; grid's `repeat(auto-fit)` collapses
+  its empty rows as well as its columns, their gaps with them; `minmax(x, auto)` tracks stretch; a relatively
+  positioned inline-block moves from its place in the line.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

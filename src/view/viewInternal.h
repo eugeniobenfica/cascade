@@ -128,6 +128,7 @@ struct CscdView {
     CSCD_VEC(VirtualList*) lists;
     bool inspecting, inspectPinned;
     CscdU64Map a11yIds, a11yElements; /* element <-> number (cscdAccessibleId) */
+    const CscdElement* a11ySel; size_t a11ySelA, a11ySelZ; /* (the text selection screen readers were told of) */
     uint64_t a11yNext;
     CscdAccessibleEventFn onA11y; void* onA11yUser;
     CscdElement* inspected;
@@ -329,6 +330,12 @@ bool viewEditableKey(CscdView* v, CscdElement* host, CscdKey k, CscdModifiers m,
 void viewEditablePress(CscdView* v, CscdElement* host, float x, float y, int clicks, bool shift);
 void viewEditableDrag(CscdView* v, CscdElement* host, float x, float y);
 CscdRect viewEditableCaret(CscdView* v, CscdElement* host);
+/* (the host as a text field, for screen readers: its text, the rects of [a, z) of it, the place at a point, a
+ * selection; places are bytes of its text, a line break between its blocks) */
+void viewEditableText(CscdElement* host, CscdStr* out);
+void viewEditableRects(CscdView* v, CscdElement* host, size_t a, size_t z, CscdRectVec* out);
+size_t viewEditableHit(CscdView* v, CscdElement* host, float x, float y);
+bool viewEditableSelect(CscdView* v, CscdElement* host, size_t start, size_t end);
 void viewPaintEditable(CscdView* v, CscdCanvas* c);
 void viewPopupHitsSweep(CscdView* v); /* (the hit areas of popups that closed go) */
 void viewNotifyInvalidate(CscdView* v);
@@ -346,6 +353,7 @@ void viewClearAnimations(CscdView* v);
 CscdImage* viewImage(CscdView* v, CscdSv url); /* borrowed (the view keeps it) */
 CscdImage* viewImageLoader(void* view, CscdSv url); /* a new reference (layout and style) */
 const SvgImage* viewSvgImage(const CscdView* v, const CscdImage* img); /* NULL: not an SVG file's */
+uint8_t viewImageSizer(void* view, const CscdImage* img); /* (SVG_HAS_*: what it has of an intrinsic size) */
 CscdImage* viewSvgRaster(CscdView* v, const CscdImage* img, int w, int h); /* borrowed; NULL: not an SVG file's */
 CscdMediaContext viewMediaOf(const CscdView* v);
 void viewCollectSheets(CscdView* v);
@@ -454,6 +462,7 @@ void viewInspectorPaint(CscdView* v, CscdCanvas* c);                            
 /* a11y.c */
 void viewA11yNotify(CscdView* v, CscdSv type, CscdElement* target); /* (an event was sent) */
 void viewA11yStructure(CscdView* v);                                    /* (the document changed) */
+void viewA11ySelection(CscdView* v); /* (a text field's caret or selection moved since the last frame: told) */
 void viewA11yForget(CscdView* v, const CscdElement* e);
 void viewA11yFree(CscdView* v);
 

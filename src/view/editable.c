@@ -321,6 +321,11 @@ static void selection(const CscdView* v, size_t len, size_t* a, size_t* z) {
 
 static void moved(CscdView* v) {
     v->caretTime = viewNow(v);
+    /* (the host keeps it too, as a field keeps its own: for screen readers, which ask the element) */
+    if (v->ceHost) {
+        v->ceHost->selAnchor = v->ceAnchor;
+        v->ceHost->caret = v->ceFocus;
+    }
     cscdViewInvalidate(v);
 }
 
@@ -337,6 +342,7 @@ void viewEditableFocused(CscdView* v, CscdElement* host) {
     HostText t;
     hostText(host, &t);
     v->ceAnchor = v->ceFocus = t.all.len;
+    host->selAnchor = host->caret = t.all.len;
     hostTextFree(&t);
 }
 
@@ -562,8 +568,72 @@ static CscdElement* ancestorTag(CscdElement* host, CscdNode* n, const char* tag,
     return NULL;
 }
 
+/* x's parent split around x: what is before x goes in a copy of the parent before it, what is after in one after it */
+static void splitAround(CscdNode* x) {
+    CscdNode* p = x->parent;
+    CscdElement* pe = cscdNodeAsElement(p);
+    if (!pe || !p->parent) return;
+    const int at = cscdNodeIndexInParent(x);
+    if (at > 0) {
+        CscdElement* before = cscdElementClone(pe, false);
+        if (!cscdNodeInsertBefore(p->parent, &before->node, p)) cscdNodeDestroy(&before->node);
+        else
+            for (int i = 0; i < at; ++i) {
+                CscdNode* c = cscdNodeRemoveChild(p, cscdNodeChild(p, 0));
+                if (c && !cscdNodeAppendChild(&before->node, c)) cscdNodeDestroy(c);
+            }
+    }
+    if (p->children.len > 1) {
+        CscdElement* after = cscdElementClone(pe, false);
+        if (!cscdNodeInsertBefore(p->parent, &after->node, cscdNodeNextSibling(p))) cscdNodeDestroy(&after->node);
+        else
+            while (p->children.len > 1) {
+                CscdNode* c = cscdNodeRemoveChild(p, cscdNodeChild(p, 1));
+                if (c && !cscdNodeAppendChild(&after->node, c)) cscdNodeDestroy(c);
+            }
+    }
+}
+
+/* the text node n out of the format element f it is in: f (and each element between them) split around it, then the
+ * part of f that holds only it unwrapped; the text before and after n keeps the format */
+static void unformat(CscdNode* n, CscdElement* f) {
+    CscdNode* x = n;
+    while (x->parent && x->parent != &f->node) {
+        splitAround(x);
+        x = x->parent;
+    }
+    if (!x->parent) return;
+    splitAround(x); /* (f now holds x alone) */
+    CscdNode* parent = f->node.parent;
+    while (f->node.children.len) {
+        CscdNode* c = cscdNodeRemoveChild(&f->node, cscdNodeChild(&f->node, 0));
+        if (c && !cscdNodeInsertBefore(parent, c, &f->node)) cscdNodeDestroy(c);
+    }
+    CscdNode* gone = cscdNodeRemoveChild(parent, &f->node);
+    if (gone) cscdNodeDestroy(gone);
+}
+
+/* the text node n cut where [a, z) begins and ends (its start s in the host's text): what is outside goes in nodes of
+ * its own beside it, n keeps the part inside */
+static void cutText(CscdView* v, CscdText* n, size_t s, size_t a, size_t z) {
+    const size_t e = s + n->data.len;
+    const size_t from = a > s ? a - s : 0, to = cscdMinz(z, e) - s;
+    CscdNode* parent = n->node.parent;
+    if (to < n->data.len) {
+        CscdText* after = cscdTextNew(cscdSvFrom(cscdStrSv(&n->data), to));
+        if (!cscdNodeInsertBefore(parent, &after->node, cscdNodeNextSibling(&n->node))) cscdNodeDestroy(&after->node);
+    }
+    if (from > 0) {
+        CscdText* before = cscdTextNew(cscdSvSub(cscdStrSv(&n->data), 0, from));
+        if (!cscdNodeInsertBefore(parent, &before->node, &n->node)) cscdNodeDestroy(&before->node);
+    }
+    CscdStr mid = cscdStrDup(cscdSvSub(cscdStrSv(&n->data), from, to - from));
+    setData(v, n, cscdStrSv(&mid));
+    cscdStrFree(&mid);
+}
+
 /* the selection's text in <tag> (each of its text nodes' part of it wrapped), or out of it when all of it is and only
- * is false */
+ * is false (only the selection's part: the text around it keeps it) */
 static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const char* alias, bool only, CscdSv href) {
     HostText t;
     hostText(host, &t);
@@ -589,41 +659,28 @@ static void applyFormat(CscdView* v, CscdElement* host, const char* tag, const c
         return;
     }
     if (all) {
-        /* (out of it: the elements that hold the selection's text unwrapped) */
+        /* (out of it: the selection's text taken out of the elements that hold it, which go on around it) */
+        CscdPtrVec picked = {0};
         for (size_t i = 0; i < t.nodes.len; ++i) {
             CscdText* n = (CscdText*)t.nodes.items[i];
             const size_t s = t.starts.items[i], e = s + n->data.len;
             if (e <= a || s >= z) continue;
-            CscdElement* f;
-            while ((f = ancestorTag(host, &n->node, tag, alias)) != NULL) {
-                CscdNode* parent = f->node.parent;
-                while (f->node.children.len) {
-                    CscdNode* c = cscdNodeRemoveChild(&f->node, cscdNodeChild(&f->node, 0));
-                    if (c && !cscdNodeInsertBefore(parent, c, &f->node)) cscdNodeDestroy(c);
-                }
-                CscdNode* gone = cscdNodeRemoveChild(parent, &f->node);
-                if (gone) cscdNodeDestroy(gone);
-            }
+            cutText(v, n, s, a, z);
+            cscdVecPush(&picked, n);
         }
+        for (size_t i = 0; i < picked.len; ++i) {
+            CscdNode* n = (CscdNode*)picked.items[i];
+            CscdElement* f;
+            while ((f = ancestorTag(host, n, tag, alias)) != NULL) unformat(n, f);
+        }
+        cscdVecFree(&picked);
     } else {
         for (size_t i = 0; i < t.nodes.len; ++i) {
             CscdText* n = (CscdText*)t.nodes.items[i];
             const size_t s = t.starts.items[i], e = s + n->data.len;
             if (e <= a || s >= z || ancestorTag(host, &n->node, tag, alias)) continue;
-            const size_t from = a > s ? a - s : 0, to = cscdMinz(z, e) - s;
+            cutText(v, n, s, a, z); /* (before and after it: nodes of their own) */
             CscdNode* parent = n->node.parent;
-            /* (before and after it: nodes of their own) */
-            if (to < n->data.len) {
-                CscdText* after = cscdTextNew(cscdSvFrom(cscdStrSv(&n->data), to));
-                if (!cscdNodeInsertBefore(parent, &after->node, cscdNodeNextSibling(&n->node))) cscdNodeDestroy(&after->node);
-            }
-            if (from > 0) {
-                CscdText* before = cscdTextNew(cscdSvSub(cscdStrSv(&n->data), 0, from));
-                if (!cscdNodeInsertBefore(parent, &before->node, &n->node)) cscdNodeDestroy(&before->node);
-            }
-            CscdStr mid = cscdStrDup(cscdSvSub(cscdStrSv(&n->data), from, to - from));
-            setData(v, n, cscdStrSv(&mid));
-            cscdStrFree(&mid);
             CscdElement* wrap = cscdElementNew(cscdSv(tag));
             if (href.len) cscdElementSetAttribute(wrap, CSCD_SV("href"), href);
             if (!cscdNodeInsertBefore(parent, &wrap->node, &n->node)) {
@@ -1301,6 +1358,67 @@ void viewPaintEditable(CscdView* v, CscdCanvas* c) {
         cscdCanvasFillRect(c, cscdRect(roundf(r.x), r.y, 1, r.h), color);
     }
     hostTextFree(&t);
+}
+
+/* ---- for screen readers (a11y.c): the host as a text field ------------------------------------------------------ */
+
+void viewEditableText(CscdElement* host, CscdStr* out) {
+    HostText t;
+    hostText(host, &t);
+    cscdStrAppend(out, cscdStrSv(&t.all));
+    hostTextFree(&t);
+}
+
+void viewEditableRects(CscdView* v, CscdElement* host, size_t a, size_t z, CscdRectVec* out) {
+    cscdViewUpdate(v);
+    if (!host->layout) return;
+    HostText t;
+    hostText(host, &t);
+    a = cscdMinz(a, t.all.len);
+    z = cscdMinz(z, t.all.len);
+    if (a > z) {
+        const size_t s = a;
+        a = z;
+        z = s;
+    }
+    if (a == z) cscdVecPush(out, caretAt(v, host, &t, a));
+    else {
+        const CscdPoint d = hostShift(v, host);
+        FragVec frags = {0};
+        fragsIn(host->layout, &t, &frags);
+        for (size_t i = 0; i < frags.len; ++i) {
+            const Frag* f = &frags.items[i];
+            const size_t s = f->base + f->frag->start, e = f->base + f->frag->end;
+            if (e <= a || s >= z) continue;
+            const float x0 = fragX(f, cscdMaxz(a, s) - f->base), x1 = fragX(f, cscdMinz(z, e) - f->base);
+            cscdVecPush(out, cscdRect(fminf(x0, x1) + d.x, (float)f->frag->top + d.y, cscdMaxf(1.f, fabsf(x1 - x0)), f->frag->height));
+        }
+        cscdVecFree(&frags);
+    }
+    hostTextFree(&t);
+}
+
+size_t viewEditableHit(CscdView* v, CscdElement* host, float x, float y) {
+    cscdViewUpdate(v);
+    if (!host->layout) return 0;
+    HostText t;
+    hostText(host, &t);
+    const size_t at = hitAt(v, host, &t, x, y);
+    hostTextFree(&t);
+    return at;
+}
+
+bool viewEditableSelect(CscdView* v, CscdElement* host, size_t start, size_t end) {
+    if (v->doc->focused != host) cscdViewFocus(v, host);
+    if (viewEditableHost(v) != host) return false;
+    HostText t;
+    hostText(host, &t);
+    v->ceAnchor = cscdMinz(start, t.all.len);
+    v->ceFocus = cscdMinz(end, t.all.len);
+    hostTextFree(&t);
+    v->ceHasGoal = false;
+    moved(v);
+    return true;
 }
 
 /* ---- the program's side ------------------------------------------------------------------------------------- */

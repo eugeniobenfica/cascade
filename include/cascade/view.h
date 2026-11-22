@@ -448,7 +448,8 @@ int cscdAccessibleLive(const CscdElement* e);
  * holds changed, for readers to say. */
 typedef enum CscdAccessibleEvent {
     CSCD_A11Y_EVENT_FOCUS, CSCD_A11Y_EVENT_VALUE, CSCD_A11Y_EVENT_STATE, CSCD_A11Y_EVENT_STRUCTURE, CSCD_A11Y_EVENT_NAME,
-    CSCD_A11Y_EVENT_LIVE
+    CSCD_A11Y_EVENT_LIVE,
+    CSCD_A11Y_EVENT_SELECTION /* (a text field's caret or selection moved: cscdAccessibleTextSelection) */
 } CscdAccessibleEvent;
 typedef void (*CscdAccessibleEventFn)(void* user, CscdElement* e, CscdAccessibleEvent event);
 void cscdViewOnAccessibleEvent(CscdView* v, CscdAccessibleEventFn fn, void* user);

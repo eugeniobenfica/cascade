@@ -147,6 +147,10 @@ double layMeasure(const CscdFont* f, CscdSv s, double letterSpacing, double word
 void layComputeOverflow(CscdLayoutBox* b);
 void layApplyRelative(CscdLayoutBox* b, double cbW, double cbH);
 void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, double* ratio);
+/* What an image a loader gave has of an intrinsic size (an SVG file's may lack its width or height): the loader's own
+ * answer, registered with it (the view's). Its flags: 1 a width, 2 a height, 4 a ratio. */
+typedef uint8_t (*LayImageSizeFn)(void* user, const CscdImage* img);
+void laySetImageSizer(CscdImageLoaderFn loader, LayImageSizeFn sizer);
 bool layIsContainingBlock(const CscdLayoutBox* b);
 
 void layApplyCounters(Layouter* L, const CscdComputedStyle* s, const CscdElement* scope);

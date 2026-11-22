@@ -515,6 +515,76 @@ static size_t byteAt(CscdSv s, long chars) {
     return i;
 }
 
+/* ---- the Text interface's places: characters (AT-SPI's) over bytes of the text (cascade's) ---- */
+
+/* the caret, the selection's ends (characters) */
+static void textSelection(CscdElement* e, CscdSv s, int32_t* start, int32_t* end, int32_t* caret) {
+    size_t a = 0, z = 0;
+    cscdAccessibleTextSelection(e, &a, &z);
+    *start = (int32_t)charCount(cscdSvSub(s, 0, cscdMinz(a, s.len)));
+    *end = (int32_t)charCount(cscdSvSub(s, 0, cscdMinz(z, s.len)));
+    *caret = e->caret >= e->selAnchor ? *end : *start;
+}
+
+static bool wordByte(char c) { return !cscdIsSpace(c); }
+
+/* the bounds (bytes) of the unit at byte i: 0 a character, 1 a word, 3 a line (a sentence and a paragraph: its line) */
+static void unitAt(CscdSv s, size_t i, uint32_t unit, size_t* from, size_t* to) {
+    i = cscdMinz(i, s.len);
+    if (unit == 0) {
+        *from = i;
+        size_t k = i;
+        if (k < s.len) cscdUtf8Next(s, &k);
+        *to = k;
+        return;
+    }
+    if (unit == 1) {
+        size_t a = i, z = i;
+        if (a < s.len && !wordByte(s.ptr[a])) { /* (between words: the space, and the word after it) */
+            while (z < s.len && !wordByte(s.ptr[z])) ++z;
+        }
+        while (a > 0 && wordByte(s.ptr[a - 1])) --a;
+        while (z < s.len && wordByte(s.ptr[z])) ++z;
+        while (z < s.len && !wordByte(s.ptr[z]) && s.ptr[z] != '\n') ++z; /* (its trailing space, as word-start boundaries go) */
+        *from = a;
+        *to = z;
+        return;
+    }
+    size_t a = i, z = i;
+    while (a > 0 && s.ptr[a - 1] != '\n') --a;
+    while (z < s.len && s.ptr[z] != '\n') ++z;
+    if (z < s.len) ++z; /* (its line break with it) */
+    *from = a;
+    *to = z;
+}
+
+/* a rect of the page (CSS pixels) as AT-SPI's: device pixels of the window, or the screen's (coordType 0) */
+static void rectOut(Atspi* a, CscdRect r, uint32_t coordType, int32_t out[4]) {
+    CscdWindow* w = a->w;
+    r.x -= cscdViewScrollX(w->view);
+    r.y -= cscdViewScrollY(w->view);
+    int ox = 0, oy = 0;
+    if (coordType == 0) platformWindowOrigin(w, &ox, &oy);
+    out[0] = ox + (int32_t)(r.x * w->dpr);
+    out[1] = oy + (int32_t)(r.y * w->dpr);
+    out[2] = (int32_t)(r.w * w->dpr);
+    out[3] = (int32_t)(r.h * w->dpr);
+}
+
+static void rangeExtents(Atspi* a, CscdElement* e, CscdSv s, int32_t c0, int32_t c1, uint32_t coordType, int32_t out[4]) {
+    CscdRectVec rects = {0};
+    cscdAccessibleTextRects(a->w->view, e, byteAt(s, c0 < 0 ? 0 : c0), byteAt(s, c1 < 0 ? 0 : c1), &rects);
+    CscdRect all = rects.len ? rects.items[0] : cscdViewElementRect(a->w->view, e);
+    for (size_t i = 1; i < rects.len; ++i) all = cscdRectUnite(all, rects.items[i]);
+    cscdVecFree(&rects);
+    rectOut(a, all, coordType, out);
+}
+
+static void putEmptyAttributes(Out* o) {
+    const size_t arr = arrayBegin(o, 8);
+    arrayEnd(o, arr, 8);
+}
+
 /* window coordinates (device pixels) of an element; with the window's place on screen for screen ones */
 static void extentsOf(Atspi* a, int kind, CscdElement* e, uint32_t coordType, int32_t r[4]) {
     CscdWindow* w = a->w;
@@ -573,8 +643,10 @@ static bool putProperty(Out* o, Atspi* a, int kind, CscdElement* e, CscdSv iface
         textOf(a, e, &s);
         if (cscdSvEqC(name, "CharacterCount")) { putSig(o, "i"); putI32(o, (int32_t)charCount(cscdStrSv(&s))); }
         else if (cscdSvEqC(name, "CaretOffset")) {
+            int32_t s0 = 0, s1 = 0, caret = 0;
+            if (cscdAccessibleRole(e) == CSCD_ROLE_TEXTBOX) textSelection(e, cscdStrSv(&s), &s0, &s1, &caret);
             putSig(o, "i");
-            putI32(o, (int32_t)charCount(cscdSvSub(cscdStrSv(&e->editValue), 0, cscdMinz(e->caret, e->editValue.len))));
+            putI32(o, caret);
         } else ok = false;
     } else if (cscdSvEqC(iface, "org.a11y.atspi.Value") && kind == 2 && e) {
         double value = 0, min = 0, max = 0, step = 0;
@@ -817,18 +889,84 @@ static void handleCall(Atspi* a, Msg* m) {
             size_t at = byteAt(s, (int32_t)getU32(in));
             putI32(&o, at < s.len ? (int32_t)cscdUtf8Next(s, &at) : 0);
             replyTo(a, m, "i", &o);
-        } else if (cscdSvEqC(member, "GetStringAtOffset")) {
-            /* granularity 0 char, 1 word, 2 sentence, 3 line, 4 paragraph: the whole text but for characters */
+        } else if (cscdSvEqC(member, "GetStringAtOffset") || cscdSvEqC(member, "GetTextAtOffset") ||
+                   cscdSvEqC(member, "GetTextBeforeOffset") || cscdSvEqC(member, "GetTextAfterOffset")) {
+            /* GetStringAtOffset's granularity: 0 char, 1 word, 2 sentence, 3 line, 4 paragraph; the older calls' boundary:
+             * 0 char, 1 and 2 word, 3 and 4 sentence, 5 and 6 line (sentences and paragraphs as lines) */
             const int32_t off = (int32_t)getU32(in);
-            const uint32_t gran = getU32(in);
-            const size_t count = charCount(s);
-            int32_t a0 = 0, a1 = (int32_t)count;
-            if (gran == 0) { a0 = off; a1 = off + 1 <= (int32_t)count ? off + 1 : (int32_t)count; }
-            const size_t b0 = byteAt(s, a0), b1 = byteAt(s, a1);
+            const uint32_t kind2 = getU32(in);
+            const bool str = cscdSvEqC(member, "GetStringAtOffset");
+            const uint32_t unit = str ? (kind2 == 0 ? 0 : kind2 == 1 ? 1 : 3) : (kind2 == 0 ? 0 : kind2 <= 2 ? 1 : 3);
+            size_t b0 = 0, b1 = 0;
+            unitAt(s, byteAt(s, off < 0 ? 0 : off), unit, &b0, &b1);
+            if (cscdSvEqC(member, "GetTextBeforeOffset") && b0 > 0) unitAt(s, b0 - 1, unit, &b0, &b1);
+            else if (cscdSvEqC(member, "GetTextAfterOffset")) {
+                if (b1 < s.len) unitAt(s, b1, unit, &b0, &b1);
+                else b0 = b1;
+            }
             putStr(&o, cscdSvSub(s, b0, b1 - b0));
-            putI32(&o, a0);
-            putI32(&o, a1);
+            putI32(&o, (int32_t)charCount(cscdSvSub(s, 0, b0)));
+            putI32(&o, (int32_t)charCount(cscdSvSub(s, 0, b1)));
             replyTo(a, m, "sii", &o);
+        } else if (cscdSvEqC(member, "GetCharacterExtents")) {
+            const int32_t off = (int32_t)getU32(in);
+            const uint32_t coord = getU32(in);
+            int32_t r[4];
+            rangeExtents(a, e, s, off, off + 1, coord, r);
+            for (int k = 0; k < 4; ++k) putI32(&o, r[k]);
+            replyTo(a, m, "iiii", &o);
+        } else if (cscdSvEqC(member, "GetRangeExtents")) {
+            const int32_t c0 = (int32_t)getU32(in), c1 = (int32_t)getU32(in);
+            const uint32_t coord = getU32(in);
+            int32_t r[4];
+            rangeExtents(a, e, s, c0, c1, coord, r);
+            for (int k = 0; k < 4; ++k) putI32(&o, r[k]);
+            replyTo(a, m, "iiii", &o);
+        } else if (cscdSvEqC(member, "GetOffsetAtPoint")) {
+            const int32_t x = (int32_t)getU32(in), y = (int32_t)getU32(in);
+            const uint32_t coord = getU32(in);
+            CscdWindow* w = a->w;
+            int ox = 0, oy = 0;
+            if (coord == 0) platformWindowOrigin(w, &ox, &oy);
+            const float px = (float)(x - ox) / w->dpr + cscdViewScrollX(v), py = (float)(y - oy) / w->dpr + cscdViewScrollY(v);
+            const size_t at = cscdAccessibleTextOffsetAt(v, e, px, py);
+            putI32(&o, (int32_t)charCount(cscdSvSub(s, 0, cscdMinz(at, s.len))));
+            replyTo(a, m, "i", &o);
+        } else if (cscdSvEqC(member, "GetNSelections")) {
+            int32_t s0 = 0, s1 = 0, caret = 0;
+            textSelection(e, s, &s0, &s1, &caret);
+            putI32(&o, s1 > s0 ? 1 : 0);
+            replyTo(a, m, "i", &o);
+        } else if (cscdSvEqC(member, "GetSelection")) {
+            int32_t s0 = 0, s1 = 0, caret = 0;
+            textSelection(e, s, &s0, &s1, &caret);
+            putI32(&o, s0);
+            putI32(&o, s1);
+            replyTo(a, m, "ii", &o);
+        } else if (cscdSvEqC(member, "SetCaretOffset") || cscdSvEqC(member, "AddSelection") || cscdSvEqC(member, "SetSelection") ||
+                   cscdSvEqC(member, "RemoveSelection")) {
+            int32_t c0 = 0, c1 = 0;
+            if (cscdSvEqC(member, "SetCaretOffset")) c0 = c1 = (int32_t)getU32(in);
+            else if (cscdSvEqC(member, "AddSelection")) { c0 = (int32_t)getU32(in); c1 = (int32_t)getU32(in); }
+            else if (cscdSvEqC(member, "SetSelection")) { (void)getU32(in); c0 = (int32_t)getU32(in); c1 = (int32_t)getU32(in); }
+            else { /* (the selection gone: the caret where it ends) */
+                int32_t s0 = 0, caret = 0;
+                textSelection(e, s, &s0, &c1, &caret);
+                c0 = c1 = caret;
+            }
+            const bool ok = !in->bad && cscdAccessibleSelectText(v, e, byteAt(s, c0 < 0 ? 0 : c0), byteAt(s, c1 < 0 ? 0 : c1));
+            a->w->dirty = true;
+            putU32(&o, ok);
+            replyTo(a, m, "b", &o);
+        } else if (cscdSvEqC(member, "GetAttributes") || cscdSvEqC(member, "GetAttributeRun")) {
+            /* (no attributes of its own: the whole text one run) */
+            putEmptyAttributes(&o);
+            putI32(&o, 0);
+            putI32(&o, (int32_t)charCount(s));
+            replyTo(a, m, "a{ss}ii", &o);
+        } else if (cscdSvEqC(member, "GetDefaultAttributes") || cscdSvEqC(member, "GetDefaultAttributeSet")) {
+            putEmptyAttributes(&o);
+            replyTo(a, m, "a{ss}", &o);
         } else done = false;
         cscdStrFree(&t);
     } else done = false;
@@ -869,6 +1007,18 @@ static void accessibleEvent(void* user, CscdElement* e, CscdAccessibleEvent even
         emit(a, e, "PropertyChange", "accessible-value", 0, 's', cscdStrC(&s));
         if (cscdAccessibleRole(e) == CSCD_ROLE_TEXTBOX) emit(a, e, "TextChanged", "insert", 0, 's', cscdStrC(&s));
         cscdStrFree(&s);
+        break;
+    }
+    case CSCD_A11Y_EVENT_SELECTION: {
+        /* (Orca reads what the caret moved over, or what is now selected) */
+        if (!e) break;
+        CscdStr s = {0};
+        cscdAccessibleValue(v, e, &s);
+        int32_t s0 = 0, s1 = 0, caret = 0;
+        textSelection(e, cscdStrSv(&s), &s0, &s1, &caret);
+        cscdStrFree(&s);
+        emit(a, e, "TextCaretMoved", "", caret, 0, NULL);
+        emit(a, e, "TextSelectionChanged", "", 0, 0, NULL);
         break;
     }
     case CSCD_A11Y_EVENT_STATE:

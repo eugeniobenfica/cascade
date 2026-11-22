@@ -37,6 +37,13 @@ static bool hasDirectText(const CscdElement* e) {
 
 static bool inputIs(const CscdElement* e, const char* type) { return cscdSvIEqC(cscdElementAttrC(e, "type"), type); }
 
+/* a contenteditable element that is not inside another: a text field to screen readers (its contents are its text) */
+static bool editingHost(const CscdElement* e) {
+    if (!viewIsEditableHost(e)) return false;
+    const CscdElement* p = cscdNodeParentElement(&e->node);
+    return !p || !viewIsEditableHost(p);
+}
+
 CscdRole cscdAccessibleRole(const CscdElement* e) {
     if (!e) return CSCD_ROLE_NONE;
     const CscdSv aria = cscdElementAttrC(e, "role");
@@ -47,6 +54,7 @@ CscdRole cscdAccessibleRole(const CscdElement* e) {
         for (size_t i = 0; i < CSCD_COUNT(kAriaRoles); ++i)
             if (cscdSvIEqC(first, kAriaRoles[i].name)) return kAriaRoles[i].role;
     }
+    if (editingHost(e)) return CSCD_ROLE_TEXTBOX;
     const CscdSv t = cscdStrSv(&e->tag);
     if (cscdSvEqC(t, "button") || cscdSvEqC(t, "summary")) return CSCD_ROLE_BUTTON;
     if (cscdSvEqC(t, "a")) return cscdElementHasAttributeC(e, "href") ? CSCD_ROLE_LINK : (hasDirectText(e) ? CSCD_ROLE_TEXT : CSCD_ROLE_NONE);
@@ -201,7 +209,8 @@ uint32_t cscdAccessibleState(const CscdView* v, const CscdElement* e) {
     if (cscdSvEqC(cscdElementAttrC(e, "aria-selected"), "true") || (role == CSCD_ROLE_OPTION && cscdElementChecked(e))) s |= CSCD_A11Y_SELECTED;
     if (cscdElementHasAttributeC(e, "readonly") || cscdSvEqC(cscdElementAttrC(e, "aria-readonly"), "true")) s |= CSCD_A11Y_READONLY;
     if (cscdElementHasAttributeC(e, "required") || cscdSvEqC(cscdElementAttrC(e, "aria-required"), "true")) s |= CSCD_A11Y_REQUIRED;
-    if (cscdElementIs(e, "textarea")) s |= CSCD_A11Y_MULTILINE;
+    if (cscdElementIs(e, "textarea") || editingHost(e)) s |= CSCD_A11Y_MULTILINE;
+    if (editingHost(e)) s |= CSCD_A11Y_FOCUSABLE;
     if (cscdElementIs(e, "input") && inputIs(e, "password")) s |= CSCD_A11Y_PASSWORD;
     return s;
 }
@@ -241,7 +250,8 @@ bool cscdAccessibleRange(const CscdElement* e, double* value, double* min, doubl
 void cscdAccessibleValue(const CscdView* v, const CscdElement* e, CscdStr* out) {
     (void)v;
     const CscdRole role = cscdAccessibleRole(e);
-    if (role == CSCD_ROLE_TEXTBOX || role == CSCD_ROLE_COMBOBOX) {
+    if (role == CSCD_ROLE_TEXTBOX && editingHost(e)) viewEditableText((CscdElement*)e, out);
+    else if (role == CSCD_ROLE_TEXTBOX || role == CSCD_ROLE_COMBOBOX) {
         CscdStr val = cscdElementValue(e);
         if (cscdElementIs(e, "select")) { /* (the chosen option's text) */
             const CscdElement* chosen = cscdElementQuerySelector((CscdElement*)e, CSCD_SV("option:checked"));
@@ -269,6 +279,7 @@ void cscdAccessibleValue(const CscdView* v, const CscdElement* e, CscdStr* out) 
 bool cscdAccessibleIncluded(const CscdElement* e) { return e && !hidden(e) && cscdAccessibleRole(e) != CSCD_ROLE_NONE; }
 
 static void childrenOf(const CscdElement* e, CscdPtrVec* out) {
+    if (editingHost(e)) return; /* (a text field: its contents are its value) */
     for (size_t i = 0; i < e->node.children.len; ++i) {
         CscdElement* c = cscdNodeAsElement(cscdNodeChild(&e->node, i));
         if (!c || hidden(c)) continue;
@@ -317,7 +328,28 @@ CscdElement* cscdAccessibleElement(const CscdView* v, uint32_t id) {
     return m ? (CscdElement*)m->p : NULL;
 }
 
+void viewA11ySelection(CscdView* v) {
+    if (!v->onA11y || !viewOn(v, CSCD_FEATURE_ACCESSIBILITY)) return;
+    CscdElement* e = v->doc->focused;
+    if (e && e == v->ceHost) { /* (an editing host's selection, as editable.c has it now) */
+        e->selAnchor = v->ceAnchor;
+        e->caret = v->ceFocus;
+    }
+    size_t a = 0, z = 0;
+    if (!e || !cscdAccessibleTextSelection(e, &a, &z)) {
+        v->a11ySel = NULL;
+        return;
+    }
+    if (e == v->a11ySel && a == v->a11ySelA && z == v->a11ySelZ) return;
+    const bool same = e == v->a11ySel; /* (one just focused: its focus said it) */
+    v->a11ySel = e;
+    v->a11ySelA = a;
+    v->a11ySelZ = z;
+    if (same) v->onA11y(v->onA11yUser, e, CSCD_A11Y_EVENT_SELECTION);
+}
+
 void viewA11yForget(CscdView* v, const CscdElement* e) {
+    if (v->a11ySel == e) v->a11ySel = NULL;
     CscdMapVal old;
     if (cscdU64MapRemove(&v->a11yIds, CSCD_PKEY(e), &old)) cscdU64MapRemove(&v->a11yElements, old.u, NULL);
 }
@@ -425,10 +457,20 @@ void viewA11yStructure(CscdView* v) {
 
 /* ---- a text field's text ------------------------------------------------------------------------------------------ */
 
-static bool textField(const CscdElement* e) { return e && isTextControl(e); }
+static bool textField(const CscdElement* e) { return e && (isTextControl(e) || editingHost(e)); }
 
 bool cscdAccessibleTextSelection(const CscdElement* e, size_t* start, size_t* end) {
     if (!textField(e)) return false;
+    if (editingHost(e)) { /* (the selection editable.c keeps on it; at the end before it was focused) */
+        CscdStr text = {0};
+        viewEditableText((CscdElement*)e, &text);
+        const size_t len = text.len;
+        cscdStrFree(&text);
+        const size_t a = cscdMinz(e->selAnchor, len), z = cscdMinz(e->caret, len);
+        *start = cscdMinz(a, z);
+        *end = cscdMaxz(a, z);
+        return true;
+    }
     CscdStr value = cscdElementValue(e);
     const size_t len = value.len;
     cscdStrFree(&value);
@@ -440,6 +482,10 @@ bool cscdAccessibleTextSelection(const CscdElement* e, size_t* start, size_t* en
 
 void cscdAccessibleTextRects(CscdView* v, CscdElement* e, size_t start, size_t end, CscdRectVec* out) {
     if (!textField(e)) return;
+    if (editingHost(e)) {
+        viewEditableRects(v, e, start, end, out);
+        return;
+    }
     cscdViewUpdate(v); /* (a focus or an edit since the last frame: its boxes made again) */
     if (!e->layout || !e->style) return;
     if (!e->valueDirty) { /* (its text not taken in yet: the field) */
@@ -465,6 +511,7 @@ void cscdAccessibleTextRects(CscdView* v, CscdElement* e, size_t start, size_t e
 
 size_t cscdAccessibleTextOffsetAt(CscdView* v, CscdElement* e, float x, float y) {
     if (!textField(e)) return 0;
+    if (editingHost(e)) return viewEditableHit(v, e, x, y);
     cscdViewUpdate(v);
     if (!e->layout || !e->valueDirty) return 0;
     return viewTextHit(v, e, x, y);
@@ -472,6 +519,7 @@ size_t cscdAccessibleTextOffsetAt(CscdView* v, CscdElement* e, float x, float y)
 
 bool cscdAccessibleSelectText(CscdView* v, CscdElement* e, size_t start, size_t end) {
     if (!textField(e)) return false;
+    if (editingHost(e)) return viewEditableSelect(v, e, start, end);
     if (v->doc->focused != e) cscdViewFocus(v, e);
     if (v->doc->focused != e || !e->valueDirty) return false;
     const size_t len = e->editValue.len;

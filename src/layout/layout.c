@@ -388,6 +388,7 @@ static CscdLayoutBox* reusable(Layouter* L, CscdElement* e);
 static void forgetKeptLayout(CscdLayoutBox* b);
 static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was);
 static void noteOrdered(CscdLayoutBox* b);
+static void relativeOffset(const CscdLayoutBox* b, double cbW, double cbH, double* dx, double* dy);
 
 static void appendChild(CscdLayoutBox* parent, CscdLayoutBox* c) {
     c->parent = parent;
@@ -1194,6 +1195,39 @@ static double attrFloat(const CscdElement* e, const char* name) {
     return v;
 }
 
+static CscdImageLoaderFn sizerLoader;
+static LayImageSizeFn imageSizer;
+void laySetImageSizer(CscdImageLoaderFn loader, LayImageSizeFn sizer) {
+    sizerLoader = loader;
+    imageSizer = sizer;
+}
+
+/* Whether a replaced box has a ratio but neither an intrinsic width nor height (an SVG with a viewBox only): its width
+ * is then the space it has (CSS 2.1 10.3.2), not the default 300px. */
+static bool ratioOnly(Layouter* L, const CscdLayoutBox* b) {
+    if (b->replaced == CSCD_REPL_IMAGE)
+        return b->image && imageSizer && L->images == sizerLoader && imageSizer(L->imagesUser, b->image) == 4;
+    if (b->replaced != CSCD_REPL_SVG || !b->element) return false;
+    const CscdElement* e = b->element;
+    const CscdSv w = cscdElementAttrC(e, "width"), h = cscdElementAttrC(e, "height");
+    if ((w.len && !cscdSvEndsC(w, "%")) || (h.len && !cscdSvEndsC(h, "%"))) return false;
+    CscdStr vb = cscdStrDup(cscdElementAttrC(e, "viewBox"));
+    for (size_t i = 0; i < vb.len; ++i) if (vb.ptr[i] == ',') vb.ptr[i] = ' ';
+    CscdSvVec parts = {0};
+    cscdSplitSpaces(cscdStrSv(&vb), &parts);
+    bool ok = false;
+    if (parts.len >= 4) {
+        char* cw = cscdSvDupC(parts.items[2]);
+        char* ch = cscdSvDupC(parts.items[3]);
+        ok = atof(cw) > 0 && atof(ch) > 0;
+        cscdFree(cw);
+        cscdFree(ch);
+    }
+    cscdVecFree(&parts);
+    cscdStrFree(&vb);
+    return ok;
+}
+
 void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, double* ratio) {
     *w = 300; *h = 150; *ratio = 2;
     CscdElement* e = b->element;
@@ -1290,7 +1324,10 @@ void layReplaced(Layouter* L, CscdLayoutBox* b, double cbW, double cbH, double* 
     if (wd && hd) { *cw = sw; *ch = sh; }
     else if (wd) { *cw = sw; *ch = ratio > 0 ? sw / ratio : ih; }
     else if (hd) { *ch = sh; *cw = ratio > 0 ? sh * ratio : iw; }
-    else { *cw = iw; *ch = ih; }
+    else if (cbW >= 0 && ratio > 0 && ratioOnly(L, b)) { /* (only a ratio: as wide as the space it has) */
+        *cw = layMax(0.f, cbW - edgesW - b->margin[1] - b->margin[3]);
+        *ch = *cw / ratio;
+    } else { *cw = iw; *ch = ih; }
     /* min / max (content sizes) */
     double bw = layClampWidth(L, b, *cw + edgesW, cbW) - edgesW;
     if (bw != *cw) { if (!hd && ratio > 0) *ch = bw / ratio; *cw = bw; }
@@ -2223,7 +2260,9 @@ static void finishLine(Inl* I, bool lastLine) {
                 if (edgeAligned.items[q].idx == k) { edge = true; mt = edgeAligned.items[q].top ? I->y : I->y + lineH - edgeAligned.items[q].h; }
             if (!edge) mt = baselineY + atomTop->items[k];
             double tx = px + ab->margin[3], ty = mt + ab->margin[0];
-            cscdBoxShift(ab, tx - ab->x, ty - ab->y);
+            double rdx, rdy; /* (position: relative moves it from where the line puts it) */
+            relativeOffset(ab, I->cw, -1, &rdx, &rdy);
+            cscdBoxShift(ab, tx + rdx - ab->x, ty + rdy - ab->y);
             Chain ch = stChain(st, ab);
             for (uint32_t q = 0; q < ch.n; ++q) extendRange(&ranges, CHAIN_BOX(st, ch, q), px, px + p->w);
             haveLastFrag = false;
@@ -2758,6 +2797,7 @@ void layFloat(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double y, double left
         }
     }
 }
+
 
 void layAtomicInline(Layouter* L, CscdLayoutBox* b, double cbW, double cbH) {
     BlockInput in = blockInput();

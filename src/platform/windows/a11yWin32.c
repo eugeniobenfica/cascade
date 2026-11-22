@@ -963,6 +963,7 @@ static void onEvent(void* user, CscdElement* e, CscdAccessibleEvent event) {
     } else if (event == CSCD_A11Y_EVENT_LIVE) {
         UiaRaiseAutomationEvent(&n->simple, UIA_LiveRegionChangedEventId); /* (Narrator reads its text, as its LiveSetting asks) */
     } else if (event == CSCD_A11Y_EVENT_FOCUS) UiaRaiseAutomationEvent(&n->simple, UIA_AutomationFocusChangedEventId);
+    else if (event == CSCD_A11Y_EVENT_SELECTION) UiaRaiseAutomationEvent(&n->simple, 20014 /* UIA_Text_TextSelectionChangedEventId */);
     else {
         const CscdRole r = cscdAccessibleRole(e);
         VARIANT before, now;

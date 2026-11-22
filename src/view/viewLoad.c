@@ -447,6 +447,12 @@ CscdImage* viewImage(CscdView* v, CscdSv url) {
 
 CscdImage* viewImageLoader(void* view, CscdSv url) { return (CscdImage*)cscdRetain(viewImage((CscdView*)view, url)); }
 
+/* what an image the view gave has of an intrinsic size, for layout (an SVG file's may have only a ratio) */
+uint8_t viewImageSizer(void* view, const CscdImage* img) {
+    const SvgImage* s = viewSvgImage((const CscdView*)view, img);
+    return s ? s->has : SVG_HAS_WIDTH | SVG_HAS_HEIGHT | SVG_HAS_RATIO;
+}
+
 void cscdViewSetImage(CscdView* v, CscdSv url, CscdImage* img) {
     CscdMapVal* slot = cscdStrMapPut(&v->images, url, NULL);
     ImageEntry* e = (ImageEntry*)slot->p;
