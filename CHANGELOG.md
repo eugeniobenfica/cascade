@@ -41,6 +41,10 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **Layout**: an image or `<svg>` with only a ratio is as wide as the space it has; grid's `repeat(auto-fit)` collapses
   its empty rows as well as its columns, their gaps with them; `minmax(x, auto)` tracks stretch; a relatively
   positioned inline-block moves from its place in the line.
+- **Grid baselines**: `align-self: baseline` and `last baseline` in grids (the items of a row share their
+  baseline, the row grows to hold them); a grid's own baselines from its first and last rows.
+- **Flex and grid items paint as inline-blocks do**, each whole, in `order`'s order; one with a `z-index` makes a
+  stacking context without being positioned.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

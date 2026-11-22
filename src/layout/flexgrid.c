@@ -441,6 +441,7 @@ typedef struct GridItem {
     CscdLayoutBox* b;
     int r0, r1, c0, c1; /* 0-based track indices, end exclusive */
     double extra;        /* (column sizing of a subgrid's items: its edges at the subgrid's first / last column) */
+    double shim;         /* (a baseline-aligned item: how far it is moved down, or up for last baseline, to its group's) */
 } GridItem;
 typedef CSCD_VEC(GridItem) GridItemVec;
 
@@ -857,7 +858,43 @@ static double contentContribution(Layouter* L, const GridItem* it, bool mn, bool
 
 static double heightContribution(Layouter* L, const GridItem* it, bool mn, bool allMin) {
     (void)L; (void)mn; (void)allMin;
-    return it->b->h + it->b->margin[0] + it->b->margin[2];
+    return it->b->h + it->b->margin[0] + it->b->margin[2] + it->shim;
+}
+
+/* an item's align-self, resolved (auto: the grid's align-items; normal: stretch, or start for a replaced one) */
+static uint8_t alignSelfOf(const CscdLayoutBox* c, const CscdComputedStyle* s) {
+    uint8_t as = c->style->alignSelf;
+    if (as == CSCD_AL_AUTO) as = s->alignItems;
+    if (as == CSCD_AL_NORMAL) as = c->kind == CSCD_BOX_REPLACED ? CSCD_AL_START : CSCD_AL_STRETCH;
+    return as;
+}
+
+/* Baseline self-alignment along the rows (CSS Box Alignment 9.3): the items aligned by their first baseline that start
+ * in the same row share it (those by their last baseline, ending in the same row, theirs); each is moved by how much
+ * less than the most of them it has above its baseline (below, for last), which its row's size takes in too. A box
+ * with no baseline has one synthesized at its border box's bottom (top, for last). */
+static void baselineShims(GridItemVec* items, const CscdComputedStyle* s, int rows) {
+    for (int last = 0; last < 2; ++last) {
+        for (int row = 0; row <= rows; ++row) {
+            double most = -1e30;
+            for (int pass = 0; pass < 2; ++pass)
+                for (size_t i = 0; i < items->len; ++i) {
+                    GridItem* it = &items->items[i];
+                    const CscdLayoutBox* c = it->b;
+                    const uint8_t as = alignSelfOf(c, s);
+                    if (as != (last ? CSCD_AL_LAST_BASELINE : CSCD_AL_BASELINE) || (last ? it->r1 - 1 : it->r0) != row) continue;
+                    /* (a height that is a percentage of its rows: it depends on them, so it does not take part; start) */
+                    if (cscdLenHasPercent(c->style->height) || cscdLenHasPercent(c->style->minHeight) || cscdLenHasPercent(c->style->maxHeight)) continue;
+                    const double top = c->y - c->margin[0], bottom = c->y + c->h + c->margin[2];
+                    /* (its own baselines, unless its writing mode is not the grid's: then, as for none, its border box's
+                     * bottom) */
+                    const bool own = c->hasBaseline && (c->style->writingMode == CSCD_WRITING_HORIZONTAL) == (s->writingMode == CSCD_WRITING_HORIZONTAL);
+                    const double off = last ? bottom - (own ? c->lastBaseline : c->y + c->h) : (own ? c->baseline : c->y + c->h) - top;
+                    if (pass == 0) most = layMax(most, off);
+                    else it->shim = most - off;
+                }
+        }
+    }
 }
 
 static void gridItemsOf(CscdLayoutBox* b, GridItemVec* out) {
@@ -1083,6 +1120,7 @@ double layGrid(Layouter* L, CscdLayoutBox* b, double cbH) {
         else if (!wd) { in.shrinkToFit = true; in.availW = area; }
         layBlock(L, c, &in);
     }
+    baselineShims(&items, s, rows);
     bool stretchRows = s->alignContent == CSCD_AL_NORMAL || s->alignContent == CSCD_AL_STRETCH;
     /* the rows: a subgrid on rows contributes each of its rows to the parent's row it lies in, not its
      * whole height spread over them (cards whose parts line up across the row) */
@@ -1165,13 +1203,37 @@ double layGrid(Layouter* L, CscdLayoutBox* b, double cbH) {
         else if (cscdLenIsAuto(cs->margin[0])) py += layMax(0.f, freeY);
         else if (as == CSCD_AL_END || as == CSCD_AL_FLEX_END || as == CSCD_AL_SELF_END) py += freeY;
         else if (as == CSCD_AL_CENTER) py += freeY / 2;
+        else if (as == CSCD_AL_BASELINE) py += it->shim;
+        else if (as == CSCD_AL_LAST_BASELINE) py += freeY - it->shim;
         cscdBoxShift(c, px - c->x, py - c->y);
         layApplyRelative(c, aw, ah);
-        if (!baselineSet && c->hasBaseline && it->r0 == 0) {
-            b->baseline = c->baseline;
-            b->lastBaseline = c->lastBaseline;
+    }
+    /* the grid's baselines (CSS Grid 10.8): its first row's (the first item there that is aligned by its baseline, or
+     * else the first there in grid order), its last row's likewise; one with no baseline has it at its border box's
+     * bottom */
+    {
+        const GridItem *first = NULL, *lastIt = NULL;
+        int firstRow = 1 << 30, lastRow = -1;
+        for (size_t i = 0; i < items.len; ++i) {
+            firstRow = cscdMini(firstRow, items.items[i].r0);
+            lastRow = cscdMaxi(lastRow, items.items[i].r1 - 1);
+        }
+        for (int pass = 0; pass < 2 && !first; ++pass)
+            for (size_t i = 0; i < items.len && !first; ++i) {
+                const GridItem* it = &items.items[i];
+                if (it->r0 == firstRow && (pass == 1 || alignSelfOf(it->b, s) == CSCD_AL_BASELINE)) first = it;
+            }
+        for (int pass = 0; pass < 2 && !lastIt; ++pass)
+            for (size_t i = items.len; i-- > 0 && !lastIt;) {
+                const GridItem* it = &items.items[i];
+                if (it->r1 - 1 == lastRow && (pass == 1 || alignSelfOf(it->b, s) == CSCD_AL_LAST_BASELINE)) lastIt = it;
+            }
+        if (first && !baselineSet) {
+            const CscdLayoutBox* c = first->b;
+            b->baseline = c->hasBaseline ? c->baseline : c->y + c->h;
             b->hasBaseline = true;
-            baselineSet = true;
+            const CscdLayoutBox* l = lastIt ? lastIt->b : c;
+            b->lastBaseline = l->hasBaseline ? l->lastBaseline : l->y + l->h;
         }
     }
     cscdVecFree(&scratch);

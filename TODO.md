@@ -226,7 +226,7 @@ Numbers are from a list of 20,000 rows (80,000 elements) at 1280×800, four pain
 - [x] A JS-free runner for WPT reftests in `css/` (`tests/wpt.c`): ten folders of a pinned commit (flexbox, grid,
       CSS2 margins, positioning, normal flow, floats, backgrounds), each test and its reference painted at 800x600 and
       compared within the test's fuzzy allowance; pages with scripts passed over, XHTML pages parsed as XML. The score
-      of each folder is in `tests/wpt.score` (2,341 of 3,307 run, the lesser of Windows and Linux, from 846: a line of text is now whole pixels high,
+      of each folder is in `tests/wpt.score` (2,392 of 3,307 run, the lesser of Windows and Linux, from 846: a line of text is now whole pixels high,
       its font's ascent and descent rounded as browsers round them; then the table fixup and SVG images below); CI
       fails when a folder passes fewer.
 - [x] html5lib tree-construction tests (`tests/html5lib.c`: all 1,784 cases but the 8 that need scripting),

@@ -1685,10 +1685,17 @@ NOINLINE static void paintScrollbars(Painter* P, CscdLayoutBox* b) {
 
 /* ---- paint order ----------------------------------------------------------------------------------- */
 
+/* a flex or grid item (a box whose parent lays it out as one) */
+static bool flexOrGridItem(const CscdLayoutBox* b) {
+    const CscdLayoutBox* p = b->parent;
+    return p && p->style && b->kind != CSCD_BOX_TEXT && (cscdStyleIsFlex(p->style) || cscdStyleIsGrid(p->style)) && !p->anonymous;
+}
+
 static bool isStackingContext(const CscdLayoutBox* b) {
     if (!b->parent) return true;
     if (b->kind == CSCD_BOX_TEXT) return false;
-    return cscdStyleCreatesStackingContext(b->style);
+    /* (a flex or grid item with a z-index makes one, positioned or not) */
+    return cscdStyleCreatesStackingContext(b->style) || (flexOrGridItem(b) && !b->style->zAuto);
 }
 
 static bool isPositioned(const CscdLayoutBox* b) { return b->kind != CSCD_BOX_TEXT && b->style && b->style->position != CSCD_POS_STATIC; }
@@ -2608,8 +2615,43 @@ NOINLINE static CscdShader textClipShader(const CscdBackgroundLayer* L, CscdRect
 
 /* Normal-flow painting of the subtree of b inside its stacking context.
  * phase 0: block backgrounds, 1: floats, 2: inline content and replaced content. */
+static int byOrder(const void* a, const void* b, void* ctx) {
+    (void)ctx;
+    const int x = (*(CscdLayoutBox* const*)a)->style->order, y = (*(CscdLayoutBox* const*)b)->style->order;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* A flex or grid container's items, painted as inline-blocks are (each whole, in turn) in order-modified document
+ * order (CSS Flexbox 5.4, Grid 9.? "paint exactly the same as inline blocks"). */
+static void paintItems(Painter* P, CscdLayoutBox* b, int phase) {
+    if (phase != 2) return;
+    CscdPtrVec items = {0};
+    bool reordered = false;
+    for (size_t i = 0; i < b->children.len; ++i) {
+        CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c->kind == CSCD_BOX_TEXT) {
+            paintText(P, c);
+            continue;
+        }
+        if (isPositioned(c) || isStackingContext(c)) continue;
+        if (c->style->order) reordered = true;
+        cscdVecPush(&items, c);
+    }
+    if (reordered) cscdSort(items.items, items.len, sizeof(void*), byOrder, NULL);
+    for (size_t i = 0; i < items.len; ++i) {
+        CscdLayoutBox* c = (CscdLayoutBox*)items.items[i];
+        if (!P->projection && outOfSight(P, c)) continue;
+        paintLayer(P, c);
+    }
+    cscdVecFree(&items);
+}
+
 static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
     if (cscdStackLow()) return; /* (deeper than the thread's stack holds: not painted, as it was not laid out) */
+    if (b->style && !b->anonymous && (cscdStyleIsFlex(b->style) || cscdStyleIsGrid(b->style)) && b->kind != CSCD_BOX_REPLACED) {
+        paintItems(P, b, phase);
+        return;
+    }
     size_t from, to;
     childrenInSight(P, b, &from, &to);
     for (size_t i = from; i < to; ++i) {
