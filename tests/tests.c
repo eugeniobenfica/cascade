@@ -234,6 +234,28 @@ static void testSvgImages(void) {
     cscdViewFree(v);
 }
 
+/* margins collapsing through empty blocks, a min-height keeping the last child's margin, new formatting contexts
+ * after floats (CSS 2.1 8.3.1) */
+static void testMarginCollapseThrough(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0} div{width:200px}</style>"
+                  "<div style='overflow:hidden'><div style='margin-bottom:50px'></div><div style='height:0'></div>"
+                  "<div id=a style='height:10px;margin-top:20px'></div></div>"
+                  "<div style='min-height:100px'><div style='height:30px;margin-bottom:500px'></div></div><div id=b style='height:5px'></div>"
+                  "<div style='min-height:5px'><div style='height:30px;margin-bottom:40px'></div></div><div id=c style='height:5px'></div>"
+                  "<div style='overflow:hidden'><div style='margin-top:30px'><div></div><div><div style='float:left;width:10px;height:10px'></div></div>"
+                  "<div id=d style='height:10px;margin-top:60px'></div></div></div>"
+                  "<div style='overflow:hidden'><div><div><div id=f style='float:left;width:200px;height:10px'></div></div>"
+                  "<div id=e style='overflow:hidden;height:10px;margin-top:40px'></div></div></div>");
+    CHECK(fabsf(rectOf(v, "a").y - 50) < 0.5f);  /* (through the zero-height block: the larger margin) */
+    CHECK(fabsf(rectOf(v, "b").y - 160) < 0.5f); /* (the min-height holds; the 500px margin is gone) */
+    CHECK(fabsf(rectOf(v, "c").y - 235) < 0.5f); /* (5px min-height: 30px, then the margin passed on) */
+    CHECK(fabsf(rectOf(v, "d").y - 300) < 0.5f); /* (through the blocks holding a float, into the parent's top) */
+    CHECK(fabsf(rectOf(v, "f").y - 310) < 0.5f); /* (a new context too wide beside the float: the float stays up) */
+    CHECK(fabsf(rectOf(v, "e").y - 350) < 0.5f); /* (its margin from the top, past the float) */
+    cscdViewFree(v);
+}
+
 /* right-to-left containing blocks (CSS 2.1 9.4.3, 10.3.7); flex items painted in order, z-index unpositioned */
 static void testRtlPositioningAndItemPainting(void) {
     CscdView* v = cscdViewNew();
@@ -5622,6 +5644,7 @@ int main(void) {
     testTableFixup();
     testSvgImages();
     testRtlPositioningAndItemPainting();
+    testMarginCollapseThrough();
     testSelectors();
     testHasSiblings();
     testCascade();

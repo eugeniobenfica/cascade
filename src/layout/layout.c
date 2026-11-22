@@ -389,6 +389,7 @@ static void forgetKeptLayout(CscdLayoutBox* b);
 static void notePrevious(CscdLayoutBox* to, const CscdLayoutBox* was);
 static void noteOrdered(CscdLayoutBox* b);
 static void relativeOffset(const CscdLayoutBox* b, double cbW, double cbH, double* dx, double* dy);
+static bool inFlowChildren(const CscdLayoutBox* b);
 
 static void appendChild(CscdLayoutBox* parent, CscdLayoutBox* c) {
     c->parent = parent;
@@ -2752,20 +2753,125 @@ static bool topCollapsible(const CscdLayoutBox* b) {
     return true;
 }
 
-/* The margins that collapse at the top of b: its own and those of its first in-flow child chain. */
+/* whether a box in the flow starts a block formatting context of its own */
+static bool startsBfc(const CscdLayoutBox* c) {
+    const CscdComputedStyle* cs = c->style;
+    return cs->overflowX != CSCD_OVERFLOW_VISIBLE || cs->display == CSCD_DISPLAY_FLOW_ROOT || c->kind == CSCD_BOX_FLEX ||
+           c->kind == CSCD_BOX_GRID || c->kind == CSCD_BOX_TABLE || c->kind == CSCD_BOX_REPLACED;
+}
+
+/* whether floats are in a box's flow (its own, or in that of the blocks of its flow) */
+static bool holdsFloats(const CscdLayoutBox* b) {
+    for (size_t i = 0; i < b->children.len; ++i) {
+        const CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c->kind == CSCD_BOX_TEXT || !c->style) continue;
+        if (c->style->floating != CSCD_FLOAT_NONE) return true;
+        if (!layIsOutOfFlow(c) && c->kind == CSCD_BOX_BLOCK && !startsBfc(c) && holdsFloats(c)) return true;
+    }
+    return false;
+}
+
+/* a box's margin-box width when its style fixes it (else -1) */
+static double fixedOuterW(const CscdLayoutBox* c) {
+    const CscdComputedStyle* s = c->style;
+    if (!cscdLenIsFixed(s->width) || s->width.expr) return -1;
+    double w = s->width.px;
+    for (int i = 1; i <= 3; i += 2) {
+        if (!cscdLenIsAuto(s->margin[i]) && !cscdLenIsFixed(s->margin[i])) return -1;
+        if (!cscdLenIsAuto(s->margin[i])) w += s->margin[i].px;
+        if (s->boxSizing != CSCD_BOX_BORDER) {
+            if (!cscdLenIsFixed(s->padding[i])) return -1;
+            w += s->padding[i].px + s->border[i].width;
+        }
+    }
+    return w;
+}
+
+/* the widths of the floats in b's flow before its child 'upTo' (in the blocks of that flow too); -1 when one is not
+ * fixed */
+static double floatsWidth(const CscdLayoutBox* b, const CscdLayoutBox* upTo) {
+    double sum = 0;
+    for (size_t i = 0; i < b->children.len; ++i) {
+        const CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c == upTo) break;
+        if (c->kind == CSCD_BOX_TEXT || !c->style) continue;
+        double w = 0;
+        if (c->style->floating != CSCD_FLOAT_NONE) w = fixedOuterW(c);
+        else if (!layIsOutOfFlow(c) && c->kind == CSCD_BOX_BLOCK && !startsBfc(c)) w = floatsWidth(c, NULL);
+        if (w < 0) return -1;
+        sum += w;
+    }
+    return sum;
+}
+
+/* Whether a new formatting context after floats at the top of b (where its margin would collapse with b's) is too
+ * wide to stand beside them: then the floats stay at b's top and it comes below them with its margin (as browsers
+ * do); one that fits has its margin collapse, and the floats move down with it. */
+static bool separatesFromFloats(const CscdLayoutBox* b, const CscdLayoutBox* c, double contentW) {
+    const double f = floatsWidth(b, c), w = fixedOuterW(c);
+    return f > 0 && w >= 0 && f + w > contentW + 0.01;
+}
+
+/* b's content width when its containing block is cbW wide (for what is told before it is laid out) */
+static double guessContentW(const CscdLayoutBox* b, double cbW) {
+    const CscdComputedStyle* s = b->style;
+    if (cscdLenIsFixed(s->width) && !s->width.expr)
+        return s->boxSizing == CSCD_BOX_BORDER ? s->width.px - b->padding[1] - b->padding[3] - b->border[1] - b->border[3] : s->width.px;
+    return cbW - b->margin[1] - b->margin[3] - b->padding[1] - b->padding[3] - b->border[1] - b->border[3];
+}
+
+static bool zeroOrAuto(CscdLength l) { return cscdLenIsAuto(l) || (l.kind == CSCD_LEN_FIXED && l.px == 0 && l.pct == 0 && !l.expr); }
+
+/* Whether a block will surely be empty, so that its margins collapse through it (CSS 2.1 8.3.1), told before it is laid
+ * out: no content, no top or bottom border or padding, no height, and only such blocks in its flow. */
+static bool surelyEmpty(CscdLayoutBox* b, double cbW) {
+    if (cscdStackLow() || !b->style) return false;
+    if (b->inlineContent) {
+        /* (inline content of floats, positioned boxes and white space alone makes no line) */
+        const bool was = b->inlineContent;
+        b->inlineContent = false;
+        const bool ok = topCollapsible(b);
+        b->inlineContent = was;
+        if (!ok) return false;
+    } else if (!topCollapsible(b)) return false;
+    const CscdComputedStyle* s = b->style;
+    if (!zeroOrAuto(s->height) || !zeroOrAuto(s->minHeight) || b->border[2] > 0 || b->padding[2] > 0) return false;
+    for (size_t i = 0; i < b->children.len; ++i) {
+        CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (layIsOutOfFlow(c)) continue;
+        if (c->kind == CSCD_BOX_TEXT && c->style && c->style->whiteSpace == CSCD_WS_NORMAL) {
+            for (size_t k = 0; k < c->text.len; ++k)
+                if (!cscdIsSpace(c->text.ptr[k])) return false;
+            continue;
+        }
+        if (c->kind == CSCD_BOX_TEXT || c->isMarker || b->inlineContent) return false;
+        layResolveEdges(c, cbW);
+        if (!surelyEmpty(c, cbW)) return false;
+    }
+    return true;
+}
+
+/* The margins that collapse at the top of b: its own and those of its first in-flow child chain (and of the empty
+ * blocks before it, which margins collapse through). */
 static MarginSet collapsedTop(CscdLayoutBox* b, double cbW) {
     MarginSet m = {0, 0};
     layResolveEdges(b, cbW);
     msAdd(&m, b->margin[0]);
     if (!topCollapsible(b)) return m;
     if (b->style->clear != CSCD_CLEAR_NONE) return m;
+    bool floats = false;
     for (size_t i = 0; i < b->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c->style && c->style->floating != CSCD_FLOAT_NONE && !c->isMarker) floats = true;
         if (layIsOutOfFlow(c) || c->isMarker) continue;
         if (c->kind == CSCD_BOX_TEXT) return m;
         if (c->style && c->style->clear != CSCD_CLEAR_NONE) return m;
+        /* (a new formatting context after floats there: its margin stays its own, see layBlockChildren) */
+        if (floats && c->style && startsBfc(c) && separatesFromFloats(b, c, guessContentW(b, cbW))) return m;
         msAddSet(&m, collapsedTop(c, cbW));
-        break;
+        if (!surelyEmpty(c, cbW)) break;
+        msAdd(&m, c->margin[2]);
+        if (holdsFloats(c)) floats = true;
     }
     return m;
 }
@@ -2855,9 +2961,12 @@ void layComputeOverflow(CscdLayoutBox* b) {
         }
         LayRect cr = cscdBoxBorderBoxD(c);
         if (!(c->style && cscdStyleClipsOverflow(c->style))) cr = cscdBoxRectUnite(cr, c->overflow);
-        /* the end margins of in-flow children count for scrolling */
-        cr.w += layMax(0.f, c->margin[1]);
-        cr.h += layMax(0.f, c->margin[2]);
+        /* the end margins of a scroll container's in-flow children count for scrolling (the root's are the viewport's);
+         * those further down do not */
+        if (clip || !b->parent) {
+            cr.w += layMax(0.f, c->margin[1]);
+            cr.h += layMax(0.f, c->margin[2]);
+        }
         content = cscdBoxRectUnite(content, cr);
     }
     if (clip) {
@@ -2876,7 +2985,7 @@ static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, doub
     double top = cscdBoxContentY(b);
     double cursor = top;
     MarginSet pending = {0, 0};
-    bool first = true;
+    bool first = true, floatsFirst = false;
     bool firstBaselineSet = false;
     for (size_t i = 0; i < b->children.len; ++i) {
         CscdLayoutBox* c = cscdBoxChild(b, i);
@@ -2896,16 +3005,24 @@ static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, doub
             memset(&local, 0, sizeof local);
             layFloat(L, c, fc ? fc : &local, cursor + msValue(pending), cx, cx + cw, cw);
             cscdVecFree(&local.floats);
+            if (first) floatsFirst = true;
             continue;
         }
         MarginSet ct = collapsedTop(c, cw);
         bool skip = first && topCollapsed;
         MarginSet ms = pending;
+        /* A new formatting context after floats whose place came with the parent's (at its top, the margins before
+         * them collapsed into the parent's): the floats stay there, it keeps its margin and comes below it. */
+        if (skip && floatsFirst && startsBfc(c) && separatesFromFloats(b, c, cw)) {
+            skip = false;
+            ms = (MarginSet){0, 0};
+        }
         if (!skip) msAddSet(&ms, ct);
         double y = cursor + (skip ? 0 : msValue(ms));
+        bool cleared = false;
         if (cs->clear != CSCD_CLEAR_NONE && fc) {
             double clr = fcClearY(fc, (CscdClear)cs->clear);
-            if (clr > y) { y = clr; ms.pos = ms.neg = 0; }
+            if (clr > y) { y = clr; ms.pos = ms.neg = 0; cleared = true; }
         }
         BlockInput in = blockInput();
         in.x = cx;
@@ -2923,8 +3040,10 @@ static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, doub
             if (l > cx || r < cx + cw) { in.x = l; in.cbW = r - l; in.availW = r - l; }
         }
         MarginSet bottom = layBlock(L, c, &in);
+        /* (CSS 2.1 8.3.1: zero min-height, zero or auto height, and no in-flow children when the height is not auto) */
         bool emptyThrough = c->h == 0 && c->kind == CSCD_BOX_BLOCK && !c->lines.len && c->border[0] == 0 && c->border[2] == 0 &&
-                            c->padding[0] == 0 && c->padding[2] == 0 && cscdLenIsAuto(cs->height) && cscdLenIsAuto(cs->minHeight) && !c->atomicInline;
+                            c->padding[0] == 0 && c->padding[2] == 0 && (cscdLenIsAuto(cs->height) || !inFlowChildren(c)) && !c->atomicInline &&
+                            !bfcChild && !cleared;
         if (emptyThrough) {
             pending = ms;
             msAddSet(&pending, bottom);
@@ -2939,9 +3058,21 @@ static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, doub
             if (c->hasBaseline) b->lastBaseline = c->lastBaseline;
         }
         if (!emptyThrough) first = false;
+        else if (first && holdsFloats(c)) floatsFirst = true;
     }
     *trailing = pending;
     return cursor - top;
+}
+
+/* whether a box has children in the flow (not floated, not positioned out of it) */
+static bool inFlowChildren(const CscdLayoutBox* b) {
+    for (size_t i = 0; i < b->children.len; ++i) {
+        const CscdLayoutBox* c = cscdBoxChild(b, i);
+        if (c->kind == CSCD_BOX_TEXT || !c->style) return true;
+        if (cscdStyleIsOutOfFlow(c->style)) continue;
+        return true;
+    }
+    return false;
 }
 
 double layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH) {
@@ -3286,7 +3417,14 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
         contentH = layBlockChildren(L, b, fc, childCbH, &trailing, in->marginTopCollapsed && topCollapsible(b));
     }
     bool bottomCollapsible = !bfc && b->kind == CSCD_BOX_BLOCK && !replaced && b->border[2] == 0 && b->padding[2] == 0 && !hdef &&
-                             in->forcedH < 0 && cscdLenIsAuto(s->minHeight) && !b->inlineContent;
+                             in->forcedH < 0 && !b->inlineContent;
+    /* a min-height that makes it taller than its content keeps the last child's margin from its own (which it then
+     * neither passes on nor grows by) */
+    if (bottomCollapsible && !cscdLenIsAuto(s->minHeight) && !(s->containerType == 2 || (s->contain & CSCD_CONTAIN_SIZE)) &&
+        layClampHeight(b, contentH + edgesH, in->cbH) > contentH + edgesH + 0.01) {
+        bottomCollapsible = false;
+        trailing = (MarginSet){0, 0};
+    }
     if (!bottomCollapsible) contentH = layMax(0.f, contentH + msValue(trailing));
     if (bfc && !hdef && in->forcedH < 0) {
         double fb = fcBottom(fc);

@@ -425,7 +425,8 @@ void cscdParseBackgrounds(CscdApplyState* st) {
                 else if (cscdParseLength(t, &st->ctx, &l, false)) { if (!xSet) { x = l; xSet = true; } else { y = l; ySet = true; } }
                 if (target) {
                     *target = cscdLenPercent(pctBase);
-                    if (k + 1 < p->len && cscdParseLength(&p->items[k + 1], &st->ctx, &l, false)) {
+                    /* (an offset after a keyword only in the three- and four-value forms: "left -1em" is x and y) */
+                    if (p->len > 2 && k + 1 < p->len && cscdParseLength(&p->items[k + 1], &st->ctx, &l, false)) {
                         ++k;
                         if (fromEnd) { target->pct = 100 - l.pct; target->px = -l.px; }
                         else { target->pct = l.pct; target->px = l.px; }

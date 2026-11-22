@@ -48,6 +48,12 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **Positioning**: in a right-to-left containing block, an absolutely positioned box's static place is at the right,
   and `right` wins over `left` (relative and absolute); an absolutely positioned box is no longer clipped or scrolled
   by the overflow of boxes between it and its containing block.
+- **Margin collapsing**: margins collapse through a block of zero height (one with no content, or holding only floats)
+  into what follows and into the parent's top; a `min-height` that makes a block taller than its content keeps its
+  last child's bottom margin in (and drops it); a new formatting context too wide to stand beside floats above it
+  keeps its own margin, the floats staying at the top. Only a scroll container's own children add their end margins
+  to what scrolls. `background-position: left -1em` is a horizontal and a vertical value, not a keyword and its
+  offset. WPT reftests passed: 2,444.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,
