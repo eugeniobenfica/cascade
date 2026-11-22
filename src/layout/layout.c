@@ -1242,6 +1242,7 @@ void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, d
             *ratio = *w / *h;
         } else { *w = 0; *h = 0; *ratio = 0; }
         break;
+    case CSCD_REPL_FRAME: *ratio = 0; break; /* (300 by 150, of no ratio: a height given leaves the width at 300) */
     case CSCD_REPL_CANVAS:
         if (e) {
             if (cscdElementHasAttributeC(e, "width")) *w = attrFloat(e, "width");
@@ -3501,11 +3502,13 @@ void layAbsolute(Layouter* L, CscdLayoutBox* b, LayRect cb) {
     in.cbW = cb.w;
     in.cbH = cb.h;
     in.positionedByCaller = true;
+    double replacedH = -1;
     if (b->kind == CSCD_BOX_REPLACED) {
         double cw, ch;
         layReplaced(L, b, cb.w, cb.h, &cw, &ch);
         w = cw + edgesW;
         wd = true;
+        replacedH = ch + b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
     }
     if (!wd) {
         if (!lA && !rA) w = cb.w - Lf - R - b->margin[1] - b->margin[3];
@@ -3518,6 +3521,9 @@ void layAbsolute(Layouter* L, CscdLayoutBox* b, LayRect cb) {
     in.forcedW = layClampWidth(L, b, w, cb.w);
     bool hd;
     double h = laySpecifiedHeight(b, cb.h, &hd);
+    /* (a replaced box keeps its own height, from its size or its ratio: top and bottom do not stretch it, CSS 2.1
+     * 10.6.5; with both, bottom is what gives) */
+    if (!hd && replacedH >= 0) { h = replacedH; hd = true; }
     if (!hd && !tA && !bA) { h = cb.h - T - B - b->margin[0] - b->margin[2]; hd = true; }
     if (hd) in.forcedH = layClampHeight(b, h, cb.h);
     layBlock(L, b, &in);

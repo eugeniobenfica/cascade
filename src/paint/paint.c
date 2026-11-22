@@ -1061,7 +1061,8 @@ NOINLINE static void paintControl(Painter* P, CscdLayoutBox* b) {
         break;
     }
     case CSCD_REPL_TEXT_INPUT: case CSCD_REPL_TEXT_AREA: paintTextControl(P, b); break;
-    case CSCD_REPL_VIDEO: case CSCD_REPL_FRAME: cscdCanvasFillRect(canvas, cb, cscdRgba(0, 0, 0, b->replaced == CSCD_REPL_VIDEO ? 255 : 20)); break;
+    case CSCD_REPL_VIDEO: cscdCanvasFillRect(canvas, cb, cscdRgb(0, 0, 0)); break;
+    /* (a frame's document is not loaded: it shows as about:blank does, nothing over what is behind it) */
     default: break;
     }
 }

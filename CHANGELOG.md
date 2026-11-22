@@ -65,6 +65,10 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   fullest of splits as good. `flex-flow` takes `balance` too. WPT reftests passed: 2,560.
 - **`background-clip: border-area`**: a background drawn only where the borders are (`CSCD_BG_BORDER_AREA`). WPT
   reftests passed: 2,567.
+- **Absolutely positioned images and other replaced boxes** keep their own height between a `top` and a `bottom`
+  (from their size or their ratio), as CSS 2.1 has it, instead of stretching. `iframe`, `embed` and `object` (whose
+  documents are not loaded) show nothing, as about:blank does, and have no ratio: a height given leaves them 300px
+  wide. WPT reftests passed: 2,591.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

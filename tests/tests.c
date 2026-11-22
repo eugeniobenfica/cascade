@@ -256,6 +256,17 @@ static void testMarginCollapseThrough(void) {
     cscdViewFree(v);
 }
 
+/* an absolutely positioned replaced box keeps its height between top and bottom (CSS 2.1 10.6.5); a frame has no ratio */
+static void testReplacedAbsolute(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0} iframe{border:0}</style>"
+                  "<div style='position:relative;height:400px'><iframe id=a style='position:absolute;top:10px;bottom:10px'></iframe></div>"
+                  "<iframe id=b style='height:50px'></iframe>");
+    CHECK(fabsf(rectOf(v, "a").h - 150) < 0.5f && fabsf(rectOf(v, "a").y - 10) < 0.5f);
+    CHECK(fabsf(rectOf(v, "b").w - 300) < 0.5f);
+    cscdViewFree(v);
+}
+
 /* flex-wrap: balance (CSS Flexbox 2): the lines wrapping makes, as even as they go; flex-line-count, more of them */
 static void testFlexBalance(void) {
     CscdView* v = cscdViewNew();
@@ -5657,6 +5668,7 @@ int main(void) {
     testRtlPositioningAndItemPainting();
     testMarginCollapseThrough();
     testFlexBalance();
+    testReplacedAbsolute();
     testSelectors();
     testHasSiblings();
     testCascade();
