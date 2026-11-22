@@ -150,6 +150,7 @@ static const Shorthand kShorthands[] = {
     {"grid-column", {"grid-column-start", "grid-column-end"}},
     {"grid-area", {"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end", "grid-area-name"}},
     {"grid-template", {"grid-template-rows", "grid-template-columns", "grid-template-areas"}},
+    {"grid", {"grid-template-rows", "grid-template-columns", "grid-template-areas", "grid-auto-rows", "grid-auto-columns", "grid-auto-flow"}},
     {"margin-inline", {"margin-left", "margin-right"}}, {"margin-block", {"margin-top", "margin-bottom"}},
     {"padding-inline", {"padding-left", "padding-right"}}, {"padding-block", {"padding-top", "padding-bottom"}},
     {"inset-inline", {"left", "right"}}, {"inset-block", {"top", "bottom"}},
@@ -397,6 +398,52 @@ static void expandBody(const Shorthand* sh, CscdSv p, const Values* v, CscdStrPa
         addPair(out, cscdStrDupC("grid-row-end"), cscdStrCopy(&parts.items[2]));
         addPair(out, cscdStrDupC("grid-column-end"), cscdStrCopy(&parts.items[3]));
         cscdStrVecFree(&parts);
+        return;
+    }
+    if (P("grid")) {
+        /* <grid-template> | <rows> / [auto-flow && dense?] <auto-columns>? | [auto-flow && dense?] <auto-rows>? / <columns>
+         * (CSS Grid 7.8): what it does not set, set to the initial value */
+        size_t slash = v->len;
+        for (size_t k = 0; k < v->len; ++k) if (cscdCssIsDelim(X(k), '/')) { slash = k; break; }
+        int flowSide = -1; /* 0: before the slash, 1: after */
+        bool dense = false;
+        for (size_t k = 0; k < v->len; ++k) {
+            if (cscdCssIsIdent(X(k), "auto-flow")) flowSide = k < slash ? 0 : 1;
+            if (cscdCssIsIdent(X(k), "dense")) dense = true;
+        }
+        if (flowSide < 0) {
+            expandBody(&kShorthands[cscdStrMapGet(&shorthandIndex, CSCD_SV("grid-template"))->u], CSCD_SV("grid-template"), v, out);
+            addPairC(out, "grid-auto-rows", CSCD_SV("auto"));
+            addPairC(out, "grid-auto-columns", CSCD_SV("auto"));
+            addPairC(out, "grid-auto-flow", CSCD_SV("row"));
+            return;
+        }
+        if (slash >= v->len) return;
+        /* the auto side's sizes: its values other than auto-flow and dense */
+        const size_t a = flowSide == 0 ? 0 : slash + 1, z = flowSide == 0 ? slash : v->len;
+        CscdStr autos = {0};
+        for (size_t k = a; k < z; ++k) {
+            if (cscdCssIsIdent(X(k), "auto-flow") || cscdCssIsIdent(X(k), "dense")) continue;
+            if (autos.len) cscdStrAppendChar(&autos, ' ');
+            CscdStr o = one(X(k));
+            cscdStrAppend(&autos, cscdStrSv(&o));
+            cscdStrFree(&o);
+        }
+        if (!autos.len) cscdStrSetC(&autos, "auto");
+        addPairC(out, "grid-template-areas", CSCD_SV("none"));
+        if (flowSide == 0) {
+            addPair(out, cscdStrDupC("grid-auto-rows"), autos);
+            addPairC(out, "grid-auto-columns", CSCD_SV("auto"));
+            addPairC(out, "grid-template-rows", CSCD_SV("none"));
+            addPair(out, cscdStrDupC("grid-template-columns"), ser(v, slash + 1, v->len));
+            addPairC(out, "grid-auto-flow", dense ? CSCD_SV("row dense") : CSCD_SV("row"));
+        } else {
+            addPair(out, cscdStrDupC("grid-auto-columns"), autos);
+            addPairC(out, "grid-auto-rows", CSCD_SV("auto"));
+            addPair(out, cscdStrDupC("grid-template-rows"), ser(v, 0, slash));
+            addPairC(out, "grid-template-columns", CSCD_SV("none"));
+            addPairC(out, "grid-auto-flow", dense ? CSCD_SV("column dense") : CSCD_SV("column"));
+        }
         return;
     }
     if (P("grid-template")) {

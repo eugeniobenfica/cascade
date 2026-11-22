@@ -288,6 +288,16 @@ static void testGridHeightDependentWidths(void) {
     CHECK(fabsf(rectOf(v, "b").w - 80) < 0.5f);
     CHECK(fabsf(rectOf(v, "c").w - 60) < 0.5f);
     cscdViewFree(v);
+    /* the grid shorthand; a percentage row gap in an auto height, of the height found */
+    v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0}</style>"
+                  "<div style='display:grid;width:100px;height:100px;grid:minmax(0px,500px) / minmax(0px,500px)'><div id=d><div style='width:200px;height:200px'></div></div></div>"
+                  "<div style='display:grid;grid:auto-flow 30px / 50px 50px;width:100px'><div></div><div></div><div id=e></div></div>"
+                  "<div style='display:grid;grid-template-rows:40px 40px;row-gap:25%'><div></div><div id=f></div></div>");
+    CHECK(fabsf(rectOf(v, "d").w - 100) < 0.5f && fabsf(rectOf(v, "d").h - 100) < 0.5f);
+    CHECK(fabsf(rectOf(v, "e").y - 130) < 0.5f && fabsf(rectOf(v, "e").h - 30) < 0.5f);
+    CHECK(fabsf(rectOf(v, "f").y - 220) < 0.5f); /* (160 + 40 + 20: a quarter of the 80px found) */
+    cscdViewFree(v);
 }
 
 /* the background color clipped as background-clip says with no image; background-repeat: space spreads whole tiles */

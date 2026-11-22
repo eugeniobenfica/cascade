@@ -1305,6 +1305,16 @@ columns:;
     distribute(&ct, cw, colGap, s->justifyContent);
     double totalH = distribute(&rt, cbH, rowGap, s->alignContent);
     if (rows == 0) totalH = 0;
+    /* (a percentage row gap in an auto height: none while the height is found, then that of the height found, the
+     * rows placed with it and overflowing, as browsers do) */
+    if (cbH < 0 && cscdLenHasPercent(s->rowGap) && rows > 1) {
+        const double edgesV = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
+        const double g = gapOf(s->rowGap, layClampHeight(b, totalH + edgesV, -1) - edgesV);
+        if (g > rowGap) {
+            rowGap = g;
+            distribute(&rt, -1, rowGap, s->alignContent);
+        }
+    }
     bool baselineSet = false;
     for (size_t i = 0; i < items.len; ++i) {
         GridItem* it = &items.items[i];

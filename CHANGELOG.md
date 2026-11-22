@@ -92,6 +92,10 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   `aspect-ratio` box with a percentage height, a stretched image): measured in their rows when those are of fixed
   sizes, and, when not, the columns sized again once the rows are (CSS Grid 2, 12.1 step 3). WPT reftests passed:
   2,697.
+- **The `grid` shorthand**: a `grid-template`, or `auto-flow` (and `dense`) with the auto rows or columns on its side
+  of the slash; what it leaves out back to the initial values. A percentage row gap in a grid of auto height is
+  none while the height is found, then that of the height (min-height and max-height applied), the rows placed
+  with it. WPT reftests passed: 2,710.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,
