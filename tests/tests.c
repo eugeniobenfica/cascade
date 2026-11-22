@@ -207,7 +207,7 @@ static void testSvgImages(void) {
                   "%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 2%22 preserveAspectRatio=%22none%22%3E"
                   "%3Crect width=%22100%25%22 height=%2250%25%22 fill=%22lime%22/%3E"
                   "%3Crect y=%2250%25%22 width=%22100%25%22 height=%2250%25%22 fill=%22blue%22/%3E%3C/svg%3E')\"></div>"
-                  "<img id=i src=\"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2230%22 height=%2210%22%3E"
+                  "<img id=i src=\"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2230px%22 height=%2210px%22%3E"
                   "%3Crect width=%2230%22 height=%2210%22 fill=%22red%22/%3E%3C/svg%3E\" style='display: block; width: 60px'>"
                   "<div id=z style=\"background-image: url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 "
                   "width=%228%22 viewBox=%220 0 8 0%22%3E%3Crect width=%228%22 height=%228%22 fill=%22red%22/%3E%3C/svg%3E')\"></div>");

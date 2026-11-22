@@ -238,8 +238,7 @@ static bool svgLength(CscdSv v, float* out) {
     char* c = cscdSvDupC(v);
     char* end = NULL;
     const double n = strtod(c, &end);
-    const CscdSv unit = cscdSvTrim(cscdSv(end ? end : ""));
-    cscdFree(c);
+    const CscdSv unit = cscdSvTrim(cscdSv(end ? end : "")); /* (in c: read before c goes) */
     double k = 1;
     if (cscdSvIEqC(unit, "in")) k = 96;
     else if (cscdSvIEqC(unit, "cm")) k = 96 / 2.54;
@@ -247,7 +246,9 @@ static bool svgLength(CscdSv v, float* out) {
     else if (cscdSvIEqC(unit, "pt")) k = 96.0 / 72;
     else if (cscdSvIEqC(unit, "pc")) k = 16;
     else if (cscdSvIEqC(unit, "em")) k = 16;
-    else if (unit.len && !cscdSvIEqC(unit, "px")) return false;
+    else if (unit.len && !cscdSvIEqC(unit, "px")) k = -1;
+    cscdFree(c);
+    if (k < 0) return false;
     if (!(n * k >= 0) || n * k > 1e6) return false;
     *out = (float)(n * k);
     return true;
