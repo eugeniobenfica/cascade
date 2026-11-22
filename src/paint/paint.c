@@ -72,6 +72,23 @@ static void visualText(CscdSv s, CscdStr* out) {
 
 static CscdColor darker(CscdColor c, float f) { return cscdRgba((int)(c.r * f), (int)(c.g * f), (int)(c.b * f), c.a); }
 
+/* A box's rectangle with its edges on device pixels, as browsers paint boxes (when the canvas only scales and moves:
+ * under a rotation or a skew it stays as it is). */
+static float snapDevice(float v) {
+    /* (halves up, below zero too, so that a page scrolled by whole device pixels snaps the same; to eighths first: an
+     * edge on a half pixel, which whole CSS pixels are at 1.5 device pixels each, goes the same way however the float
+     * sums for it came out, as far down the page as their error stays under a sixteenth) */
+    return floorf(floorf(v * 8.f + 0.5f) / 8.f + 0.5f);
+}
+
+static CscdRect snapToPixels(const CscdCanvas* canvas, CscdRect r) {
+    const CscdMatrix m = cscdCanvasMatrix(canvas);
+    if (m.b != 0 || m.c != 0 || !(m.a > 0) || !(m.d > 0)) return r;
+    const float x0 = snapDevice(m.a * r.x + m.e), x1 = snapDevice(m.a * (r.x + r.w) + m.e);
+    const float y0 = snapDevice(m.d * r.y + m.f), y1 = snapDevice(m.d * (r.y + r.h) + m.f);
+    return cscdRect((x0 - m.e) / m.a, (y0 - m.f) / m.d, (x1 - x0) / m.a, (y1 - y0) / m.d);
+}
+
 static CscdRRect borderRRect(const CscdLayoutBox* b, CscdRect r) {
     CscdRRect rr = cscdRRect(r);
     const CscdComputedStyle* s = b->style;
@@ -579,7 +596,8 @@ NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
     if (b->kind == CSCD_BOX_INLINE) {
         for (size_t i = 0; i < b->inlineFrags.len; ++i) {
             const CscdInlineFrag f = b->inlineFrags.items[i];
-            CscdRRect rr = borderRRect(b, cscdBoxRectF(f.rect));
+            const CscdRect fr = snapToPixels(canvas, cscdBoxRectF(f.rect));
+            CscdRRect rr = borderRRect(b, fr);
             if (!f.first) { rr.rx[0] = rr.ry[0] = rr.rx[3] = rr.ry[3] = 0; }
             if (!f.last) { rr.rx[1] = rr.ry[1] = rr.rx[2] = rr.ry[2] = 0; }
             for (size_t k = s->boxShadow.len; k-- > 0;) {
@@ -590,7 +608,7 @@ NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
             float saveL = b->border[3], saveR = b->border[1], pl = b->padding[3], pr = b->padding[1];
             if (!f.first) { b->border[3] = 0; b->padding[3] = 0; }
             if (!f.last) { b->border[1] = 0; b->padding[1] = 0; }
-            paintBackground(P, b, cscdBoxRectF(f.rect), rr, true, f.first && f.last);
+            paintBackground(P, b, fr, rr, true, f.first && f.last);
             paintBorder(P, b, rr, s->border, f.first, f.last);
             b->border[3] = saveL; b->border[1] = saveR; b->padding[3] = pl; b->padding[1] = pr;
             record(P, b->element, cscdBoxRectF(f.rect), false, b, -1);
@@ -603,7 +621,7 @@ NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
         if (b->element && (!b->anonymous || b->pseudo.len)) record(P, b->element, cscdBoxBorderBox(b), false, b, -1);
         return;
     }
-    CscdRect bb = cscdBoxBorderBox(b);
+    CscdRect bb = snapToPixels(canvas, cscdBoxBorderBox(b));
     CscdRRect outer = borderRRect(b, bb);
     if (cscdBackdropAny(&s->backdrop)) {
         CscdFilter f;
@@ -629,6 +647,7 @@ NOINLINE static void paintDecorations(Painter* P, CscdLayoutBox* b) {
 }
 
 /* ---- text ------------------------------------------------------------------------------------------ */
+
 
 /* The characters that stand upright in vertical text (CJK ideographs, kana, hangul, full-width forms). */
 static bool uprightInVertical(uint32_t cp) {
@@ -847,7 +866,7 @@ NOINLINE static void paintText(Painter* P, CscdLayoutBox* tb) {
 
 static void paintImage(Painter* P, CscdLayoutBox* b, CscdImage* image) {
     CscdCanvas* canvas = P->canvas;
-    CscdRect cb = cscdBoxContentBox(b);
+    CscdRect cb = snapToPixels(canvas, cscdBoxContentBox(b));
     const CscdComputedStyle* s = b->style;
     float iw = (float)image->width, ih = (float)image->height;
     CscdRect dst = cb;
@@ -866,7 +885,7 @@ static void paintImage(Painter* P, CscdLayoutBox* b, CscdImage* image) {
     dst.x = cb.x + cscdLenResolve(s->objectPosX, cb.w - dst.w, 0);
     dst.y = cb.y + cscdLenResolve(s->objectPosY, cb.h - dst.h, 0);
     cscdCanvasSave(canvas);
-    CscdRRect clip = rrInset(borderRRect(b, cscdBoxBorderBox(b)), b->border[0] + b->padding[0], b->border[1] + b->padding[1], b->border[2] + b->padding[2],
+    CscdRRect clip = rrInset(borderRRect(b, snapToPixels(canvas, cscdBoxBorderBox(b))), b->border[0] + b->padding[0], b->border[1] + b->padding[1], b->border[2] + b->padding[2],
                            b->border[3] + b->padding[3]);
     cscdCanvasClipRRect(canvas, &clip);
     CscdImage* drawn = imageAtSize(P, image, dst.w, dst.h); /* (an SVG file's: drawn at that size) */

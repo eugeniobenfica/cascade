@@ -378,6 +378,8 @@ struct CscdStyleEngine {
     CscdStrMap expansions; /* property, a zero byte, value -> CscdStrPairVec* (the longhands of a shorthand) */
     CscdStr expansionKey;  /* (scratch) */
     CscdStrMap values;     /* value text -> its parsed values (see CscdApplyState) */
+    CscdStrMap validity;   /* property, a zero byte, value -> 1 when the longhand takes the value, 2 when not */
+    CscdStr validityKey;   /* (scratch) */
     IndexedRefs matched[6];
     CscdU64Map containerSizes; /* element -> f[2] */
     bool hasContainers;
@@ -495,6 +497,8 @@ void cscdStyleEngineFree(CscdStyleEngine* se) {
     cscdStrMapFree(&se->expansions);
     cscdValueCacheClear(&se->values);
     cscdStrMapFree(&se->values);
+    cscdStrMapFree(&se->validity);
+    cscdStrFree(&se->validityKey);
     cscdStrFree(&se->expansionKey);
     cscdStrMapFree(&se->cache.map);
     cscdU64MapFree(&se->cache.ids);
@@ -1037,6 +1041,33 @@ static const CscdStrPairVec* expansion(CscdStyleEngine* se, CscdSv prop, CscdSv 
     return out;
 }
 
+/* Whether a longhand takes a value: one it does not is invalid and dropped where it was declared (CSS Syntax), so that
+ * what was declared before it holds ("height: 0; height: -1px" is 0). Told once per value, on a scratch style. */
+static bool declValid(CscdStyleEngine* se, CscdSv prop, CscdSv value) {
+    CscdSv v = cscdSvTrim(value);
+    if (cscdSvIEqC(v, "inherit") || cscdSvIEqC(v, "initial") || cscdSvIEqC(v, "unset") || cscdSvIEqC(v, "revert") ||
+        cscdSvIEqC(v, "revert-layer") || !cscdLonghandKnown(prop))
+        return true;
+    CscdStr* k = &se->validityKey;
+    cscdStrClear(k);
+    cscdStrAppend(k, prop);
+    cscdStrAppendChar(k, 0);
+    cscdStrAppend(k, v);
+    CscdMapVal* m = cscdStrMapGet(&se->validity, cscdStrSv(k));
+    if (m) return m->u == 1;
+    if (se->validity.len >= 16384) cscdStrMapClear(&se->validity);
+    CscdComputedStyle* s = cscdStyleClone(cscdInitialStyle());
+    CscdStyleEnvironment env;
+    memset(&env, 0, sizeof env);
+    CscdApplyState st;
+    cscdApplyStateInit(&st, s, cscdInitialStyle(), &env, CSCD_SV(""));
+    const bool ok = cscdApplyLonghand(&st, prop, v);
+    cscdApplyStateFini(&st);
+    cscdRelease(s);
+    cscdStrMapPut(&se->validity, cscdStrSv(k), NULL)->u = ok ? 1 : 2;
+    return ok;
+}
+
 static void applyOne(CscdApplyState* st, const CscdComputedStyle* P, CscdSv prop, CscdSv val) {
     CscdComputedStyle* s = st->s;
     CscdSv v = cscdSvTrim(val);
@@ -1185,7 +1216,10 @@ static CscdComputedStyle* computeMatched(CscdStyleEngine* se, CscdElement* e, co
         CscdSv prop = cscdCanonicalProperty(cscdStrSv(&d->property));
         /* (most values have no var() or env(): used as they are, not copied) */
         CscdSv value = cscdStrSv(&d->value);
-        if (cscdSvFindC(value, "var(", 0) != CSCD_NPOS || cscdSvFindC(value, "env(", 0) != CSCD_NPOS) {
+        const bool substitutes = cscdSvFindC(value, "var(", 0) != CSCD_NPOS || cscdSvFindC(value, "env(", 0) != CSCD_NPOS;
+        /* (a value with var()s is invalid only at computed-value time: then it is unset, below) */
+        if (!substitutes && !cscdIsShorthand(prop) && !declValid(se, prop, value)) continue;
+        if (substitutes) {
             CscdStr val = substituteVars(value, s->vars);
             if (cscdStrEqC(&val, INVALID)) cscdStrSetC(&val, "unset");
             cscdVecPush(&substituted, val);
@@ -1219,6 +1253,7 @@ static CscdComputedStyle* computeMatched(CscdStyleEngine* se, CscdElement* e, co
     const float baseSize = parent ? P->font.size : 16 * (env->media.textScale > 0 ? env->media.textScale : 1);
     if (!parent) s->font.size = baseSize;
     st.ctx.em = baseSize;
+    st.ctx.font = parent ? P : NULL; /* (font-size in ex: the parent's font) */
     s->zoom = 1;
     s->effectiveZoom = P->effectiveZoom > 0 ? P->effectiveZoom : 1;
     st.ctx.zoom = s->effectiveZoom;
@@ -1240,6 +1275,7 @@ static CscdComputedStyle* computeMatched(CscdStyleEngine* se, CscdElement* e, co
         }
     }
     st.ctx.em = s->font.size;
+    st.ctx.font = s;
     if (cscdElementIs(e, "html")) st.ctx.rem = s->font.size;
     for (size_t k = 0; k < w.list.len; ++k) {
         bool done = false;

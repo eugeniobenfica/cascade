@@ -2496,6 +2496,11 @@ static const Values* cachedValues(CscdStrMap* cache, CscdSv value) {
     return v;
 }
 
+bool cscdLonghandKnown(CscdSv property) {
+    cscdCallOnce(&handlerOnce, initHandlers);
+    return cscdStrMapGet(&handlerMap, property) != NULL;
+}
+
 bool cscdApplyLonghand(CscdApplyState* st, CscdSv property, CscdSv value) {
     cscdCallOnce(&handlerOnce, initHandlers);
     CscdMapVal* h = cscdStrMapGet(&handlerMap, property);

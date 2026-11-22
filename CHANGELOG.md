@@ -54,6 +54,12 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   keeps its own margin, the floats staying at the top. Only a scroll container's own children add their end margins
   to what scrolls. `background-position: left -1em` is a horizontal and a vertical value, not a keyword and its
   offset. WPT reftests passed: 2,444.
+- **Invalid declarations are dropped**: a longhand's value it does not take no longer overrides the declarations before
+  it (`height: 0; height: -1px` is 0), as CSS Syntax has it.
+- **`ex` and `ch`** are the font's x-height and the advance of its "0", not a guess from the font size.
+- **Boxes are painted on device pixels**: their backgrounds, borders, images and inline boxes' backgrounds have their
+  edges rounded to whole device pixels (as browsers paint them), not blended over a fractional one. WPT reftests
+  passed: 2,541.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

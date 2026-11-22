@@ -14,10 +14,11 @@ typedef struct CscdValueCtx {
     float cqw, cqh;      /* the query container's content box (-1: none, the viewport then) */
     bool* container;     /* set when a container unit (cqw, cqi...) was resolved */
     float zoom;          /* the element's zoom, all ancestors' together (absolute lengths are multiplied by it) */
+    const CscdComputedStyle* font; /* (whose font ex and ch are measured in; none: guessed from em) */
 } CscdValueCtx;
 
 CSCD_INLINE CscdValueCtx cscdValueCtx(void) {
-    CscdValueCtx c = {16, 16, 1024, 768, false, NULL, -1, -1, NULL, 1};
+    CscdValueCtx c = {16, 16, 1024, 768, false, NULL, -1, -1, NULL, 1, NULL};
     return c;
 }
 
@@ -56,6 +57,7 @@ typedef struct CscdApplyState {
 void cscdApplyStateInit(CscdApplyState* st, CscdComputedStyle* s, const CscdComputedStyle* parent, const CscdStyleEnvironment* env, CscdSv baseDir);
 void cscdApplyStateFini(CscdApplyState* st);
 bool cscdApplyLonghand(CscdApplyState* st, CscdSv property, CscdSv value);
+bool cscdLonghandKnown(CscdSv property); /* (a longhand the engine applies) */
 void cscdValueCacheClear(CscdStrMap* cache); /* (what a valueCache holds freed; the map stays) */
 void cscdFinalizeStyle(CscdApplyState* st);
 bool cscdCopyProperty(CscdComputedStyle* dst, const CscdComputedStyle* src, CscdSv property);

@@ -1,6 +1,7 @@
 /* CSS value parsing: lengths, calc(), angles, numbers and colors. */
 #include "style/styleInternal.h"
 #include "cascade/canvas.h"
+#include "cascade/layout.h" /* (cscdFontForStyle: ex and ch) */
 #include "core/thread.h"
 
 /* ---- calc() ------------------------------------------------------------------------------------- */
@@ -217,8 +218,17 @@ float cscdAbsoluteLength(float v, CscdSv u, const CscdValueCtx* c, bool* ok) {
     if (U("px")) return v * z;
     if (U("em")) return v * c->em;
     if (U("rem")) return v * c->rem * z;
-    if (U("ex")) return v * c->em * 0.5f;
-    if (U("ch")) return v * c->em * 0.55f;
+    if (U("ex") || U("ch")) {
+        /* the font's x-height, and the advance of its "0" */
+        if (c->font && c->font->font.size > 0) {
+            const CscdFont f = cscdFontForStyle(c->font);
+            if (f.face) {
+                const float r = (U("ex") ? cscdFontXHeight(&f) : cscdFontMeasure(CSCD_SV("0"), &f, 0, 0)) / c->font->font.size;
+                return v * c->em * r;
+            }
+        }
+        return v * c->em * (U("ex") ? 0.5f : 0.55f);
+    }
     if (U("cap")) return v * c->em * 0.7f;
     if (U("lh") || U("rlh")) return v * c->em * 1.2f;
     if (u.len >= 3 && u.ptr[0] == 'c' && u.ptr[1] == 'q') {
