@@ -1404,6 +1404,19 @@ static double intrinsicWidthOf(Layouter* L, CscdLayoutBox* b, bool min, bool con
     }
     if (!contentsOnly && cscdLenIsFixed(s->width) && !cscdLenIsAuto(s->width) && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
         v = s->boxSizing == CSCD_BOX_CONTENT ? s->width.px + edges : layMax(s->width.px, edges);
+    } else if (b->kind == CSCD_BOX_REPLACED && contentsOnly && !cscdLenIsAuto(s->width)) {
+        /* (what it holds asks for, its width aside: its natural width, or by its ratio from its height, given or
+         * natural, held by its min-height and max-height) */
+        double iw, ih, ratio;
+        layReplacedIntrinsic(L, b, &iw, &ih, &ratio);
+        if (s->aspectRatio > 0) ratio = s->aspectRatio;
+        bool hd;
+        const double cbh = L->intrinsicCbHSet ? L->intrinsicCbH : -1;
+        const double sh = laySpecifiedHeight(b, cbh, &hd);
+        const double edgesH = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
+        double h = hd ? layMax(0.f, sh - edgesH) : ih;
+        h = layClampHeight(b, h + edgesH, cbh) - edgesH;
+        v = (ratio > 0 ? h * ratio : iw) + edges;
     } else if (b->kind == CSCD_BOX_REPLACED) {
         double cw, ch;
         layReplaced(L, b, -1, L->intrinsicCbHSet ? L->intrinsicCbH : -1, &cw, &ch);
@@ -1457,6 +1470,7 @@ double layMinContent(Layouter* L, CscdLayoutBox* b) {
 }
 
 double layContentsMinContent(Layouter* L, CscdLayoutBox* b) { return intrinsicWidthOf(L, b, true, true); }
+double layContentsMaxContent(Layouter* L, CscdLayoutBox* b) { return layMax(intrinsicWidthOf(L, b, false, true), intrinsicWidthOf(L, b, true, true)); }
 
 double layMaxContent(Layouter* L, CscdLayoutBox* b) {
     if (L->intrinsicCbHSet) return layMax(intrinsicWidth(L, b, false), intrinsicWidth(L, b, true));

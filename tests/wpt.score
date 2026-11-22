@@ -1,6 +1,6 @@
 # web-platform-tests reftests cascade passes (tests/wpt.c): folder, passed, run (the fewer of Windows and Linux: their
 # fonts differ)
-css/css-flexbox 654 943
+css/css-flexbox 662 943
 css/css-grid/grid-items 104 126
 css/css-grid/alignment 86 138
 css/css-grid/grid-definition 16 30

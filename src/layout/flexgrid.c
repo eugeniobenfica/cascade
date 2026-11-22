@@ -248,6 +248,8 @@ double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
                                                              : (measureCross(&F, it, 0, false), contentMain = c->h))
         if (!definite) {
             if (row && fb.kind == CSCD_LEN_MIN_CONTENT) base = layMinContent(L, c);
+            /* (flex-basis: content: what it holds asks for, its width aside) */
+            else if (row && cs->flexBasis.kind == CSCD_LEN_MAX_CONTENT && !cscdLenIsAuto(cs->width)) base = layContentsMaxContent(L, c);
             else base = CONTENT_SIZE();
             if (!row && c->kind == CSCD_BOX_REPLACED) base = c->h;
         }
@@ -262,6 +264,18 @@ double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
             else {
                 /* (the content size suggestion: what it holds asks for, its own width aside; then the specified size) */
                 double content = row ? layContentsMinContent(L, c) : CONTENT_SIZE();
+                if (!row && c->kind == CSCD_BOX_REPLACED && !cscdLenIsAuto(cs->height)) {
+                    /* (a replaced item's, its height aside: its natural height, or by its ratio from its width) */
+                    double iw, ih, ratio;
+                    layReplacedIntrinsic(L, c, &iw, &ih, &ratio);
+                    if (cs->aspectRatio > 0) ratio = cs->aspectRatio;
+                    const double edgesW = c->padding[1] + c->padding[3] + c->border[1] + c->border[3];
+                    bool wd;
+                    const double sw = laySpecifiedWidth(L, c, F.cw, &wd);
+                    double w = wd ? layMax(0.f, sw - edgesW) : iw;
+                    w = layClampWidth(L, c, w + edgesW, F.cw) - edgesW;
+                    content = (ratio > 0 ? w / ratio : ih) + edgesMain;
+                }
                 const CscdLength spec = row ? cs->width : cs->height;
                 if (!cscdLenIsAuto(spec) && !cscdLenHasPercent(spec) && !cscdLenIsIntrinsic(spec)) content = layMin(content, spec.px + adj);
                 it->minMain = content;

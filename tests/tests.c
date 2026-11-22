@@ -275,6 +275,19 @@ static void testReplacedAbsolute(void) {
     cscdViewFree(v);
 }
 
+/* flex items' content size suggestions and flex-basis: content leave the item's own size aside */
+static void testFlexContentSizes(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0}</style>"
+                  "<div style='display:flex;width:0'><canvas id=a width=10 height=10 style='width:100px;height:30px'></canvas></div>"
+                  "<div style='display:flex;flex-direction:column;height:1px;width:200px'><canvas id=b width=10 height=10 style='width:30px;height:100px'></canvas></div>"
+                  "<div style='display:flex'><div id=c style='flex-basis:content;width:300px;flex-shrink:0'><div style='width:40px;height:5px'></div></div></div>");
+    CHECK(fabsf(rectOf(v, "a").w - 30) < 0.5f); /* (min-width auto: 30 by its ratio, not its width) */
+    CHECK(fabsf(rectOf(v, "b").h - 30) < 0.5f);
+    CHECK(fabsf(rectOf(v, "c").w - 40) < 0.5f);
+    cscdViewFree(v);
+}
+
 /* a grid item whose width follows its rows' height (CSS Grid 2, 12.1): measured in fixed rows, or again once the rows
  * are sized */
 static void testGridHeightDependentWidths(void) {
@@ -5738,6 +5751,7 @@ int main(void) {
     testDefiniteHeights();
     testBackgroundClipAndSpace();
     testGridHeightDependentWidths();
+    testFlexContentSizes();
     testSelectors();
     testHasSiblings();
     testCascade();

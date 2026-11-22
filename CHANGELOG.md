@@ -96,6 +96,10 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   of the slash; what it leaves out back to the initial values. A percentage row gap in a grid of auto height is
   none while the height is found, then that of the height (min-height and max-height applied), the rows placed
   with it. WPT reftests passed: 2,710.
+- **Flex items' automatic minimum sizes**: an image (or other replaced item) given a size along the main axis has
+  for its content size suggestion its natural size, or the size its ratio gives from the other axis (held by its
+  min and max there), not the size given; `flex-basis: content` sizes an item by what it holds, its width aside.
+  WPT reftests passed: 2,718.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,
