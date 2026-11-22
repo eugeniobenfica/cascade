@@ -142,7 +142,9 @@ typedef struct CscdBackgroundLayer {
     bool repeatX, repeatY;
     uint8_t clip;     /* CscdBackgroundClip */
     uint8_t origin;
+    uint8_t spaceRound; /* (background-repeat space or round, by axis: CSCD_BG_SPACE_X... a repeated axis) */
 } CscdBackgroundLayer;
+enum { CSCD_BG_SPACE_X = 1, CSCD_BG_SPACE_Y = 2, CSCD_BG_ROUND_X = 4, CSCD_BG_ROUND_Y = 8 };
 typedef CSCD_VEC(CscdBackgroundLayer) CscdLayerVec;
 CscdBackgroundLayer cscdBackgroundLayer(void); /* the defaults */
 void cscdLayerFini(CscdBackgroundLayer* l);
@@ -300,6 +302,7 @@ struct CscdComputedStyle {
     uint8_t floating;         /* CscdFloat */
     uint8_t clear;            /* CscdClear */
     uint8_t boxSizing;        /* CscdBoxSizing */
+    uint8_t bgColorClip;      /* CscdBackgroundClip: the background color's (the last layer's background-clip, image or none) */
     CscdLength width, height;
     CscdLength minWidth, minHeight;
     CscdLength maxWidth, maxHeight;

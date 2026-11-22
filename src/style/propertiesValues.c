@@ -391,6 +391,20 @@ void cscdParseBackgrounds(CscdApplyState* st) {
     if (!st->bgTouched) return;
     CscdComputedStyle* s = st->s;
     cscdLayerVecFree(&s->backgrounds);
+    {
+        /* (the color is clipped as the last layer is, whether that has an image or none: the layers are as many as
+         * background-image lists, the clips repeated or cut to as many) */
+        CscdCssValueVec cv = {0}, iv = {0};
+        CscdCssSlices cs = {0}, is = {0};
+        listOf(&st->bgClip, &cv, &cs);
+        listOf(&st->bgImage, &iv, &is);
+        const size_t layers = is.len ? is.len : 1;
+        s->bgColorClip = cs.len ? boxOf(&cs.items[(layers - 1) % cs.len], CSCD_BG_BORDER_BOX) : CSCD_BG_BORDER_BOX;
+        cscdVecFree(&cs);
+        cscdVecFree(&is);
+        cscdCssValueVecFree(&cv);
+        cscdCssValueVecFree(&iv);
+    }
     if (!st->bgImage.len || cscdSvIEqC(cscdStrSv(&st->bgImage), "none")) return;
     CscdCssValueVec imageVals = {0}, posVals = {0}, sizeVals = {0}, repVals = {0}, clipVals = {0}, originVals = {0};
     CscdCssSlices images = {0}, positions = {0}, sizes = {0}, repeats = {0}, clips = {0}, origins = {0};
@@ -451,10 +465,18 @@ void cscdParseBackgrounds(CscdApplyState* st) {
         if (repeats.len) {
             const CscdCssValueVec* p = &repeats.items[i % repeats.len];
             if (p->len) {
-                if (cscdCssIsIdent(&p->items[0], "no-repeat")) { L.repeatX = L.repeatY = false; }
-                else if (cscdCssIsIdent(&p->items[0], "repeat-x")) { L.repeatX = true; L.repeatY = false; }
-                else if (cscdCssIsIdent(&p->items[0], "repeat-y")) { L.repeatX = false; L.repeatY = true; }
-                if (p->len > 1) { L.repeatX = !cscdCssIsIdent(&p->items[0], "no-repeat"); L.repeatY = !cscdCssIsIdent(&p->items[1], "no-repeat"); }
+                /* (one keyword for both axes, or one each; space and round repeat, spaced out or resized) */
+                const CscdCssValue* kx = &p->items[0];
+                const CscdCssValue* ky = p->len > 1 ? &p->items[1] : kx;
+                if (cscdCssIsIdent(kx, "repeat-x")) { kx = &p->items[0]; ky = NULL; }
+                else if (cscdCssIsIdent(kx, "repeat-y")) { ky = kx; kx = NULL; }
+                L.repeatX = kx && !cscdCssIsIdent(kx, "no-repeat");
+                L.repeatY = ky && !cscdCssIsIdent(ky, "no-repeat");
+                L.spaceRound = 0;
+                if (kx && cscdCssIsIdent(kx, "space")) L.spaceRound |= CSCD_BG_SPACE_X;
+                if (kx && cscdCssIsIdent(kx, "round")) L.spaceRound |= CSCD_BG_ROUND_X;
+                if (ky && cscdCssIsIdent(ky, "space")) L.spaceRound |= CSCD_BG_SPACE_Y;
+                if (ky && cscdCssIsIdent(ky, "round")) L.spaceRound |= CSCD_BG_ROUND_Y;
             }
         }
         if (clips.len) L.clip = boxOf(&clips.items[i % clips.len], CSCD_BG_BORDER_BOX);

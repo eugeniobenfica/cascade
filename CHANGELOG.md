@@ -83,6 +83,11 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   passed over; a column flex item's height is definite for what it holds only where the container's is, where its
   flex basis is auto and its height a length, or where it is inflexible with a length for a basis (CSS Flexbox 9.8).
   WPT reftests passed: 2,632.
+- **`background-repeat: space` and `round`**: whole tiles spread out to the edges, or resized to fill the area (the
+  other side kept in ratio when auto); one keyword per axis too (`space round`).
+- **The background color is clipped as `background-clip` says** even with no image (the clip of the last layer,
+  as many layers as `background-image` lists), `text` included: the text then painted in the color. Padding and
+  content boxes inside a border start on a whole pixel. WPT reftests passed: 2,685.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

@@ -248,10 +248,19 @@ static void clipBorderArea(CscdCanvas* canvas, const CscdLayoutBox* b, CscdRRect
     cscdPathFree(&ring);
 }
 
+/* background-clip: text with a color and no image to clip: the text painted in the color */
+static bool colorTextClip(const CscdLayoutBox* b) {
+    const CscdComputedStyle* s = b->style;
+    return s && s->bgColorClip == CSCD_BG_TEXT && s->backgroundColor.a && !(s->backgrounds.len && s->backgrounds.items[0].clip == CSCD_BG_TEXT);
+}
+
+/* (a border of a pixel or more is whole pixels wide, as browsers draw it: the boxes inside it start on a pixel) */
+static float pixelBorder(float w) { return w >= 1 ? floorf(w) : w; }
+
 static CscdRRect clipFor(const CscdLayoutBox* b, CscdRRect outer, uint8_t c) {
-    if (c == CSCD_BG_PADDING_BOX) return rrInset(outer, b->border[0], b->border[1], b->border[2], b->border[3]);
-    if (c == CSCD_BG_CONTENT_BOX)
-        return rrInset(outer, b->border[0] + b->padding[0], b->border[1] + b->padding[1], b->border[2] + b->padding[2], b->border[3] + b->padding[3]);
+    const float t = pixelBorder(b->border[0]), r = pixelBorder(b->border[1]), bt = pixelBorder(b->border[2]), l = pixelBorder(b->border[3]);
+    if (c == CSCD_BG_PADDING_BOX) return rrInset(outer, t, r, bt, l);
+    if (c == CSCD_BG_CONTENT_BOX) return rrInset(outer, t + b->padding[0], r + b->padding[1], bt + b->padding[2], l + b->padding[3]);
     return outer;
 }
 
@@ -324,7 +333,7 @@ NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect bord
     const CscdComputedStyle* s = b->style;
     CscdRect paddingBox = cscdRectInset(borderBox, b->border[3], b->border[0], b->border[1], b->border[2]);
     CscdRect contentBox = cscdRectInset(paddingBox, b->padding[3], b->padding[0], b->padding[1], b->padding[2]);
-    uint8_t colorClip = !s->backgrounds.len ? CSCD_BG_BORDER_BOX : s->backgrounds.items[s->backgrounds.len - 1].clip;
+    uint8_t colorClip = s->bgColorClip;
     if (colorClip == CSCD_BG_TEXT && skipText) return;
     if (s->backgroundColor.a && colorClip != CSCD_BG_TEXT) {
         CscdRRect cl = clipFor(b, outer, colorClip);
@@ -377,40 +386,80 @@ NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect bord
             else if (ay) th = hr ? tw / ir : hh ? ih : area.h;
         }
         if (tw <= 0 || th <= 0) continue;
+        /* round: as many whole tiles as come nearest to filling the area, resized to fill it (the other side kept in
+         * ratio when it is auto); space: as many as fit whole, spread out, the first and the last at the edges */
+        const uint8_t sr = L->spaceRound;
+        const bool autoX = cscdLenIsAuto(L->sizeX) && L->sizeKeyword == 0, autoY = cscdLenIsAuto(L->sizeY) && L->sizeKeyword == 0;
+        if (sr & (CSCD_BG_ROUND_X | CSCD_BG_ROUND_Y)) {
+            const float otw = tw, oth = th;
+            if (sr & CSCD_BG_ROUND_X) tw = area.w / cscdMaxf(1.f, roundf(area.w / tw));
+            if (sr & CSCD_BG_ROUND_Y) th = area.h / cscdMaxf(1.f, roundf(area.h / th));
+            if ((sr & CSCD_BG_ROUND_X) && !(sr & CSCD_BG_ROUND_Y) && autoY) th = oth * tw / otw;
+            if ((sr & CSCD_BG_ROUND_Y) && !(sr & CSCD_BG_ROUND_X) && autoX) tw = otw * th / oth;
+            if (tw <= 0 || th <= 0) continue;
+        }
         float px = area.x + cscdLenResolve(L->posX, area.w - tw, 0);
         float py = area.y + cscdLenResolve(L->posY, area.h - th, 0);
+        float stepX = tw, stepY = th;
+        bool repX = L->repeatX, repY = L->repeatY;
+        if (sr & CSCD_BG_SPACE_X) {
+            const float n = floorf(area.w / tw + 1e-4f);
+            if (n >= 2) { stepX = tw + (area.w - n * tw) / (n - 1); px = area.x; }
+            else repX = false;
+        }
+        if (sr & CSCD_BG_SPACE_Y) {
+            const float n = floorf(area.h / th + 1e-4f);
+            if (n >= 2) { stepY = th + (area.h - n * th) / (n - 1); py = area.y; }
+            else repY = false;
+        }
         CscdRect tile = {px, py, tw, th};
         cscdCanvasSave(canvas);
         cscdCanvasClipRRect(canvas, &clip);
         if (L->clip == CSCD_BG_BORDER_AREA) clipBorderArea(canvas, b, outer);
-        if (img) {
-            CscdShader sh = cscdShaderImage(imageAtSize(P, L->image, tw, th), tile, L->repeatX, L->repeatY);
+        if (img && (stepX != tw || stepY != th)) {
+            /* (spaced tiles: one at a time) */
+            CscdImage* im = imageAtSize(P, L->image, tw, th);
+            const float x0 = repX ? px - ceilf((px - clip.rect.x) / stepX) * stepX : px;
+            const float y0 = repY ? py - ceilf((py - clip.rect.y) / stepY) * stepY : py;
+            int guard = 0;
+            for (float yy = y0; yy < cscdRectBottom(clip.rect) && guard < 20000; yy += stepY) {
+                for (float xx = x0; xx < cscdRectRight(clip.rect) && guard < 20000; xx += stepX, ++guard) {
+                    const CscdRect t = {xx, yy, tw, th};
+                    CscdShader sh = cscdShaderImage(im, t, false, false);
+                    cscdCanvasFillRectShader(canvas, t, &sh);
+                    cscdShaderFini(&sh);
+                    if (!repX) break;
+                }
+                if (!repY) break;
+            }
+        } else if (img) {
+            CscdShader sh = cscdShaderImage(imageAtSize(P, L->image, tw, th), tile, repX, repY);
             CscdRect fill = clip.rect;
-            if (!L->repeatX) { fill.x = cscdMaxf(fill.x, tile.x); fill.w = cscdMinf(cscdRectRight(clip.rect), cscdRectRight(tile)) - fill.x; }
-            if (!L->repeatY) { fill.y = cscdMaxf(fill.y, tile.y); fill.h = cscdMinf(cscdRectBottom(clip.rect), cscdRectBottom(tile)) - fill.y; }
+            if (!repX) { fill.x = cscdMaxf(fill.x, tile.x); fill.w = cscdMinf(cscdRectRight(clip.rect), cscdRectRight(tile)) - fill.x; }
+            if (!repY) { fill.y = cscdMaxf(fill.y, tile.y); fill.h = cscdMinf(cscdRectBottom(clip.rect), cscdRectBottom(tile)) - fill.y; }
             if (!cscdRectEmpty(fill)) cscdCanvasFillRectShader(canvas, fill, &sh);
             cscdShaderFini(&sh);
         } else {
             /* gradients: one tile unless it repeats over a sized tile */
             const bool autoSize = cscdLenIsAuto(L->sizeX) && cscdLenIsAuto(L->sizeY) && L->sizeKeyword == 0;
-            bool tiled = (L->repeatX || L->repeatY) && (tw < clip.rect.w - 0.5f || th < clip.rect.h - 0.5f) && !autoSize;
+            bool tiled = ((repX || repY) && (tw < clip.rect.w - 0.5f || th < clip.rect.h - 0.5f) && !autoSize) || stepX != tw || stepY != th;
             if (!tiled) {
                 CscdShader sh = gradientShader(L, tile);
                 cscdCanvasFillRectShader(canvas, autoSize ? clip.rect : tile, &sh);
                 cscdShaderFini(&sh);
             } else {
-                float x0 = L->repeatX ? tile.x - ceilf((tile.x - clip.rect.x) / tw) * tw : tile.x;
-                float y0 = L->repeatY ? tile.y - ceilf((tile.y - clip.rect.y) / th) * th : tile.y;
+                float x0 = repX ? tile.x - ceilf((tile.x - clip.rect.x) / stepX) * stepX : tile.x;
+                float y0 = repY ? tile.y - ceilf((tile.y - clip.rect.y) / stepY) * stepY : tile.y;
                 int guard = 0;
-                for (float yy = y0; yy < cscdRectBottom(clip.rect) && guard < 4000; yy += th) {
-                    for (float xx = x0; xx < cscdRectRight(clip.rect) && guard < 4000; xx += tw, ++guard) {
+                for (float yy = y0; yy < cscdRectBottom(clip.rect) && guard < 4000; yy += stepY) {
+                    for (float xx = x0; xx < cscdRectRight(clip.rect) && guard < 4000; xx += stepX, ++guard) {
                         CscdRect t = {xx, yy, tw, th};
                         CscdShader sh = gradientShader(L, t);
                         cscdCanvasFillRectShader(canvas, t, &sh);
                         cscdShaderFini(&sh);
-                        if (!L->repeatX) break;
+                        if (!repX) break;
                     }
-                    if (!L->repeatY) break;
+                    if (!repY) break;
                 }
             }
         }
@@ -2717,6 +2766,10 @@ static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
                     clipShader = gradientShader(&bgs->items[0], r);
                     own = true;
                     P->textShader = &clipShader;
+                } else if (colorTextClip(c)) {
+                    clipShader = cscdShaderSolid(c->style->backgroundColor);
+                    own = true;
+                    P->textShader = &clipShader;
                 }
                 paintFlow(P, c, 2);
                 P->textShader = saved;
@@ -2732,6 +2785,10 @@ static void paintFlow(Painter* P, CscdLayoutBox* b, int phase) {
         bool own = false;
         if (bgs->len && bgs->items[0].clip == CSCD_BG_TEXT) {
             clipShader = textClipShader(&bgs->items[0], cscdBoxPaddingBox(c), cscdBoxBorderBox(c));
+            own = true;
+            P->textShader = &clipShader;
+        } else if (colorTextClip(c)) {
+            clipShader = cscdShaderSolid(c->style->backgroundColor);
             own = true;
             P->textShader = &clipShader;
         }
@@ -2798,6 +2855,10 @@ static void paintStacking(Painter* P, CscdLayoutBox* b) {
     bool own = false;
     if (b->style && b->style->backgrounds.len && b->style->backgrounds.items[0].clip == CSCD_BG_TEXT) {
         clipShader = gradientShader(&b->style->backgrounds.items[0], cscdBoxBorderBox(b));
+        own = true;
+        P->textShader = &clipShader;
+    } else if (colorTextClip(b)) {
+        clipShader = cscdShaderSolid(b->style->backgroundColor);
         own = true;
         P->textShader = &clipShader;
     }

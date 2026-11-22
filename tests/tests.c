@@ -275,6 +275,23 @@ static void testReplacedAbsolute(void) {
     cscdViewFree(v);
 }
 
+/* the background color clipped as background-clip says with no image; background-repeat: space spreads whole tiles */
+static void testBackgroundClipAndSpace(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0}</style>"
+                  "<div style='width:80px;height:20px;padding:10px;background:rgb(255,0,0);background-clip:content-box'></div>"
+                  "<div style='width:100px;height:20px;background:linear-gradient(rgb(0,0,255),rgb(0,0,255)) 0 0/30px 20px space'></div>");
+    CscdImage img;
+    cscdImageInit(&img, 800, 600);
+    frame(v, &img);
+    CHECK(cscdImageRow(&img, 5)[5] == 0xFFFFFFFFu);   /* (padding: not painted) */
+    CHECK(cscdImageRow(&img, 20)[20] == 0xFFFF0000u); /* (content) */
+    CHECK(cscdImageRow(&img, 50)[15] == 0xFF0000FFu && cscdImageRow(&img, 50)[32] == 0xFFFFFFFFu && cscdImageRow(&img, 50)[40] == 0xFF0000FFu &&
+          cscdImageRow(&img, 50)[99] == 0xFF0000FFu); /* (tiles at 0, 35 and 70) */
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
 /* line-height: 0 is 0 (not normal); a canvas's size attributes are its intrinsic size, not its CSS size; percentages
  * in a column flex item resolve against its height only where that is definite (CSS Flexbox 9.8) */
 static void testDefiniteHeights(void) {
@@ -5694,6 +5711,7 @@ int main(void) {
     testFlexBalance();
     testReplacedAbsolute();
     testDefiniteHeights();
+    testBackgroundClipAndSpace();
     testSelectors();
     testHasSiblings();
     testCascade();
