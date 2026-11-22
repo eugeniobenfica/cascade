@@ -86,7 +86,18 @@ typedef struct FlexCtx {
     Layouter* L;
     bool row;
     double cw, mainSize, crossSize;
+    bool mainDefinite; /* (the container's main size is: then so is each item's flexed one) */
 } FlexCtx;
+
+/* Whether a column item's flexed height is definite for what it holds (CSS Flexbox 9.8): when the container's height
+ * is; when it is fully inflexible and its flex basis a length; or when its flex basis is auto and its height a
+ * length (as browsers have it). */
+static bool columnItemDefinite(const FlexCtx* F, const CscdLayoutBox* c) {
+    if (F->row || F->mainDefinite) return true;
+    const CscdComputedStyle* cs = c->style;
+    if (cscdLenIsFixed(cs->flexBasis) && !cs->flexBasis.expr) return cs->flexGrow == 0 && cs->flexShrink == 0;
+    return cscdLenIsAuto(cs->flexBasis) && cscdLenIsFixed(cs->height) && !cs->height.expr;
+}
 
 /* lays an item out at a main size, to find its cross size */
 static void measureCross(FlexCtx* F, FlexItem* it, double mainBorderBox, bool forceMain) {
@@ -98,7 +109,10 @@ static void measureCross(FlexCtx* F, FlexItem* it, double mainBorderBox, bool fo
     if (F->row) {
         in.forcedW = mainBorderBox;
     } else {
-        if (forceMain) in.forcedH = mainBorderBox;
+        if (forceMain) {
+            in.forcedH = mainBorderBox;
+            in.forcedHIndefinite = !columnItemDefinite(F, c);
+        }
         double avail = F->cw - it->marginCross;
         bool wd;
         laySpecifiedWidth(F->L, c, F->cw, &wd);
@@ -198,7 +212,7 @@ double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
         items.items[i].align = CSCD_AL_STRETCH;
     }
     cscdVecFree(&boxes);
-    FlexCtx F = {L, row, cw, mainSize, crossSize};
+    FlexCtx F = {L, row, cw, mainSize, crossSize, mainSize >= 0};
 
     for (size_t i = 0; i < items.len; ++i) {
         FlexItem* it = &items.items[i];
@@ -428,6 +442,7 @@ double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
                     in.cbH = mainSize;
                     in.forcedW = layClampWidth(L, c, target, cw);
                     in.forcedH = it->target;
+                    in.forcedHIndefinite = !columnItemDefinite(&F, c);
                     layBlock(L, c, &in);
                 }
                 it->cross = (row ? c->h : c->w) + it->marginCross;

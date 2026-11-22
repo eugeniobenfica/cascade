@@ -275,6 +275,22 @@ static void testReplacedAbsolute(void) {
     cscdViewFree(v);
 }
 
+/* line-height: 0 is 0 (not normal); a canvas's size attributes are its intrinsic size, not its CSS size; percentages
+ * in a column flex item resolve against its height only where that is definite (CSS Flexbox 9.8) */
+static void testDefiniteHeights(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0}</style>"
+                  "<div id=a style='line-height:0'><span style='display:inline-block;width:10px;height:10px'></span></div>"
+                  "<div style='height:200px'><canvas id=b width=100 height=50 style='height:100%'></canvas></div>"
+                  "<div style='display:flex;flex-direction:column'><div style='flex:1 1 content;height:100px'><div id=c style='height:100%'></div></div>"
+                  "<div style='height:30px'><div id=d style='height:50%'></div></div></div>");
+    CHECK(fabsf(rectOf(v, "a").h - 10) < 0.5f);
+    CHECK(fabsf(rectOf(v, "b").w - 400) < 0.5f && fabsf(rectOf(v, "b").h - 200) < 0.5f);
+    CHECK(fabsf(rectOf(v, "c").h) < 0.5f);      /* (flex-basis content: not definite) */
+    CHECK(fabsf(rectOf(v, "d").h - 15) < 0.5f); /* (basis auto, a height: definite) */
+    cscdViewFree(v);
+}
+
 /* flex-wrap: balance (CSS Flexbox 2): the lines wrapping makes, as even as they go; flex-line-count, more of them */
 static void testFlexBalance(void) {
     CscdView* v = cscdViewNew();
@@ -5677,6 +5693,7 @@ int main(void) {
     testMarginCollapseThrough();
     testFlexBalance();
     testReplacedAbsolute();
+    testDefiniteHeights();
     testSelectors();
     testHasSiblings();
     testCascade();

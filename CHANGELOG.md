@@ -75,6 +75,14 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **`<object data>` and `<embed src>` show an image** they point at (an SVG file too) as `<img>` does; an object
   with none shows what it contains. An SVG file of no size of its own is as wide as its space and 150px high; one
   with only a width or a height has the rest from 300 by 150. WPT reftests passed: 2,602.
+- `line-height: 0` is 0, no longer taken for `normal`.
+- **A canvas's `width` and `height` attributes** are its intrinsic size (its ratio kept when CSS sets one side), no
+  longer its CSS size; the user agent's `canvas { width: 300px; height: 150px }` is gone (300 by 150 stays its
+  default intrinsic size).
+- **Definite heights**: an atomic inline resolves a percentage height against the block it is in, an anonymous block
+  passed over; a column flex item's height is definite for what it holds only where the container's is, where its
+  flex basis is auto and its height a length, or where it is inflexible with a length for a basis (CSS Flexbox 9.8).
+  WPT reftests passed: 2,633.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

@@ -90,7 +90,6 @@ const char* cscdUserAgentStyleSheet(void) {
     "ruby { display: inline; }\n"
     "rt { font-size: 50%; }\n"
     "iframe { border: 2px inset; width: 300px; height: 150px; }\n"
-    "canvas { width: 300px; height: 150px; }\n"
     "video { width: 300px; height: 150px; }\n"
     ":focus-visible { outline: auto 1px -webkit-focus-ring-color; outline-color: #101010; }\n"
     "/* popup menus, tooltips and splitters (cscdViewShowMenu, title, the splitter attribute) */\n"
@@ -242,7 +241,8 @@ static void presentationalHints(const CscdElement* e, CscdDeclVec* out) {
     CscdSv t = cscdStrSv(&e->tag);
 #define T(s) cscdSvEqC(t, s)
 #define ATTR(n) cscdElementGetAttribute(e, CSCD_SV(n))
-    if (T("img") || T("canvas") || T("video") || T("iframe") || T("td") || T("th") || T("table") || T("col") || T("embed") ||
+    /* (not a canvas's: its width and height are its bitmap's, its intrinsic size, HTML 15.4.3) */
+    if (T("img") || T("video") || T("iframe") || T("td") || T("th") || T("table") || T("col") || T("embed") ||
         T("object") || T("svg") || T("hr") || (T("input") && cscdSvIEqC(cscdElementAttrC(e, "type"), "image"))) {
         addDim(e, out, "width", "width");
         if (!T("td") && !T("th") && !T("col") && !T("hr")) addDim(e, out, "height", "height");

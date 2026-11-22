@@ -46,6 +46,7 @@ typedef struct BlockInput {
     FloatCtx* floats;
     bool marginTopCollapsed;  /* the top margin (and the first child's) was already applied by the parent */
     bool positionedByCaller;  /* x is the border-box left (no margin resolution against cbW) */
+    bool forcedHIndefinite;   /* forcedH is its height, but not a definite one its contents' percentages resolve against */
 } BlockInput;
 
 CSCD_INLINE BlockInput blockInput(void) {
@@ -117,7 +118,7 @@ void layFixupChildren(Layouter* L, CscdLayoutBox* b);
 void layRoot(Layouter* L, CscdLayoutBox* root);
 MarginSet layBlock(Layouter* L, CscdLayoutBox* b, const BlockInput* in); /* returns the bottom margin set that may collapse further */
 double layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH); /* lays out children inside the content box, returns content height */
-double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc);
+double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH); /* (cbH: the block's content height for its atomic inlines' percentages, -1 indefinite) */
 double layFlex(Layouter* L, CscdLayoutBox* b, double cbH);
 double layGrid(Layouter* L, CscdLayoutBox* b, double cbH);
 double layTable(Layouter* L, CscdLayoutBox* b, double cbH);

@@ -1665,6 +1665,8 @@ HANDLER(hLineHeight) {
         if (V(0)->tok.type == CSCD_TOK_NUMBER) n = (float)V(0)->tok.num;
         S->lineHeightFactor = cscdMaxf(0.f, n);
         S->lineHeight = -1;
+        /* (a factor of 0, which is not normal's mark: 0px, which any font size keeps 0) */
+        if (!(n > 0)) S->lineHeight = 0;
         return true;
     }
     CscdLength l;

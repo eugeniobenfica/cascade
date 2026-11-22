@@ -1925,6 +1925,7 @@ static void clearFrags(CscdLayoutBox* p) {
 /* the state of one block's inline layout */
 typedef struct Inl {
     Layouter* L;
+    double cbH; /* (the block's content height, for atomic inlines' percentages; -1 indefinite) */
     InlineState* st;
     CscdLayoutBox* b;
     FloatCtx* fc;
@@ -2481,11 +2482,12 @@ static void bidiParagraph(Inl* I, CscdU32Vec* cps, CpItemVec* at) {
     cscdVecFree(&lv);
 }
 
-double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
+double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH) {
     InlineState* st = leaseState();
     Inl I;
     memset(&I, 0, sizeof I);
     I.L = L;
+    I.cbH = cbH;
     I.st = st;
     I.b = b;
     I.fc = fc;
@@ -2639,7 +2641,7 @@ double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
         }
         case IT_ATOMIC: {
             CscdLayoutBox* ab = it->box;
-            layAtomicInline(L, ab, I.cw, -1);
+            layAtomicInline(L, ab, I.cw, I.cbH);
             double w = ab->w + ab->margin[1] + ab->margin[3];
             it->width = it->wordWidth = w;
             bool fits = I.lineX + w <= I.lineAvail + 0.01f;
@@ -3110,7 +3112,7 @@ double layContent(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, double cbH) {
     case CSCD_BOX_TABLE: return layTable(L, b, cbH);
     default: break;
     }
-    if (b->inlineContent) return layInline(L, b, fc);
+    if (b->inlineContent) return layInline(L, b, fc, cbH);
     MarginSet t;
     return layBlockChildren(L, b, fc, cbH, &t, false);
 }
@@ -3157,7 +3159,7 @@ static void memoKey(const CscdLayoutBox* b, const BlockInput* in, double key[8])
     key[4] = in->availW;
     key[5] = in->shrinkToFit;
     key[6] = in->marginTopCollapsed;
-    key[7] = in->positionedByCaller;
+    key[7] = in->positionedByCaller + 2 * in->forcedHIndefinite;
 }
 
 static void forgetLayout(CscdLayoutBox* b) {
@@ -3416,7 +3418,9 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
     bool hdef;
     double sh = laySpecifiedHeight(b, in->cbH, &hdef);
     if (!hdef && s->aspectRatio > 0 && !replaced && in->forcedH < 0) { sh = (bw - edgesW) / s->aspectRatio + edgesH; hdef = true; }
-    double childCbH = in->forcedH >= 0 ? in->forcedH - edgesH : hdef ? layClampHeight(b, sh, in->cbH) - edgesH : -1;
+    double childCbH = in->forcedH >= 0 ? (in->forcedHIndefinite ? -1 : in->forcedH - edgesH) : hdef ? layClampHeight(b, sh, in->cbH) - edgesH : -1;
+    /* (an anonymous block is passed over: what it holds resolves percentages against what holds it, CSS 2.1 10.1) */
+    if (b->anonymous && b->kind == CSCD_BOX_BLOCK && in->forcedH < 0) childCbH = in->cbH;
     /* percentages of a definite min-height do not resolve, but a percentage height chain from the root does */
     b->h = laySnapF(in->forcedH >= 0 ? in->forcedH : hdef ? layClampHeight(b, sh, in->cbH) : edgesH);
 
@@ -3440,7 +3444,9 @@ static MarginSet layBlockFresh(Layouter* L, CscdLayoutBox* b, const BlockInput* 
         }
     } else if (b->kind == CSCD_BOX_FLEX || b->kind == CSCD_BOX_GRID || b->kind == CSCD_BOX_TABLE || b->inlineContent) {
         /* flex and grid need the final border-box height known when it is definite */
-        contentH = layContent(L, b, fc, childCbH);
+        /* (a column flex container lays out its items in the height imposed on it, a definite one or not: its main size) */
+        const bool own = in->forcedH >= 0 && in->forcedHIndefinite && b->kind == CSCD_BOX_FLEX && cscdStyleIsColumn(s);
+        contentH = layContent(L, b, fc, own ? in->forcedH - edgesH : childCbH);
     } else {
         contentH = layBlockChildren(L, b, fc, childCbH, &trailing, in->marginTopCollapsed && topCollapsible(b));
     }
