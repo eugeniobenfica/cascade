@@ -45,6 +45,9 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   baseline, the row grows to hold them); a grid's own baselines from its first and last rows.
 - **Flex and grid items paint as inline-blocks do**, each whole, in `order`'s order; one with a `z-index` makes a
   stacking context without being positioned.
+- **Positioning**: in a right-to-left containing block, an absolutely positioned box's static place is at the right,
+  and `right` wins over `left` (relative and absolute); an absolutely positioned box is no longer clipped or scrolled
+  by the overflow of boxes between it and its containing block.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

@@ -234,6 +234,29 @@ static void testSvgImages(void) {
     cscdViewFree(v);
 }
 
+/* right-to-left containing blocks (CSS 2.1 9.4.3, 10.3.7); flex items painted in order, z-index unpositioned */
+static void testRtlPositioningAndItemPainting(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0}</style>"
+                  "<div style='direction:rtl;position:relative;width:200px;height:50px'><div id=a style='position:absolute;width:40px;height:10px'></div></div>"
+                  "<div style='direction:rtl;width:200px'><div id=r style='position:relative;left:10px;right:20px;width:40px;height:10px'></div></div>"
+                  "<div style='display:flex;width:100px;height:20px'>"
+                  "<div style='order:1;margin-left:-100px;width:100px;background:rgb(0,255,0)'></div>"
+                  "<div style='width:100px;background:rgb(255,0,0)'></div></div>"
+                  "<div style='display:flex;width:100px;height:20px'>"
+                  "<div style='z-index:1;margin-right:-100px;width:100px;background:rgb(0,0,255)'></div>"
+                  "<div style='width:100px;background:rgb(255,0,0)'></div></div>");
+    CHECK(fabsf(rectOf(v, "a").x - 160) < 0.5f); /* (its static place: the right) */
+    CHECK(fabsf(rectOf(v, "r").x - 140) < 0.5f); /* (right wins: 160 - 20) */
+    CscdImage img;
+    cscdImageInit(&img, 800, 600);
+    frame(v, &img);
+    CHECK(cscdImageRow(&img, 70)[50] == 0xFF00FF00u); /* (order 1: painted after the other, over it) */
+    CHECK(cscdImageRow(&img, 90)[50] == 0xFF0000FFu); /* (z-index 1: over the later one) */
+    cscdImageFini(&img);
+    cscdViewFree(v);
+}
+
 static void testSelectors(void) {
     CscdDocument* doc = cscdParseHTML(CSCD_SV("<ul id=l><li>1</li><li class=k>2</li><li>3</li><li data-v='a b'>4</li></ul><div><p></p><span></span></div>"));
 #define ALL(s) (all.len = 0, cscdDocumentQuerySelectorAll(doc, CSCD_SV(s), &all), all.len)
@@ -5598,6 +5621,7 @@ int main(void) {
     testTreeConstruction();
     testTableFixup();
     testSvgImages();
+    testRtlPositioningAndItemPainting();
     testSelectors();
     testHasSiblings();
     testCascade();

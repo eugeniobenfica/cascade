@@ -1020,6 +1020,7 @@ static void forgetKeptLayoutBy(CscdLayoutBox* b, double dx, double dy) {
     b->overflow = cscdBoxRect(0, 0, 0, 0);
     b->staticX = b->staticY = 0;
     b->hasStaticPos = false;
+    b->staticEnd = false;
     cscdTextFragVecClear(&b->textFrags);
     b->inlineFrags.len = 0;
     b->lines.len = 0;
@@ -2269,6 +2270,7 @@ static void finishLine(Inl* I, bool lastLine) {
         } else if (it->t == IT_ABS) {
             CscdLayoutBox* ab = it->box;
             ab->staticX = px;
+            ab->staticEnd = ab->style->rtl; /* (in right-to-left text, its right edge at its place in the line) */
             ab->staticY = I->y;
             ab->hasStaticPos = true;
         }
@@ -2658,7 +2660,11 @@ double layInline(Layouter* L, CscdLayoutBox* b, FloatCtx* fc) {
         if (it->t != IT_ABS) continue;
         CscdLayoutBox* ab = it->box;
         /* (not on a line: where the next one would start) */
-        if (!ab->hasStaticPos) { ab->staticX = I.left; ab->staticY = I.y; }
+        if (!ab->hasStaticPos) { /* (where a line would start: its right end in right-to-left text) */
+            ab->staticEnd = ab->style->rtl;
+            ab->staticX = ab->staticEnd ? I.left + I.cw : I.left;
+            ab->staticY = I.y;
+        }
         ab->hasStaticPos = true;
         layDeferAbsolute(L, ab);
     }
@@ -2815,7 +2821,9 @@ static void relativeOffset(const CscdLayoutBox* b, double cbW, double cbH, doubl
     const CscdComputedStyle* s = b->style;
     *dx = *dy = 0;
     if (!s || s->position != CSCD_POS_RELATIVE) return;
-    if (!cscdLenIsAuto(s->left)) *dx = layLen(s->left, cbW, 0);
+    /* (both given: left wins, or right where the containing block is right-to-left) */
+    const bool rtl = b->parent && b->parent->style && b->parent->style->rtl;
+    if (!cscdLenIsAuto(s->left) && !(rtl && !cscdLenIsAuto(s->right))) *dx = layLen(s->left, cbW, 0);
     else if (!cscdLenIsAuto(s->right)) *dx = -layLen(s->right, cbW, 0);
     if (!cscdLenIsAuto(s->top) && !(cscdLenHasPercent(s->top) && cbH < 0)) *dy = layLen(s->top, cbH, 0);
     else if (!cscdLenIsAuto(s->bottom) && !(cscdLenHasPercent(s->bottom) && cbH < 0)) *dy = -layLen(s->bottom, cbH, 0);
@@ -2876,7 +2884,8 @@ static double layBlockChildren(Layouter* L, CscdLayoutBox* b, FloatCtx* fc, doub
         if (c->kind == CSCD_BOX_TEXT || c->kind == CSCD_BOX_INLINE || c->kind == CSCD_BOX_LINE_BREAK) continue; /* fixed up earlier */
         const CscdComputedStyle* cs = c->style;
         if (cs->position == CSCD_POS_ABSOLUTE || cs->position == CSCD_POS_FIXED) {
-            c->staticX = cx;
+            c->staticEnd = cs->rtl; /* (right-to-left: it would stand at the right) */
+            c->staticX = cs->rtl ? cx + cw : cx;
             c->staticY = cursor + msValue(pending);
             c->hasStaticPos = true;
             layDeferAbsolute(L, c);
@@ -3380,8 +3389,10 @@ void layAbsolute(Layouter* L, CscdLayoutBox* b, LayRect cb) {
         double freeW = cb.w - Lf - R - b->w;
         double ml = mlAuto && mrAuto ? layMax(0.f, freeW / 2) : mlAuto ? freeW - b->margin[1] : b->margin[3];
         x = cb.x + Lf + ml;
-    } else if (!lA) x = cb.x + Lf + b->margin[3];
+    } else if (!lA && (rA || !s->rtl)) x = cb.x + Lf + b->margin[3]; /* (both given: right wins in right-to-left) */
     else if (!rA) x = cscdBoxRectRight(cb) - R - b->margin[1] - b->w;
+    else if (b->hasStaticPos && b->staticEnd) x = b->staticX - b->margin[1] - b->w;
+    else if (!b->hasStaticPos && s->rtl) x = cscdBoxRectRight(cb) - b->margin[1] - b->w;
     else x = (b->hasStaticPos ? b->staticX : cb.x) + b->margin[3];
     double y;
     if (!tA && !bA && (mtAuto || mbAuto)) {

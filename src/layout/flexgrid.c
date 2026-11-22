@@ -32,6 +32,7 @@ static void inFlowItems(Layouter* L, CscdLayoutBox* b, CscdPtrVec* out) {
         if (c->isMarker) continue;
         if (isAbsolute(c)) {
             c->staticX = cscdBoxContentX(b);
+            c->staticEnd = false;
             c->staticY = cscdBoxContentY(b);
             c->hasStaticPos = true;
             layDeferAbsolute(L, c);

@@ -108,6 +108,7 @@ struct CscdLayoutBox {
     double lastBaseline;
     CscdBoxRect overflow;  /* scrollable overflow, absolute */
     double staticX, staticY;
+    bool staticEnd; /* (staticX is where its right edge would be: a block-level one in right-to-left text) */
     bool hasStaticPos;
 
     CscdTextFragVec textFrags;           /* Text boxes */

@@ -2728,10 +2728,21 @@ static void paintDescendant(Painter* P, CscdLayoutBox* b, CscdLayoutBox* d) {
     for (CscdLayoutBox* p = d->parent; p && p != b; p = p->parent) cscdVecPush(&chain, p);
     int pushed = 0;
     bool fixed = d->style->position == CSCD_POS_FIXED;
+    /* an absolutely positioned box is clipped (and scrolled) by its containing block and what holds that, not by the
+     * boxes between it and its containing block: the chain from the far end down to its containing block */
+    size_t upTo = 0;
+    if (d->style->position == CSCD_POS_ABSOLUTE) {
+        upTo = chain.len;
+        for (size_t i = 0; i < chain.len; ++i) {
+            const CscdLayoutBox* p = (const CscdLayoutBox*)chain.items[i];
+            if (isPositioned(p) || (p->style && p->style->transform.len)) {
+                upTo = i;
+                break;
+            }
+        }
+    }
     if (!fixed)
-        for (size_t i = chain.len; i-- > 0;)
-            /* absolutely positioned boxes escape clips of non-positioned ancestors outside their
-             * containing block (approximation: keep all) */
+        for (size_t i = chain.len; i-- > upTo;)
             if (pushContentClip(P, (CscdLayoutBox*)chain.items[i])) ++pushed;
     paintLayer(P, d);
     for (int i = 0; i < pushed; ++i) cscdCanvasRestore(P->canvas);
