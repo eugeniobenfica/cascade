@@ -238,6 +238,16 @@ NOINLINE static CscdShader gradientShader(const CscdBackgroundLayer* L, CscdRect
     return sh;
 }
 
+/* background-clip: border-area: where the borders are, the ring between the border box and the padding box */
+static void clipBorderArea(CscdCanvas* canvas, const CscdLayoutBox* b, CscdRRect outer) {
+    const CscdRRect inner = rrInset(outer, b->border[0], b->border[1], b->border[2], b->border[3]);
+    CscdPath ring = {0};
+    cscdPathAddRoundRect(&ring, outer.rect, outer.rx, outer.ry);
+    if (!cscdRectEmpty(inner.rect)) cscdPathAddRoundRect(&ring, inner.rect, inner.rx, inner.ry);
+    cscdCanvasClipPath(canvas, &ring, CSCD_FILL_EVENODD);
+    cscdPathFree(&ring);
+}
+
 static CscdRRect clipFor(const CscdLayoutBox* b, CscdRRect outer, uint8_t c) {
     if (c == CSCD_BG_PADDING_BOX) return rrInset(outer, b->border[0], b->border[1], b->border[2], b->border[3]);
     if (c == CSCD_BG_CONTENT_BOX)
@@ -320,7 +330,12 @@ NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect bord
         CscdRRect cl = clipFor(b, outer, colorClip);
         if (colorClip == CSCD_BG_BORDER_BOX && wholeBorder && opaqueRing(b))
             cl = rrInset(outer, b->border[0] * 0.5f, b->border[1] * 0.5f, b->border[2] * 0.5f, b->border[3] * 0.5f);
+        if (colorClip == CSCD_BG_BORDER_AREA) {
+            cscdCanvasSave(canvas);
+            clipBorderArea(canvas, b, outer);
+        }
         cscdCanvasFillRRect(canvas, &cl, s->backgroundColor);
+        if (colorClip == CSCD_BG_BORDER_AREA) cscdCanvasRestore(canvas);
     }
     for (size_t i = s->backgrounds.len; i-- > 0;) {
         const CscdBackgroundLayer* L = &s->backgrounds.items[i];
@@ -367,6 +382,7 @@ NOINLINE static void paintBackground(Painter* P, CscdLayoutBox* b, CscdRect bord
         CscdRect tile = {px, py, tw, th};
         cscdCanvasSave(canvas);
         cscdCanvasClipRRect(canvas, &clip);
+        if (L->clip == CSCD_BG_BORDER_AREA) clipBorderArea(canvas, b, outer);
         if (img) {
             CscdShader sh = cscdShaderImage(imageAtSize(P, L->image, tw, th), tile, L->repeatX, L->repeatY);
             CscdRect fill = clip.rect;

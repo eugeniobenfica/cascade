@@ -383,6 +383,7 @@ static uint8_t boxOf(const CscdCssValueVec* p, CscdBackgroundClip def) {
     if (cscdCssIsIdent(&p->items[0], "padding-box")) return CSCD_BG_PADDING_BOX;
     if (cscdCssIsIdent(&p->items[0], "content-box")) return CSCD_BG_CONTENT_BOX;
     if (cscdCssIsIdent(&p->items[0], "text")) return CSCD_BG_TEXT;
+    if (cscdCssIsIdent(&p->items[0], "border-area")) return CSCD_BG_BORDER_AREA;
     return CSCD_BG_BORDER_BOX;
 }
 

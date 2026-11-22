@@ -511,7 +511,8 @@ static void expandBody(const Shorthand* sh, CscdSv p, const Values* v, CscdStrPa
                     CscdStr o = one(x);
                     if (cscdStrEqC(&rep, "repeat") || k == 0) { cscdStrFree(&rep); rep = o; }
                     else { cscdStrAppendChar(&rep, ' '); cscdStrAppend(&rep, cscdStrSv(&o)); cscdStrFree(&o); }
-                } else if (cscdCssIsIdent(x, "border-box") || cscdCssIsIdent(x, "padding-box") || cscdCssIsIdent(x, "content-box") || cscdCssIsIdent(x, "text")) {
+                } else if (cscdCssIsIdent(x, "border-box") || cscdCssIsIdent(x, "padding-box") || cscdCssIsIdent(x, "content-box") || cscdCssIsIdent(x, "text") ||
+                           cscdCssIsIdent(x, "border-area")) {
                     if (boxes == 0) { cscdStrFree(&origin); origin = one(x); cscdStrFree(&clip); clip = one(x); }
                     else { cscdStrFree(&clip); clip = one(x); }
                     ++boxes;

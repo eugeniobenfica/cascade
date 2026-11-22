@@ -84,7 +84,7 @@ typedef enum CscdListStyle {
 } CscdListStyle;
 typedef enum CscdObjectFit { CSCD_FIT_FILL, CSCD_FIT_CONTAIN, CSCD_FIT_COVER, CSCD_FIT_NONE, CSCD_FIT_SCALE_DOWN } CscdObjectFit;
 typedef enum CscdGridFlow { CSCD_GRID_ROW, CSCD_GRID_COLUMN, CSCD_GRID_ROW_DENSE, CSCD_GRID_COLUMN_DENSE } CscdGridFlow;
-typedef enum CscdBackgroundClip { CSCD_BG_BORDER_BOX, CSCD_BG_PADDING_BOX, CSCD_BG_CONTENT_BOX, CSCD_BG_TEXT } CscdBackgroundClip;
+typedef enum CscdBackgroundClip { CSCD_BG_BORDER_BOX, CSCD_BG_PADDING_BOX, CSCD_BG_CONTENT_BOX, CSCD_BG_TEXT, CSCD_BG_BORDER_AREA } CscdBackgroundClip;
 typedef enum CscdPointerEvents { CSCD_PE_AUTO, CSCD_PE_NONE } CscdPointerEvents;
 typedef enum CscdUserSelect { CSCD_US_AUTO, CSCD_US_NONE, CSCD_US_TEXT, CSCD_US_ALL } CscdUserSelect;
 /* touch-action, as bits: 0 is auto (every gesture); otherwise SET with the gestures the page leaves to the
