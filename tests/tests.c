@@ -265,6 +265,14 @@ static void testReplacedAbsolute(void) {
     CHECK(fabsf(rectOf(v, "a").h - 150) < 0.5f && fabsf(rectOf(v, "a").y - 10) < 0.5f);
     CHECK(fabsf(rectOf(v, "b").w - 300) < 0.5f);
     cscdViewFree(v);
+    /* the widths of columns and column groups (CSS 2.1 17.2), held by their min-width and max-width */
+    v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>"
+                  "<table><colgroup style='width:80px'></colgroup><col style='width:300px;max-width:50px'>"
+                  "<tr><td id=c>a</td><td id=d>b</td></tr></table>");
+    CHECK(fabsf(rectOf(v, "c").w - 80) < 0.5f);
+    CHECK(fabsf(rectOf(v, "d").w - 50) < 0.5f);
+    cscdViewFree(v);
 }
 
 /* flex-wrap: balance (CSS Flexbox 2): the lines wrapping makes, as even as they go; flex-line-count, more of them */

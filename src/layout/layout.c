@@ -370,7 +370,7 @@ static bool wraps(uint8_t ws) { return ws != CSCD_WS_NOWRAP && ws != CSCD_WS_PRE
 static CscdImage* loadImage(Layouter* L, CscdSv url) { return L->images ? L->images(L->imagesUser, url) : NULL; }
 
 static CscdImage* imageOf(Layouter* L, CscdElement* e) {
-    CscdSv src = cscdElementAttrC(e, "src");
+    CscdSv src = cscdElementAttrC(e, cscdElementIs(e, "object") ? "data" : "src");
     if (!src.len || !L->images) return NULL;
     CscdStr path = cscdJoinPath(e->node.owner ? cscdStrSv(&e->node.owner->baseDir) : CSCD_SV(""), src);
     CscdImage* img = loadImage(L, cscdStrSv(&path));
@@ -427,7 +427,14 @@ static CscdLayoutBox* makeBox(Layouter* L, CscdElement* e, CscdComputedStyle* st
     } else if (T("canvas")) setReplaced(b, CSCD_REPL_CANVAS, inl);
     else if (T("svg")) setReplaced(b, CSCD_REPL_SVG, inl);
     else if (T("video")) setReplaced(b, CSCD_REPL_VIDEO, inl);
-    else if (T("iframe") || T("embed") || T("object")) setReplaced(b, CSCD_REPL_FRAME, inl);
+    else if (T("embed") || T("object")) {
+        /* (an image it holds shows as an img would; an object with none shows what it contains instead, HTML 4.8.7) */
+        CscdImage* img = imageOf(L, e);
+        if (img && !cscdImageEmpty(img)) {
+            setReplaced(b, CSCD_REPL_IMAGE, inl);
+            b->image = img;
+        } else if (T("embed")) setReplaced(b, CSCD_REPL_FRAME, inl);
+    } else if (T("iframe")) setReplaced(b, CSCD_REPL_FRAME, inl);
     else if (T("textarea")) setReplaced(b, CSCD_REPL_TEXT_AREA, inl);
     else if (T("select")) setReplaced(b, CSCD_REPL_SELECT, inl);
     else if (T("progress")) setReplaced(b, CSCD_REPL_PROGRESS, inl);
@@ -772,6 +779,8 @@ void layFixupChildren(Layouter* L, CscdLayoutBox* b) {
     (void)L;
     CscdPtrVec* ch = &b->children;
     if (b->kind == CSCD_BOX_TEXT || b->kind == CSCD_BOX_REPLACED || b->kind == CSCD_BOX_LINE_BREAK) return;
+    /* (a column group's columns are its own, not parts of a table of theirs) */
+    if (b->style && !b->anonymous && (b->style->display == CSCD_DISPLAY_TABLE_COLUMN_GROUP || b->style->display == CSCD_DISPLAY_TABLE_COLUMN)) return;
     if (b->kind != CSCD_BOX_TABLE && b->kind != CSCD_BOX_TABLE_ROW_GROUP && b->kind != CSCD_BOX_TABLE_ROW) wrapTableParts(L, b);
     if (b->kind == CSCD_BOX_INLINE) {
         /* an inline containing blocks becomes a block (simplified block-in-inline) */
@@ -1206,6 +1215,12 @@ void laySetImageSizer(CscdImageLoaderFn loader, LayImageSizeFn sizer) {
 
 /* Whether a replaced box has a ratio but neither an intrinsic width nor height (an SVG with a viewBox only): its width
  * is then the space it has (CSS 2.1 10.3.2), not the default 300px. */
+/* Whether an image has no size of its own at all, neither a width, a height nor a ratio (an SVG file with none of
+ * them): as wide as the space it has then, and 150px high, as a box of no intrinsic size is. */
+static bool sizeless(Layouter* L, const CscdLayoutBox* b) {
+    return b->replaced == CSCD_REPL_IMAGE && b->image && imageSizer && L->images == sizerLoader && imageSizer(L->imagesUser, b->image) == 0;
+}
+
 static bool ratioOnly(Layouter* L, const CscdLayoutBox* b) {
     if (b->replaced == CSCD_REPL_IMAGE)
         return b->image && imageSizer && L->images == sizerLoader && imageSizer(L->imagesUser, b->image) == 4;
@@ -1240,6 +1255,15 @@ void layReplacedIntrinsic(Layouter* L, CscdLayoutBox* b, double* w, double* h, d
             *w = (double)b->image->width * z;
             *h = (double)b->image->height * z;
             *ratio = *w / *h;
+            /* (an SVG file may lack a width, a height or a ratio: what it lacks is the default object's, 300 by 150) */
+            if (imageSizer && L->images == sizerLoader) {
+                const unsigned has = imageSizer(L->imagesUser, b->image);
+                if (has != 7) {
+                    if (!(has & 4)) *ratio = 0;
+                    if (!(has & 1)) *w = *ratio > 0 && (has & 2) ? *h * *ratio : 300;
+                    if (!(has & 2)) *h = *ratio > 0 && (has & 1) ? *w / *ratio : 150;
+                }
+            }
         } else { *w = 0; *h = 0; *ratio = 0; }
         break;
     case CSCD_REPL_FRAME: *ratio = 0; break; /* (300 by 150, of no ratio: a height given leaves the width at 300) */
@@ -1330,6 +1354,9 @@ void layReplaced(Layouter* L, CscdLayoutBox* b, double cbW, double cbH, double* 
     else if (cbW >= 0 && ratio > 0 && ratioOnly(L, b)) { /* (only a ratio: as wide as the space it has) */
         *cw = layMax(0.f, cbW - edgesW - b->margin[1] - b->margin[3]);
         *ch = *cw / ratio;
+    } else if (cbW >= 0 && sizeless(L, b)) {
+        *cw = layMax(0.f, cbW - edgesW - b->margin[1] - b->margin[3]);
+        *ch = 150;
     } else { *cw = iw; *ch = ih; }
     /* min / max (content sizes) */
     double bw = layClampWidth(L, b, *cw + edgesW, cbW) - edgesW;

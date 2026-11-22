@@ -69,6 +69,12 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
   (from their size or their ratio), as CSS 2.1 has it, instead of stretching. `iframe`, `embed` and `object` (whose
   documents are not loaded) show nothing, as about:blank does, and have no ratio: a height given leaves them 300px
   wide. WPT reftests passed: 2,591.
+- **Table columns**: `<col>`, `<colgroup>` and `display: table-column(-group)` give their columns a width (`span`
+  counted, a group's width for its columns that give none, min-width and max-width holding it), in the table's
+  layout and its intrinsic size; a column group's columns stay its own instead of becoming a table.
+- **`<object data>` and `<embed src>` show an image** they point at (an SVG file too) as `<img>` does; an object
+  with none shows what it contains. An SVG file of no size of its own is as wide as its space and 150px high; one
+  with only a width or a height has the rest from 300 by 150. WPT reftests passed: 2,602.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

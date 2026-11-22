@@ -1418,6 +1418,49 @@ static double columnPercents(const TableModel* m, double* pct) {
     return sum;
 }
 
+/* a column's or a column group's width from its style: its width (in pixels), held by its min-width and max-width, or
+ * its min-width alone; -1 when it gives none */
+static double columnStyleWidth(const CscdComputedStyle* s) {
+    double v = cscdLenIsFixed(s->width) && !s->width.expr ? s->width.px : -1;
+    if (cscdLenIsFixed(s->minWidth) && !s->minWidth.expr && s->minWidth.px > 0) v = layMax(v, s->minWidth.px);
+    if (v >= 0 && cscdLenIsFixed(s->maxWidth) && !s->maxWidth.expr) v = layMin(v, s->maxWidth.px);
+    return v;
+}
+
+static int columnSpan(const CscdLayoutBox* c) {
+    if (!c->element) return 1;
+    const CscdSv sp = cscdElementAttrC(c->element, "span");
+    int n = 0;
+    for (size_t i = 0; i < sp.len && sp.ptr[i] >= '0' && sp.ptr[i] <= '9' && n < 1000; ++i) n = n * 10 + (sp.ptr[i] - '0');
+    return n > 0 ? n : 1;
+}
+
+/* The widths a table's columns and column groups give its columns (CSS 2.1 17.2, 17.5.2): out[k] is -1 where none does. */
+static void columnWidths(const CscdLayoutBox* table, int ncols, double* out) {
+    for (int k = 0; k < ncols; ++k) out[k] = -1;
+    int k = 0;
+    for (size_t i = 0; i < table->children.len && k < ncols; ++i) {
+        const CscdLayoutBox* c = cscdBoxChild(table, i);
+        if (!c->style || c->anonymous) continue;
+        if (c->style->display == CSCD_DISPLAY_TABLE_COLUMN) {
+            const double v = columnStyleWidth(c->style);
+            for (int n = columnSpan(c); n > 0 && k < ncols; --n, ++k) out[k] = v;
+        } else if (c->style->display == CSCD_DISPLAY_TABLE_COLUMN_GROUP) {
+            const double g = columnStyleWidth(c->style);
+            bool any = false;
+            for (size_t j = 0; j < c->children.len && k < ncols; ++j) {
+                const CscdLayoutBox* col = cscdBoxChild(c, j);
+                if (!col->style || col->anonymous || col->style->display != CSCD_DISPLAY_TABLE_COLUMN) continue;
+                any = true;
+                const double v = columnStyleWidth(col->style);
+                for (int n = columnSpan(col); n > 0 && k < ncols; --n, ++k) out[k] = v >= 0 ? v : g;
+            }
+            if (!any)
+                for (int n = columnSpan(c); n > 0 && k < ncols; --n, ++k) out[k] = g;
+        }
+    }
+}
+
 double layIntrinsicTable(Layouter* L, CscdLayoutBox* b, bool min) {
     TableModel m;
     buildModel(b, &m);
@@ -1436,6 +1479,12 @@ double layIntrinsicTable(Layouter* L, CscdLayoutBox* b, bool min) {
         double cur = sx * (c->colspan - 1);
         for (int k = c->col; k < c->col + c->colspan; ++k) cur += w[k];
         if (v > cur) for (int k = c->col; k < c->col + c->colspan; ++k) w[k] += (v - cur) / c->colspan;
+    }
+    {
+        double* colW = cscdCalloc((size_t)m.cols + 1, sizeof(double));
+        columnWidths(b, m.cols, colW);
+        for (int k = 0; k < m.cols; ++k) if (colW[k] >= 0) w[k] = layMax(w[k], colW[k]);
+        cscdFree(colW);
     }
     double total = sx * (m.cols + 1);
     for (int k = 0; k < m.cols; ++k) total += w[k];
@@ -1529,6 +1578,18 @@ double layTable(Layouter* L, CscdLayoutBox* b, double cbH) {
             if (a > curMin) mn[k] += (a - curMin) / c->colspan;
             if (z > curMax) mx[k] += (z - curMax) / c->colspan;
         }
+    }
+    {
+        /* the widths columns give: at least that, and fixed */
+        double* colW = cscdCalloc((size_t)ncols, sizeof(double));
+        columnWidths(b, ncols, colW);
+        for (int k = 0; k < ncols; ++k)
+            if (colW[k] >= 0) {
+                mn[k] = layMax(mn[k], colW[k]);
+                mx[k] = layMax(mx[k], colW[k]);
+                fixedW[k] = layMax(fixedW[k], colW[k]);
+            }
+        cscdFree(colW);
     }
     for (int k = 0; k < ncols; ++k) mx[k] = layMax(mx[k], mn[k]);
     double lead = collapse ? 0 : sx, leadY = collapse ? 0 : sy;
