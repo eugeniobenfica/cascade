@@ -527,6 +527,7 @@ typedef struct GridItem {
     int r0, r1, c0, c1; /* 0-based track indices, end exclusive */
     double extra;        /* (column sizing of a subgrid's items: its edges at the subgrid's first / last column) */
     double shim;         /* (a baseline-aligned item: how far it is moved down, or up for last baseline, to its group's) */
+    double knownH;       /* (the height of its rows when they are all of a fixed size, for its width's percentages; -1) */
 } GridItem;
 typedef CSCD_VEC(GridItem) GridItemVec;
 
@@ -541,7 +542,7 @@ typedef struct Track {
 typedef CSCD_VEC(Track) TrackVec;
 
 static GridItem gridItem(CscdLayoutBox* b) {
-    GridItem g = {b, -1, -1, -1, -1, 0};
+    GridItem g = {b, -1, -1, -1, -1, 0, 0, -1};
     return g;
 }
 
@@ -937,8 +938,35 @@ static void sizeTracks(Layouter* L, TrackVec* tracksV, const GridItemVec* items,
     }
 }
 
+/* whether a box holds a replaced box whose height is a percentage (through boxes whose heights are), so that its
+ * width depends on the height it is in */
+static bool percentHeightReplaced(const CscdLayoutBox* b, int depth) {
+    if (depth > 6 || !b->style) return false;
+    if (b->kind == CSCD_BOX_REPLACED) return cscdLenHasPercent(b->style->height) || (depth == 0 && b->style->alignSelf == CSCD_AL_STRETCH);
+    if (b->style->aspectRatio > 0 && cscdLenIsAuto(b->style->width) && cscdLenHasPercent(b->style->height)) return true;
+    for (size_t i = 0; i < b->children.len; ++i)
+        if (percentHeightReplaced(cscdBoxChild(b, i), depth + 1)) return true;
+    return false;
+}
+
 static double contentContribution(Layouter* L, const GridItem* it, bool mn, bool allMin) {
-    return ((mn || allMin) ? layOuterMinContent(L, it->b) : layOuterMaxContent(L, it->b)) + it->extra;
+    /* (in rows of a fixed height, what the item holds resolves percentage heights against it) */
+    const bool known = it->knownH >= 0 && !L->intrinsicCbHSet && percentHeightReplaced(it->b, 0);
+    if (known) {
+        L->intrinsicCbH = it->knownH;
+        L->intrinsicCbHSet = true;
+        /* (stretched to its rows, as a non-replaced item with no align-self is: their height is its own) */
+        const CscdComputedStyle* ps = it->b->parent ? it->b->parent->style : NULL;
+        uint8_t as = it->b->style->alignSelf;
+        if (as == CSCD_AL_AUTO && ps) as = ps->alignItems;
+        if ((as == CSCD_AL_NORMAL && it->b->kind != CSCD_BOX_REPLACED) || as == CSCD_AL_STRETCH) L->intrinsicStretched = it->b;
+    }
+    const double v = ((mn || allMin) ? layOuterMinContent(L, it->b) : layOuterMaxContent(L, it->b)) + it->extra;
+    if (known) {
+        L->intrinsicCbHSet = false;
+        L->intrinsicStretched = NULL;
+    }
+    return v;
 }
 
 static double heightContribution(Layouter* L, const GridItem* it, bool mn, bool allMin) {
@@ -994,6 +1022,17 @@ static void tracksFor(TrackVec* out, int n, const CscdTrackVec* explicitTracks, 
     for (int i = 0; i < n; ++i) out->items[i].spec = trackFor(explicitTracks, autoTracks, i);
 }
 
+/* an item's rows' height, when every one of them is a fixed length (-1 when one is not) */
+static double knownRowsHeight(const GridItem* it, const TrackVec* rt, double rowGap) {
+    double h = rowGap * (it->r1 - it->r0 - 1);
+    for (int k = it->r0; k < it->r1; ++k) {
+        const CscdTrackSize* t = k >= 0 && k < (int)rt->len ? &rt->items[k].spec : NULL;
+        if (!t || t->kind != CSCD_TRACK_FIXED || !cscdLenIsFixed(t->len) || t->len.expr) return -1;
+        h += t->len.px;
+    }
+    return h;
+}
+
 double layIntrinsicGrid(Layouter* L, CscdLayoutBox* b, bool min) {
     const CscdComputedStyle* s = b->style;
     GridItemVec items = {0};
@@ -1004,8 +1043,11 @@ double layIntrinsicGrid(Layouter* L, CscdLayoutBox* b, bool min) {
     expandTracks(&s->gridRows, -1, 0, &rowTracks);
     int cols, rows;
     placeItems(b, &items, &cols, &rows, &colTracks, &rowTracks);
-    TrackVec tracks = {0};
+    TrackVec tracks = {0}, rt = {0};
     tracksFor(&tracks, cols, &colTracks, &s->gridAutoColumns);
+    tracksFor(&rt, rows, &rowTracks, &s->gridAutoRows);
+    for (size_t i = 0; i < items.len; ++i) items.items[i].knownH = knownRowsHeight(&items.items[i], &rt, gapOf(s->rowGap, 0));
+    cscdVecFree(&rt);
     sizeTracks(L, &tracks, &items, true, -1, gap, contentContribution, min, false);
     double total = gap * cscdMaxi(0, cols - 1);
     for (size_t k = 0; k < tracks.len; ++k) total += tracks.items[k].base;
@@ -1137,6 +1179,9 @@ double layGrid(Layouter* L, CscdLayoutBox* b, double cbH) {
     if (!(s->gridColumns.subgrid && given && given->cols.len)) collapseAutoFit(&ct, &s->gridColumns, &colTracks, &items, true);
     if (!(s->gridRows.subgrid && given && given->rows.len)) collapseAutoFit(&rt, &s->gridRows, &rowTracks, &items, false);
     bool stretchCols = s->justifyContent == CSCD_AL_NORMAL || s->justifyContent == CSCD_AL_STRETCH;
+    bool secondPass = false;
+    for (size_t i = 0; i < items.len; ++i) items.items[i].knownH = knownRowsHeight(&items.items[i], &rt, rowGap);
+columns:;
     /* the columns: a subgrid on columns is not sized as one item; its items, placed in it, size the
      * parent's columns they lie in (its edges added to its first and last columns) */
     GridItemVec colItems = {0}, inner = {0};
@@ -1233,6 +1278,29 @@ double layGrid(Layouter* L, CscdLayoutBox* b, double cbH) {
         CscdFloatVec* out = (CscdFloatVec*)v->p;
         out->len = 0;
         for (size_t k = 0; k < rt.len; ++k) cscdVecPush(out, (float)rt.items[k].base);
+    }
+    /* CSS Grid 2, 12.1 step 3: an item whose width depends on its rows' height (a percentage-high replaced box in
+     * it), its rows now sized: the columns sized again with it measured in them, and the rows after (once) */
+    if (!secondPass) {
+        bool again = false, subgrids = false;
+        for (size_t i = 0; i < items.len; ++i) {
+            GridItem* it = &items.items[i];
+            if (subCols(it->b) || subRows(it->b)) subgrids = true;
+            if (it->knownH >= 0 || !percentHeightReplaced(it->b, 0)) continue;
+            double h = rowGap * (it->r1 - it->r0 - 1);
+            for (int k = it->r0; k < it->r1 && k < (int)rt.len; ++k) h += rt.items[k].base;
+            it->knownH = h;
+            again = true;
+        }
+        if (again && !subgrids) {
+            secondPass = true;
+            cscdVecFree(&scratch);
+            tracksFor(&ct, cols, &colTracks, &s->gridAutoColumns);
+            tracksFor(&rt, rows, &rowTracks, &s->gridAutoRows);
+            if (!(s->gridColumns.subgrid && given && given->cols.len)) collapseAutoFit(&ct, &s->gridColumns, &colTracks, &items, true);
+            if (!(s->gridRows.subgrid && given && given->rows.len)) collapseAutoFit(&rt, &s->gridRows, &rowTracks, &items, false);
+            goto columns;
+        }
     }
     distribute(&ct, cw, colGap, s->justifyContent);
     double totalH = distribute(&rt, cbH, rowGap, s->alignContent);

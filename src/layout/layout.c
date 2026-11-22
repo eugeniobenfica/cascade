@@ -1389,15 +1389,38 @@ static double intrinsicWidthOf(Layouter* L, CscdLayoutBox* b, bool min, bool con
     const CscdComputedStyle* s = b->style;
     layResolveEdges(b, 0);
     double edges = b->padding[1] + b->padding[3] + b->border[1] + b->border[3];
+    /* (in a known height: what it holds resolves its percentages against its own height, where that is known) */
+    const bool scoped = L->intrinsicCbHSet && b->kind != CSCD_BOX_REPLACED && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT && !b->anonymous;
+    const double outerH = L->intrinsicCbH;
+    if (scoped) {
+        double h = -1;
+        const double edgesV = b->padding[0] + b->padding[2] + b->border[0] + b->border[2];
+        if (cscdLenIsFixed(s->height) && !s->height.expr) h = s->height.px;
+        else if (s->height.kind == CSCD_LEN_FIXED && !s->height.expr) h = s->height.px + s->height.pct * outerH / 100;
+        if (h >= 0 && s->boxSizing == CSCD_BOX_BORDER) h = layMax(0.f, h - edgesV);
+        if (b == L->intrinsicStretched && cscdLenIsAuto(s->height) && outerH >= 0) h = layMax(0.f, outerH - b->margin[0] - b->margin[2] - edgesV);
+        L->intrinsicCbH = h;
+        L->intrinsicCbHSet = h >= 0;
+    }
     if (!contentsOnly && cscdLenIsFixed(s->width) && !cscdLenIsAuto(s->width) && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
         v = s->boxSizing == CSCD_BOX_CONTENT ? s->width.px + edges : layMax(s->width.px, edges);
     } else if (b->kind == CSCD_BOX_REPLACED) {
         double cw, ch;
-        layReplaced(L, b, -1, -1, &cw, &ch);
+        layReplaced(L, b, -1, L->intrinsicCbHSet ? L->intrinsicCbH : -1, &cw, &ch);
         v = cw + edges;
+        /* (stretched to a known height, its width by its ratio) */
+        if (b == L->intrinsicStretched && L->intrinsicCbHSet && cscdLenIsAuto(s->height) && cscdLenIsAuto(s->width) && ch > 0) {
+            const double h = layMax(0.f, L->intrinsicCbH - b->margin[0] - b->margin[2] - b->padding[0] - b->padding[2] - b->border[0] - b->border[2]);
+            v = h * cw / ch + edges;
+        }
         if (min && (cscdLenHasPercent(s->width) || cscdLenHasPercent(s->maxWidth))) v = edges; /* percentage-sized replaced boxes can shrink */
     } else if (s->containerType || (s->contain & (CSCD_CONTAIN_SIZE | CSCD_CONTAIN_INLINE_SIZE))) v = edges; /* (size containment: as if it were empty) */
     else if (s->verticalRoot && b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) v = verticalIntrinsicWidth(L, b);
+    else if (scoped && s->aspectRatio > 0 && cscdLenIsAuto(s->width) && L->intrinsicCbHSet) {
+        /* (an aspect-ratio and a height known: its width from them) */
+        v = s->boxSizing == CSCD_BOX_BORDER ? (L->intrinsicCbH + b->padding[0] + b->padding[2] + b->border[0] + b->border[2]) * s->aspectRatio
+                                            : L->intrinsicCbH * s->aspectRatio + edges;
+    }
     else if (b->kind == CSCD_BOX_FLEX) v = layIntrinsicFlex(L, b, min) + edges;
     else if (b->kind == CSCD_BOX_GRID) v = layIntrinsicGrid(L, b, min) + edges;
     else if (b->kind == CSCD_BOX_TABLE) v = layIntrinsicTable(L, b, min) + edges;
@@ -1413,6 +1436,10 @@ static double intrinsicWidthOf(Layouter* L, CscdLayoutBox* b, bool min, bool con
         }
         v = (min ? m : layMax(m, floatsSum)) + edges;
     }
+    if (scoped) {
+        L->intrinsicCbH = outerH;
+        L->intrinsicCbHSet = true;
+    }
     if (b->kind != CSCD_BOX_INLINE && b->kind != CSCD_BOX_TEXT) {
         if (!cscdLenIsNone(s->maxWidth) && cscdLenIsFixed(s->maxWidth)) v = layMin(v, s->maxWidth.px + (s->boxSizing == CSCD_BOX_CONTENT ? edges : 0));
         if (!contentsOnly && !cscdLenIsAuto(s->minWidth) && cscdLenIsFixed(s->minWidth))
@@ -1422,6 +1449,7 @@ static double intrinsicWidthOf(Layouter* L, CscdLayoutBox* b, bool min, bool con
 }
 
 double layMinContent(Layouter* L, CscdLayoutBox* b) {
+    if (L->intrinsicCbHSet) return intrinsicWidth(L, b, true);
     if (b->minContent >= 0) return b->minContent;
     double v = intrinsicWidth(L, b, true);
     b->minContent = (float)v;
@@ -1431,6 +1459,7 @@ double layMinContent(Layouter* L, CscdLayoutBox* b) {
 double layContentsMinContent(Layouter* L, CscdLayoutBox* b) { return intrinsicWidthOf(L, b, true, true); }
 
 double layMaxContent(Layouter* L, CscdLayoutBox* b) {
+    if (L->intrinsicCbHSet) return layMax(intrinsicWidth(L, b, false), intrinsicWidth(L, b, true));
     if (b->maxContent >= 0) return b->maxContent;
     double v = intrinsicWidth(L, b, false);
     v = layMax(v, layMinContent(L, b));

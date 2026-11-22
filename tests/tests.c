@@ -275,6 +275,21 @@ static void testReplacedAbsolute(void) {
     cscdViewFree(v);
 }
 
+/* a grid item whose width follows its rows' height (CSS Grid 2, 12.1): measured in fixed rows, or again once the rows
+ * are sized */
+static void testGridHeightDependentWidths(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0}</style>"
+                  "<div style='display:inline-grid;grid-template-rows:50px'><div id=a style='height:100%'><canvas width=20 height=10 style='height:100%'></canvas></div></div>"
+                  "<div style='display:grid;width:0;grid-template-columns:auto auto'><div id=b><canvas width=10 height=10 style='height:100%'></canvas></div>"
+                  "<div><div style='height:80px'></div></div></div>"
+                  "<div style='display:inline-grid;grid-template-rows:60px'><div id=c style='aspect-ratio:1/1;height:100%'></div></div>");
+    CHECK(fabsf(rectOf(v, "a").w - 100) < 0.5f);
+    CHECK(fabsf(rectOf(v, "b").w - 80) < 0.5f);
+    CHECK(fabsf(rectOf(v, "c").w - 60) < 0.5f);
+    cscdViewFree(v);
+}
+
 /* the background color clipped as background-clip says with no image; background-repeat: space spreads whole tiles */
 static void testBackgroundClipAndSpace(void) {
     CscdView* v = cscdViewNew();
@@ -5712,6 +5727,7 @@ int main(void) {
     testReplacedAbsolute();
     testDefiniteHeights();
     testBackgroundClipAndSpace();
+    testGridHeightDependentWidths();
     testSelectors();
     testHasSiblings();
     testCascade();

@@ -93,6 +93,11 @@ typedef struct Layouter {
     /* the outermost list in absStack a positioned box was handed to since the layout under way began
      * (-1: a fixed one; INT_MAX: none) */
     int deferredTo;
+    /* (measuring a grid item's widths in a row of a known height: the height its percentages resolve against, while
+     * intrinsicCbHSet; intrinsic sizes are not remembered meanwhile) */
+    double intrinsicCbH;
+    bool intrinsicCbHSet;
+    const CscdLayoutBox* intrinsicStretched; /* (the item measured so, when it stretches to its rows: its auto height theirs) */
 } Layouter;
 
 /* Layout units: every place and size layout keeps is on the grid of 1/64 px (as browsers' LayoutUnit), where floats

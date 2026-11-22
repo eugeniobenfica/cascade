@@ -88,6 +88,10 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **The background color is clipped as `background-clip` says** even with no image (the clip of the last layer,
   as many layers as `background-image` lists), `text` included: the text then painted in the color. Padding and
   content boxes inside a border start on a whole pixel. WPT reftests passed: 2,685.
+- **Grid items whose width follows their rows' height** (a percentage-high image or canvas in them, an
+  `aspect-ratio` box with a percentage height, a stretched image): measured in their rows when those are of fixed
+  sizes, and, when not, the columns sized again once the rows are (CSS Grid 2, 12.1 step 3). WPT reftests passed:
+  2,697.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,
