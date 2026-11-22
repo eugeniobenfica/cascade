@@ -303,11 +303,18 @@ static void expandBody(const Shorthand* sh, CscdSv p, const Values* v, CscdStrPa
         return;
     }
     if (P("flex-flow")) {
+        CscdStr wrapParts = {0};
         for (size_t i = 0; i < v->len; ++i) {
             const CscdCssValue* x = X(i);
-            if (cscdCssIsIdent(x, "wrap") || cscdCssIsIdent(x, "nowrap") || cscdCssIsIdent(x, "wrap-reverse")) addPair(out, cscdStrDupC("flex-wrap"), one(x));
-            else addPair(out, cscdStrDupC("flex-direction"), one(x));
+            if (cscdCssIsIdent(x, "wrap") || cscdCssIsIdent(x, "nowrap") || cscdCssIsIdent(x, "wrap-reverse") || cscdCssIsIdent(x, "balance")) {
+                if (wrapParts.len) cscdStrAppendChar(&wrapParts, ' ');
+                CscdStr o = one(x);
+                cscdStrAppend(&wrapParts, cscdStrSv(&o));
+                cscdStrFree(&o);
+            } else addPair(out, cscdStrDupC("flex-direction"), one(x));
         }
+        if (wrapParts.len) addPair(out, cscdStrDupC("flex-wrap"), wrapParts);
+        else cscdStrFree(&wrapParts);
         return;
     }
     if (P("gap") || P("overflow") || P("place-items") || P("place-content") || P("place-self")) {
@@ -2063,10 +2070,28 @@ HANDLER(hFlexDirection) {
     return true;
 }
 
+/* nowrap | [ wrap | wrap-reverse ] || balance (CSS Flexbox 2; balance alone wraps) */
 HANDLER(hFlexWrap) {
     UNUSED_ARGS;
-    if (v->len != 1) return false;
-    S->flexWrap = ID(0, "wrap") ? CSCD_FLEX_WRAP : ID(0, "wrap-reverse") ? CSCD_FLEX_WRAP_REVERSE : CSCD_FLEX_NOWRAP;
+    if (v->len < 1 || v->len > 2) return false;
+    int wrap = -1;
+    bool balance = false;
+    for (size_t i = 0; i < v->len; ++i) {
+        if (ID(i, "balance") && !balance) balance = true;
+        else if (ID(i, "nowrap") && v->len == 1) wrap = CSCD_FLEX_NOWRAP;
+        else if (ID(i, "wrap") && wrap < 0) wrap = CSCD_FLEX_WRAP;
+        else if (ID(i, "wrap-reverse") && wrap < 0) wrap = CSCD_FLEX_WRAP_REVERSE;
+        else return false;
+    }
+    S->flexWrap = (uint8_t)(wrap < 0 ? CSCD_FLEX_WRAP : wrap);
+    S->flexBalance = balance;
+    return true;
+}
+
+HANDLER(hFlexLineCount) {
+    UNUSED_ARGS;
+    if (v->len != 1 || V(0)->tok.type != CSCD_TOK_NUMBER || V(0)->tok.num < 1 || V(0)->tok.num != (double)(long long)V(0)->tok.num) return false;
+    S->flexLineCount = (uint8_t)(V(0)->tok.num > 255 ? 255 : V(0)->tok.num);
     return true;
 }
 
@@ -2399,7 +2424,7 @@ static const Entry kHandlers[] = {
     {"text-decoration-color", hDecorationColor}, {"text-decoration-style", hDecorationStyle},
     {"text-decoration-thickness", hDecorationThickness}, {"text-underline-offset", hAccept}, {"tab-size", hTabSize},
     {"list-style-type", hListStyleType}, {"list-style-position", hListStylePosition}, {"list-style-image", hListStyleImage},
-    {"line-clamp", hLineClamp}, {"direction", hDirection}, {"flex-direction", hFlexDirection}, {"flex-wrap", hFlexWrap},
+    {"line-clamp", hLineClamp}, {"direction", hDirection}, {"flex-direction", hFlexDirection}, {"flex-wrap", hFlexWrap}, {"flex-line-count", hFlexLineCount},
     {"justify-content", hJustifyContent}, {"align-items", hAlignItems}, {"align-self", hAlignSelf}, {"align-content", hAlignContent},
     {"justify-items", hJustifyItems}, {"justify-self", hJustifySelf}, {"flex-grow", hFlexGrow}, {"flex-shrink", hFlexShrink},
     {"flex-basis", hFlexBasis}, {"order", hOrder}, {"row-gap", hRowGap}, {"column-gap", hColumnGap},
@@ -2590,8 +2615,10 @@ CP(cLetterSpacing, letterSpacing) CP(cWordSpacing, wordSpacing) CP(cTextAlign, t
 CP(cWhiteSpace, whiteSpace) CP(cTextTransform, textTransform) CP(cTextOverflow, textOverflow) CP(cWordBreak, wordBreak)
 CP(cOverflowWrap, overflowWrap) CP(cVerticalAlign, verticalAlign) CP(cDecorationColor, decorationColor)
 CP(cDecorationStyle, decorationStyle) CP(cTabSize, tabSize) CP(cListStyle, listStyle) CP(cListInside, listInside)
-CP(cFlexDirection, flexDirection) CP(cFlexWrap, flexWrap) CP(cJustifyContent, justifyContent) CP(cAlignItems, alignItems)
+CP(cFlexDirection, flexDirection) CP(cJustifyContent, justifyContent) CP(cAlignItems, alignItems)
 CP(cAlignSelf, alignSelf) CP(cAlignContent, alignContent) CP(cJustifyItems, justifyItems) CP(cJustifySelf, justifySelf)
+static void cFlexWrap2(CscdComputedStyle* d, const CscdComputedStyle* s) { d->flexWrap = s->flexWrap; d->flexBalance = s->flexBalance; }
+CP(cFlexLineCount, flexLineCount)
 CP(cFlexGrow, flexGrow) CP(cFlexShrink, flexShrink) CP(cFlexBasis, flexBasis) CP(cOrder, order) CP(cRowGap, rowGap) CP(cColumnGap, columnGap)
 CP(cGridAutoFlow, gridAutoFlow) CP(cBorderCollapse, borderCollapse) CP(cLineClamp, lineClamp) CP(cDirection, rtl)
 CP(cPerspective, perspective) CP(cBackfaceVisibility, backfaceHidden) CP(cTransformStyle, preserve3d) CP(cContainerType, containerType)
@@ -2711,7 +2738,7 @@ static const CopyEntry kCopiers[] = {
     {"overflow-wrap", cOverflowWrap}, {"vertical-align", cVerticalAlign}, {"text-decoration-color", cDecorationColor},
     {"text-decoration-style", cDecorationStyle}, {"tab-size", cTabSize}, {"list-style-type", cListStyle},
     {"list-style-position", cListInside}, {"list-style-image", cListImage}, {"flex-direction", cFlexDirection},
-    {"flex-wrap", cFlexWrap}, {"justify-content", cJustifyContent}, {"align-items", cAlignItems}, {"align-self", cAlignSelf},
+    {"flex-wrap", cFlexWrap2}, {"flex-line-count", cFlexLineCount}, {"justify-content", cJustifyContent}, {"align-items", cAlignItems}, {"align-self", cAlignSelf},
     {"align-content", cAlignContent}, {"justify-items", cJustifyItems}, {"justify-self", cJustifySelf}, {"flex-grow", cFlexGrow},
     {"flex-shrink", cFlexShrink}, {"flex-basis", cFlexBasis}, {"order", cOrder}, {"row-gap", cRowGap}, {"column-gap", cColumnGap},
     {"grid-template-columns", cGridColumns}, {"grid-template-rows", cGridRows}, {"grid-auto-columns", cGridAutoColumns},

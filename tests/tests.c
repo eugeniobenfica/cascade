@@ -256,6 +256,17 @@ static void testMarginCollapseThrough(void) {
     cscdViewFree(v);
 }
 
+/* flex-wrap: balance (CSS Flexbox 2): the lines wrapping makes, as even as they go; flex-line-count, more of them */
+static void testFlexBalance(void) {
+    CscdView* v = cscdViewNew();
+    layoutView(v, "<style>body{margin:0} #f>div,#g>div{width:25px;height:10px}</style>"
+                  "<div id=f style='display:flex;flex-wrap:balance;width:100px;gap:10px'><div></div><div></div><div></div><div id=d></div></div>"
+                  "<div id=g style='display:flex;flex-flow:row wrap balance;flex-line-count:4;width:100px'><div></div><div></div><div></div><div id=e></div></div>");
+    CHECK(fabsf(rectOf(v, "d").x - 35) < 0.5f && fabsf(rectOf(v, "d").y - 20) < 0.5f); /* (2 and 2, not 3 and 1) */
+    CHECK(fabsf(rectOf(v, "e").x) < 0.5f && fabsf(rectOf(v, "e").y - 60) < 0.5f);      /* (four lines of one) */
+    cscdViewFree(v);
+}
+
 /* right-to-left containing blocks (CSS 2.1 9.4.3, 10.3.7); flex items painted in order, z-index unpositioned */
 static void testRtlPositioningAndItemPainting(void) {
     CscdView* v = cscdViewNew();
@@ -5645,6 +5656,7 @@ int main(void) {
     testSvgImages();
     testRtlPositioningAndItemPainting();
     testMarginCollapseThrough();
+    testFlexBalance();
     testSelectors();
     testHasSiblings();
     testCascade();

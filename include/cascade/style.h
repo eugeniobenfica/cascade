@@ -415,6 +415,8 @@ struct CscdComputedStyle {
     uint8_t flexDirection;    /* CscdFlexDirection */
     uint8_t flexWrap;         /* CscdFlexWrap */
     uint8_t justifyContent, alignItems, alignSelf, alignContent, justifyItems, justifySelf; /* CscdAlign */
+    bool flexBalance;         /* (flex-wrap: balance) */
+    uint8_t flexLineCount;    /* (flex-line-count, up to 255; 0 as 1) */
     float flexGrow, flexShrink;
     CscdLength flexBasis;
     int order;

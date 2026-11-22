@@ -60,6 +60,9 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **Boxes are painted on device pixels**: their backgrounds, borders, images and inline boxes' backgrounds have their
   edges rounded to whole device pixels (as browsers paint them), not blended over a fractional one. WPT reftests
   passed: 2,541.
+- **`flex-wrap: balance`** and **`flex-line-count`** (CSS Flexbox 2): the lines wrapping makes (or more, to the line
+  count), their items split so that the squares of what each leaves of the line sum to the least, the first lines
+  fullest of splits as good. `flex-flow` takes `balance` too. WPT reftests passed: 2,560.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,

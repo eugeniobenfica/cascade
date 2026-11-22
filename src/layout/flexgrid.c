@@ -108,6 +108,74 @@ static void measureCross(FlexCtx* F, FlexItem* it, double mainBorderBox, bool fo
     layBlock(F->L, c, &in);
 }
 
+/* flex-wrap: balance (CSS Flexbox 2, 9.7): as many lines as wrapping makes (each item's outer size floored at zero), or
+ * flex-line-count if more (not more than the items), the items split among them in order, each line holding at least
+ * one and not more than the space unless it is a single item, so that the squares of what each line leaves of the
+ * space sum to the least; of splits as good, the one with the most items on the first line, then on the second... */
+static void balanceLines(void* itemsV, void* linesV, double space, double gap, int minLines) {
+    CSCD_VEC(FlexItem)* items = itemsV;
+    CSCD_VEC(FlexLine)* lines = linesV;
+    const size_t n = items->len;
+    double* size = (double*)cscdMalloc(sizeof(double) * (n + 1));
+    double* pre = (double*)cscdMalloc(sizeof(double) * (n + 1));
+    pre[0] = 0;
+    for (size_t i = 0; i < n; ++i) {
+        size[i] = layMax(0.f, items->items[i].hypo + items->items[i].marginMain);
+        pre[i + 1] = pre[i] + size[i];
+    }
+    size_t count = 1;
+    double used = -1;
+    for (size_t i = 0; i < n; ++i) {
+        if (used >= 0 && used + gap + size[i] > space + 0.01) { ++count; used = -1; }
+        used = used < 0 ? size[i] : used + gap + size[i];
+    }
+    if (minLines > (int)count) count = cscdMinz((size_t)minLines, n);
+    /* best[k][i]: the least error of items i.. on k lines */
+    const double INF = 1e300;
+    double* best = (double*)cscdMalloc(sizeof(double) * (count + 1) * (n + 1));
+#define BEST(k, i) best[(size_t)(k) * (n + 1) + (i)]
+    for (size_t k = 0; k <= count; ++k)
+        for (size_t i = 0; i <= n; ++i) BEST(k, i) = INF;
+    BEST(0, n) = 0;
+    for (size_t k = 1; k <= count; ++k)
+        for (size_t i = n; i-- > 0;) {
+            if (n - i < k) continue;
+            double m = INF;
+            for (size_t j = i + 1; j + (k - 1) <= n; ++j) {
+                const double line = pre[j] - pre[i] + gap * (double)(j - i - 1);
+                if (line > space + 0.01 && j - i > 1) break;
+                if (BEST(k - 1, j) >= INF) continue;
+                const double e = (space - line) * (space - line) + BEST(k - 1, j);
+                if (e < m) m = e;
+            }
+            BEST(k, i) = m;
+        }
+    if (BEST(count, 0) < INF) {
+        lines->len = 0;
+        size_t i = 0;
+        for (size_t k = count; k > 0; --k) {
+            /* (the longest first line among the best) */
+            size_t pick = i + 1;
+            const double target = BEST(k, i);
+            for (size_t j = i + 1; j + (k - 1) <= n; ++j) {
+                const double line = pre[j] - pre[i] + gap * (double)(j - i - 1);
+                if (line > space + 0.01 && j - i > 1) break;
+                if (BEST(k - 1, j) >= INF) continue;
+                const double e = (space - line) * (space - line) + BEST(k - 1, j);
+                if (e <= target * (1 + 1e-9) + 1e-9) pick = j;
+            }
+            cscdVecPushZero(lines);
+            cscdVecLast(lines).from = i;
+            cscdVecLast(lines).n = pick - i;
+            i = pick;
+        }
+    }
+#undef BEST
+    cscdFree(best);
+    cscdFree(pre);
+    cscdFree(size);
+}
+
 double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
     const CscdComputedStyle* s = b->style;
     bool row = !cscdStyleIsColumn(s);
@@ -219,6 +287,7 @@ double layFlex(Layouter* L, CscdLayoutBox* b, double cbH) {
         used += outer;
         cscdVecLast(&lines).n++;
     }
+    if (wrap && s->flexBalance && items.len > 1 && items.len <= 1000) balanceLines(&items, &lines, mainSize, mainGap, s->flexLineCount);
 
     /* resolve flexible lengths */
     for (size_t li = 0; li < lines.len; ++li) {
