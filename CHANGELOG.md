@@ -82,7 +82,7 @@ badge, this file, the bindings and the vcpkg port repeat it, and CI checks that 
 - **Definite heights**: an atomic inline resolves a percentage height against the block it is in, an anonymous block
   passed over; a column flex item's height is definite for what it holds only where the container's is, where its
   flex basis is auto and its height a length, or where it is inflexible with a length for a basis (CSS Flexbox 9.8).
-  WPT reftests passed: 2,633.
+  WPT reftests passed: 2,632.
 - `CASCADE_SHARED` builds the engine as a shared library; CI compares its ABI with `tests/abi/cascade.abi`.
 - **contenteditable**: rich text edited in place (typing, selection by keys and mouse, Ctrl+B/I/U, lists, headings,
   links, undo, the clipboard as HTML); `cscdViewEditableSelection`, `cscdViewSetEditableSelection`,
